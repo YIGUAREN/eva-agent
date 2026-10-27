@@ -10,5 +10,8 @@ async def plan_node(state: EvalState, planner: Planner) -> dict:
     if evidence is None:
         return {"status": RunStatus.FAILED, "errors": ["缺少证据，无法制定计划"]}
 
-    plan = await planner.plan(evidence, state["budget"])
+    try:
+        plan = await planner.plan(evidence, state["budget"])
+    except Exception as exc:
+        return {"status": RunStatus.FAILED, "errors": [f"制定评估计划失败: {exc}"]}
     return {"plan": plan, "status": RunStatus.COMPLETED}
