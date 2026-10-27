@@ -1,7 +1,14 @@
 import pytest
 from pydantic import ValidationError
 
-from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput, RunStatus
+from eva_agent.domain.run import (
+    DatasetRef,
+    InputKind,
+    PastedInput,
+    RunInput,
+    RunStatus,
+    validate_run_id,
+)
 
 
 def test_paste_input_requires_payload() -> None:
@@ -69,3 +76,17 @@ def test_dataset_payload_rejected_for_paste_input() -> None:
             paste=PastedInput(query="q"),
             dataset=DatasetRef(path="data/sample.csv", format="csv"),
         )
+
+
+@pytest.mark.parametrize("run_id", ["run-1", "run_abc123", "A" * 64])
+def test_validate_run_id_accepts_safe_ids(run_id: str) -> None:
+    assert validate_run_id(run_id) == run_id
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    ["..", "../../x", ".", "", "a/b", "C:\\x", "a" * 65],
+)
+def test_validate_run_id_rejects_unsafe_ids(run_id: str) -> None:
+    with pytest.raises(ValueError, match="invalid run_id"):
+        validate_run_id(run_id)

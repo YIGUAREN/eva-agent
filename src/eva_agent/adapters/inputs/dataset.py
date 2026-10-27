@@ -10,7 +10,7 @@ from pathlib import Path
 
 from eva_agent.adapters.inputs.manifest import sha256_bytes, write_manifest
 from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
-from eva_agent.domain.run import DatasetRef, InputKind
+from eva_agent.domain.run import DatasetRef, InputKind, validate_run_id
 
 CANONICAL_FIELDS = ("query", "response", "reference")
 
@@ -117,6 +117,7 @@ def write_dataset_workspace(
     max_rows: int,
 ) -> EvidenceBundle:
     """Copy a dataset into the evidence workspace and validate the copy."""
+    validate_run_id(run_id)
     source = Path(ref.path)
     if not source.is_file():
         raise DatasetError(f"dataset not found: {ref.path}")

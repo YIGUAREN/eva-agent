@@ -93,3 +93,31 @@ def test_dataset_workspace_rejects_bad_dataset(tmp_path: Path) -> None:
 
     copied = tmp_path / "data" / "runs" / "run-3" / "evidence" / "dataset.csv"
     assert not copied.exists()
+
+
+def test_paste_workspace_rejects_path_like_run_id(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+
+    with pytest.raises(ValueError, match="invalid run_id"):
+        write_paste_workspace("../../escape", PastedInput(query="q"), data_dir)
+
+    assert not (tmp_path / "escape").exists()
+    assert not data_dir.exists()
+
+
+def test_dataset_workspace_rejects_path_like_run_id(tmp_path: Path) -> None:
+    source = tmp_path / "source.csv"
+    source.write_text("query,response\nq,a\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+
+    with pytest.raises(ValueError, match="invalid run_id"):
+        write_dataset_workspace(
+            "../../escape",
+            DatasetRef(path=str(source), format="csv"),
+            data_dir,
+            max_bytes=10_000,
+            max_rows=10,
+        )
+
+    assert not (tmp_path / "escape").exists()
+    assert not data_dir.exists()

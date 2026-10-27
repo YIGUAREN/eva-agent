@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+_RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 class InputKind(StrEnum):
@@ -13,6 +16,13 @@ class InputKind(StrEnum):
     PASTE = "paste"
     DATASET = "dataset"
     TARGET = "target"
+
+
+def validate_run_id(run_id: str) -> str:
+    """Reject run identifiers that could escape the per-run data directory."""
+    if _RUN_ID_PATTERN.fullmatch(run_id) is None:
+        raise ValueError(f"invalid run_id: {run_id[:32]!r}")
+    return run_id
 
 
 class RunStatus(StrEnum):

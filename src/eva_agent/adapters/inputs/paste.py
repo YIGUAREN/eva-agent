@@ -6,7 +6,7 @@ from pathlib import Path
 
 from eva_agent.adapters.inputs.manifest import canonical_json, sha256_bytes, write_manifest
 from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
-from eva_agent.domain.run import InputKind, PastedInput
+from eva_agent.domain.run import InputKind, PastedInput, validate_run_id
 
 
 def build_paste_evidence(pasted: PastedInput) -> EvidenceBundle:
@@ -20,6 +20,7 @@ def build_paste_evidence(pasted: PastedInput) -> EvidenceBundle:
 
 
 def write_paste_workspace(run_id: str, pasted: PastedInput, data_dir: str | Path) -> EvidenceBundle:
+    validate_run_id(run_id)
     evidence_dir = Path(data_dir) / "runs" / run_id / "evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
