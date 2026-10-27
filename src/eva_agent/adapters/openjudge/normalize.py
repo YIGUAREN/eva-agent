@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -63,6 +64,16 @@ def normalize_results(
                 )
             elif isinstance(result, GraderScore):
                 raw_score = float(result.score)
+                if not math.isfinite(raw_score):
+                    outcomes.append(
+                        GraderSampleOutcome(
+                            grader=spec.name,
+                            sample_index=index,
+                            reason=result.reason,
+                            error=f"non-finite score: {raw_score!r}",
+                        )
+                    )
+                    continue
                 outcomes.append(
                     GraderSampleOutcome(
                         grader=spec.name,

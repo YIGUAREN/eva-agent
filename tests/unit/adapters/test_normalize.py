@@ -32,6 +32,32 @@ def test_scores_are_normalized_and_clamped() -> None:
     assert [item.raw_score for item in outcomes] == [5.0, 3.0, 0.0]
 
 
+def test_infinite_score_becomes_error() -> None:
+    specs = [GraderSpec(level="builtin", name="correctness", mode="pointwise", builtin_id="correctness")]
+    results = {"correctness": [GraderScore(name="correctness", score=float("inf"), reason="overflow")]}
+
+    outcomes = normalize_results(results, specs, {"correctness": correctness_entry()}, 1)
+
+    assert len(outcomes) == 1
+    assert outcomes[0].score is None
+    assert outcomes[0].raw_score is None
+    assert outcomes[0].error is not None
+    assert "non-finite score" in outcomes[0].error
+
+
+def test_nan_score_becomes_error() -> None:
+    specs = [GraderSpec(level="builtin", name="correctness", mode="pointwise", builtin_id="correctness")]
+    results = {"correctness": [GraderScore(name="correctness", score=float("nan"), reason="undefined")]}
+
+    outcomes = normalize_results(results, specs, {"correctness": correctness_entry()}, 1)
+
+    assert len(outcomes) == 1
+    assert outcomes[0].score is None
+    assert outcomes[0].raw_score is None
+    assert outcomes[0].error is not None
+    assert "non-finite score" in outcomes[0].error
+
+
 def test_errors_are_kept_per_sample() -> None:
     specs = [GraderSpec(level="builtin", name="correctness", mode="pointwise", builtin_id="correctness")]
     results = {"correctness": [GraderError(name="correctness", error="boom", reason="failed")]}
