@@ -1,0 +1,50 @@
+graders:
+  - id: correctness
+    class: openjudge.graders.common.correctness.CorrectnessGrader
+    mode: pointwise
+    inputs: [query, response, reference_response]
+    tags: [quality, reference]
+    needs_model: true
+    score_min: 1
+    score_max: 5
+    cost: low
+
+  - id: relevance
+    class: openjudge.graders.common.relevance.RelevanceGrader
+    mode: pointwise
+    inputs: [query, response]
+    tags: [quality]
+    needs_model: true
+    score_min: 1
+    score_max: 5
+    cost: low
+
+  - id: instruction_following
+    class: openjudge.graders.common.instruction_following.InstructionFollowingGrader
+    mode: pointwise
+    inputs: [instruction, query, response]
+    tags: [quality, instruction]
+    needs_model: true
+    score_min: 1
+    score_max: 5
+    cost: low
+
+  - id: hallucination
+    class: openjudge.graders.common.hallucination.HallucinationGrader
+    mode: pointwise
+    inputs: [query, context, reference_response, response]
+    tags: [quality, faithfulness]
+    needs_model: true
+    score_min: 1
+    score_max: 5
+    cost: low
+
+  - id: similarity
+    class: openjudge.graders.text.similarity.SimilarityGrader
+    mode: pointwise
+    inputs: [reference_response, response]
+    tags: [quality, reference, deterministic]
+    needs_model: false
+    score_min: 0
+    score_max: 1
+    cost: free
