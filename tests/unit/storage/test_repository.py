@@ -103,13 +103,21 @@ async def test_append_event_is_safe_under_concurrency(
 ) -> None:
     await repo.create("run-1", sample_input(), sample_budget())
 
-    seqs = await asyncio.gather(*(repo.append_event("run-1", "run.status", {"i": i}) for i in range(8)))
+    async def append_with_marker(marker: str) -> tuple[int, str]:
+        seq = await repo.append_event("run-1", "run.status", {"marker": marker})
+        return seq, marker
+
+    results = await asyncio.gather(*(append_with_marker(f"marker-{i}") for i in range(8)))
+    seqs = [seq for seq, _ in results]
 
     assert sorted(seqs) == list(range(1, 9))
     async with session_factory() as session:
         rows = (await session.scalars(select(RunEventRow).where(RunEventRow.run_id == "run-1"))).all()
     assert len(rows) == 8
     assert len({row.seq for row in rows}) == 8
+    rows_by_seq = {row.seq: row for row in rows}
+    for seq, marker in results:
+        assert rows_by_seq[seq].payload_json == {"marker": marker}
 
 
 async def test_append_event_unknown_run_raises_without_event(

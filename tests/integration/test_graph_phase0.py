@@ -86,4 +86,4 @@ async def test_planner_exception_marks_run_failed() -> None:
     result = await app.ainvoke(initial_state(paste=PastedInput(query="q", response="a")))
 
     assert result["status"] is RunStatus.FAILED
-    assert any("boom" in error for error in result["errors"])
+    assert result["errors"] == ["制定评估计划失败: boom"]
