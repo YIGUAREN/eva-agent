@@ -1,3 +1,5 @@
+import pytest
+
 from eva_agent.adapters.openjudge.catalog import load_catalog
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
@@ -100,3 +102,14 @@ async def test_generate_rubric_returns_strings() -> None:
     )
 
     assert result.rubrics == ["回答准确", "回答完整"]
+
+
+async def test_run_graders_rejects_too_many_rows() -> None:
+    registry, runner = build_registry()
+    spec = GraderSpec(level="builtin", name="correctness", mode="pointwise", builtin_id="correctness")
+    rows = [{"query": f"q{index}", "response": "a", "reference": "r", "context": ""} for index in range(11)]
+
+    with pytest.raises(ValueError, match="max_rows"):
+        await registry.call("run_graders", RunGradersInput(specs=[spec], rows=rows))
+
+    assert runner.calls == 0

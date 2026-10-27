@@ -27,5 +27,5 @@ def build_tool_registry(dependencies: ToolDependencies) -> ToolRegistry:
     registry.register(build_sample_dataset_tool(max_bytes=dependencies.max_bytes, max_rows=dependencies.max_rows))
     registry.register(build_list_graders_tool(dependencies.catalog))
     registry.register(build_generate_rubric_tool(dependencies.rubric_generator))
-    registry.register(build_run_graders_tool(dependencies.runner))
+    registry.register(build_run_graders_tool(dependencies.runner, max_rows=dependencies.max_rows))
     return registry

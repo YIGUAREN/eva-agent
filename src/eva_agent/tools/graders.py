@@ -49,8 +49,10 @@ def build_list_graders_tool(catalog: dict[str, GraderEntry]) -> ToolSpec:
     )
 
 
-def build_run_graders_tool(runner: GraderRunner) -> ToolSpec:
+def build_run_graders_tool(runner: GraderRunner, *, max_rows: int) -> ToolSpec:
     async def handler(payload: RunGradersInput) -> GraderRunOutput:
+        if len(payload.rows) > max_rows:
+            raise ValueError(f"rows is {len(payload.rows)}; max_rows is {max_rows}")
         return await runner.run(payload.specs, payload.rows)
 
     return ToolSpec(
