@@ -24,6 +24,22 @@ def anthropic_config() -> ModelConfig:
     )
 
 
+def litellm_config() -> ModelConfig:
+    return ModelConfig(
+        provider="litellm",
+        model="deepseek-chat",
+        base_url="http://localhost:4000/v1",
+        api_key_env="LITELLM_API_KEY",
+    )
+
+
+def test_build_litellm_chat_model_uses_base_url() -> None:
+    model = build_agent_chat_model(litellm_config(), {"LITELLM_API_KEY": "sk-test"})
+
+    assert isinstance(model, ChatOpenAI)
+    assert model.openai_api_base == "http://localhost:4000/v1"
+
+
 def test_build_openai_compatible_chat_model() -> None:
     model = build_agent_chat_model(openai_config(), {"DEEPSEEK_API_KEY": "sk-test"})
 

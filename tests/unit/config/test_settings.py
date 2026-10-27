@@ -72,14 +72,45 @@ def test_litellm_requires_base_url() -> None:
         ModelConfig(provider="litellm", model="m", base_url=None, api_key_env="MY_KEY")
 
 
+def test_openai_compatible_requires_base_url() -> None:
+    with pytest.raises(ValidationError):
+        ModelConfig(provider="openai-compatible", model="m", base_url=None, api_key_env="MY_KEY")
+
+
+def test_validation_error_does_not_echo_secret(tmp_path: Path) -> None:
+    text = CONFIG_YAML.replace(
+        "    api_key_env: DEEPSEEK_API_KEY\n",
+        "    api_key_env: DEEPSEEK_API_KEY\n    api_key: sk-live-super-secret\n",
+        1,
+    )
+    assert "sk-live-super-secret" in text
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(write_config(tmp_path, text))
+
+    message = str(excinfo.value)
+    assert "models.agent.api_key" in message
+    assert "sk-live-super-secret" not in message
+
+
 def test_resolve_api_key_reads_mapping() -> None:
-    model = ModelConfig(provider="openai-compatible", model="m", base_url=None, api_key_env="MY_KEY")
+    model = ModelConfig(
+        provider="openai-compatible",
+        model="m",
+        base_url="https://example.test/v1",
+        api_key_env="MY_KEY",
+    )
 
     assert resolve_api_key(model, {"MY_KEY": "sk-test"}) == "sk-test"
 
 
 def test_resolve_api_key_missing_raises() -> None:
-    model = ModelConfig(provider="openai-compatible", model="m", base_url=None, api_key_env="MY_KEY")
+    model = ModelConfig(
+        provider="openai-compatible",
+        model="m",
+        base_url="https://example.test/v1",
+        api_key_env="MY_KEY",
+    )
 
     with pytest.raises(MissingSecretError, match="MY_KEY"):
         resolve_api_key(model, {})

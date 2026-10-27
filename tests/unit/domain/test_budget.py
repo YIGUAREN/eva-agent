@@ -36,6 +36,19 @@ def test_rejects_non_positive_values(field: str, value: object) -> None:
         make_budget(**{field: value})
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_cost_usd", float("inf")),
+        ("max_wall_clock_s", float("nan")),
+        ("max_target_requests", True),
+    ],
+)
+def test_rejects_non_finite_or_boolean_numbers(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        make_budget(**{field: value})
+
+
 def test_rejects_unknown_field() -> None:
     with pytest.raises(ValidationError):
         make_budget(unexpected=1)

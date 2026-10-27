@@ -24,15 +24,16 @@ class ModelConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    # "litellm" means a LiteLLM proxy that exposes an OpenAI-compatible API.
     provider: Literal["openai-compatible", "anthropic", "litellm"]
     model: str = Field(min_length=1)
     base_url: str | None = None
     api_key_env: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _litellm_requires_base_url(self) -> ModelConfig:
-        if self.provider == "litellm" and not self.base_url:
-            raise ValueError("provider 'litellm' requires base_url")
+    def _openai_compatible_requires_base_url(self) -> ModelConfig:
+        if self.provider in ("openai-compatible", "litellm") and not self.base_url:
+            raise ValueError(f"provider '{self.provider}' requires base_url")
         return self
 
 
@@ -82,7 +83,13 @@ def load_config(path: Path) -> AppConfig:
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as exc:
-        raise ConfigError(str(exc)) from exc
+        # Do not expose input values: a stray secret in the YAML would otherwise
+        # reach logs through Pydantic's error rendering.
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" if error["loc"] else error["msg"]
+            for error in exc.errors(include_input=False, include_url=False)
+        )
+        raise ConfigError(f"invalid config in {path}: {details}") from None
 
 
 def resolve_api_key(model: ModelConfig, env: Mapping[str, str] | None = None) -> str:

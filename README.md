@@ -12,14 +12,15 @@
 ```bash
 uv sync
 cp config/config.example.yaml config/config.yaml
-cp .env.example .env   # 填入模型密钥
 ```
+
+运行任何模型相关代码前，请在当前 shell 中导出所需密钥，例如 `export DEEPSEEK_API_KEY=...`。当前阶段尚未加载 `.env` 文件；`.env` 加载器会随后续阶段的应用入口一起加入。
 
 ## 检查与测试
 
 ```bash
-uv run ruff check .
-uv run ruff format --check .
+uv run ruff check src tests
+uv run ruff format --check src tests
 uv run pyright
 uv run pytest -q
 ```
@@ -42,5 +43,4 @@ tests/
 
 ## 规格与计划
 
-- 设计规格：`docs/superpowers/specs/2026-10-27-eva-agent-design.md`
-- 阶段 0 计划：`docs/superpowers/plans/2026-10-27-phase-0-scaffolding.md`
+设计规格见本地文件 `docs/superpowers/specs/2026-10-27-eva-agent-design.md`，阶段 0 计划见本地文件 `docs/superpowers/plans/2026-10-27-phase-0-scaffolding.md`。这些文档是本地工作笔记，不随仓库提交。
