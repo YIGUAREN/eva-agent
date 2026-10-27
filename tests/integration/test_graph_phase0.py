@@ -13,13 +13,23 @@ class SpyPlanner:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def plan(self, evidence: EvidenceBundle, budget: Budget) -> EvalPlan:
+    async def plan(
+        self,
+        evidence: EvidenceBundle,
+        budget: Budget,
+        objective: str | None = None,
+    ) -> EvalPlan:
         self.calls += 1
-        return await StubPlanner().plan(evidence, budget)
+        return await StubPlanner().plan(evidence, budget, objective)
 
 
 class RaisingPlanner:
-    async def plan(self, evidence: EvidenceBundle, budget: Budget) -> EvalPlan:
+    async def plan(
+        self,
+        evidence: EvidenceBundle,
+        budget: Budget,
+        objective: str | None = None,
+    ) -> EvalPlan:
         raise RuntimeError("boom")
 
 
