@@ -22,7 +22,7 @@ cp config/config.example.yaml config/config.yaml
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run pyright
-uv run pytest -q
+uv run pytest --cov=eva_agent --cov-report=term-missing --cov-fail-under=80
 ```
 
 ## 目录

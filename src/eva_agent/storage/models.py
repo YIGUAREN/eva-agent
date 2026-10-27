@@ -29,6 +29,13 @@ class RunRow(Base):
     )
 
 
+class RunEventCounterRow(Base):
+    __tablename__ = "run_event_counters"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    next_seq: Mapped[int] = mapped_column(nullable=False, default=0)
+
+
 class RunEventRow(Base):
     __tablename__ = "run_events"
 

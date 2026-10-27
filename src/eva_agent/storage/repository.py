@@ -1,11 +1,11 @@
 """Repository for run state and events."""
 
-from sqlalchemy import func, select
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.run import RunInput, RunStatus
-from eva_agent.storage.models import RunEventRow, RunRow
+from eva_agent.storage.models import RunEventCounterRow, RunEventRow, RunRow
 
 
 class RunRepository:
@@ -22,6 +22,8 @@ class RunRepository:
                     budget_json=budget.model_dump(mode="json"),
                 )
             )
+            await session.flush()
+            session.add(RunEventCounterRow(run_id=run_id, next_seq=0))
             await session.commit()
 
     async def get(self, run_id: str) -> RunRow | None:
@@ -38,8 +40,14 @@ class RunRepository:
 
     async def append_event(self, run_id: str, event_type: str, payload: dict | None = None) -> int:
         async with self._session_factory() as session:
-            current = await session.scalar(select(func.max(RunEventRow.seq)).where(RunEventRow.run_id == run_id))
-            seq = (current or 0) + 1
+            seq = await session.scalar(
+                update(RunEventCounterRow)
+                .where(RunEventCounterRow.run_id == run_id)
+                .values(next_seq=RunEventCounterRow.next_seq + 1)
+                .returning(RunEventCounterRow.next_seq)
+            )
+            if seq is None:
+                raise KeyError(run_id)
             session.add(RunEventRow(run_id=run_id, seq=seq, type=event_type, payload_json=payload or {}))
             await session.commit()
             return seq
