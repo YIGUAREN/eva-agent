@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from eva_agent.domain.budget import Budget
+from eva_agent.domain.grader import GraderSpec, RubricSpec
 
 
 class Dimension(StrEnum):
@@ -21,6 +22,8 @@ class DimensionPlan(BaseModel):
     enabled: bool
     sample_size: int | None = Field(default=None, gt=0)
     notes: str = ""
+    rubrics: list[RubricSpec] = Field(default_factory=list)
+    graders: list[GraderSpec] = Field(default_factory=list)
 
 
 class SkippedDimension(BaseModel):

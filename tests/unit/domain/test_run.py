@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from eva_agent.domain.run import InputKind, PastedInput, RunInput, RunStatus
+from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput, RunStatus
 
 
 def test_paste_input_requires_payload() -> None:
@@ -42,3 +42,30 @@ def test_run_status_values() -> None:
         "failed",
         "cancelled",
     }
+
+
+def test_dataset_input_accepts_dataset_ref() -> None:
+    ref = DatasetRef(path="data/sample.csv", format="csv", column_map={"response": "answer"})
+    run_input = RunInput(kind=InputKind.DATASET, dataset=ref)
+
+    assert run_input.dataset is not None
+    assert run_input.dataset.column_map == {"response": "answer"}
+
+
+def test_dataset_ref_rejects_unknown_format() -> None:
+    with pytest.raises(ValidationError):
+        DatasetRef(path="data/sample.txt", format="txt")  # type: ignore[arg-type]
+
+
+def test_dataset_ref_requires_path() -> None:
+    with pytest.raises(ValidationError):
+        DatasetRef(path="", format="csv")
+
+
+def test_dataset_payload_rejected_for_paste_input() -> None:
+    with pytest.raises(ValidationError):
+        RunInput(
+            kind=InputKind.PASTE,
+            paste=PastedInput(query="q"),
+            dataset=DatasetRef(path="data/sample.csv", format="csv"),
+        )
