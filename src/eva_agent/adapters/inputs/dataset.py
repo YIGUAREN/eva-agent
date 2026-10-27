@@ -8,7 +8,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from eva_agent.domain.run import DatasetRef
+from eva_agent.adapters.inputs.manifest import sha256_bytes, write_manifest
+from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
+from eva_agent.domain.run import DatasetRef, InputKind
 
 CANONICAL_FIELDS = ("query", "response", "reference")
 
@@ -104,3 +106,49 @@ def load_dataset(ref: DatasetRef, *, max_bytes: int, max_rows: int) -> DatasetRo
 
     rows = [_canonicalize(raw, ref.column_map, index) for index, raw in enumerate(raw_rows, start=1)]
     return DatasetRows(columns=columns, rows=rows)
+
+
+def write_dataset_workspace(
+    run_id: str,
+    ref: DatasetRef,
+    data_dir: str | Path,
+    *,
+    max_bytes: int,
+    max_rows: int,
+) -> EvidenceBundle:
+    """Copy a dataset into the evidence workspace and validate the copy."""
+    source = Path(ref.path)
+    if not source.is_file():
+        raise DatasetError(f"dataset not found: {ref.path}")
+    if source.stat().st_size > max_bytes:
+        raise DatasetError(f"dataset is {source.stat().st_size} bytes; max_bytes is {max_bytes}")
+
+    evidence_dir = Path(data_dir) / "runs" / run_id / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    target = evidence_dir / f"dataset.{ref.format}"
+
+    try:
+        target.write_bytes(source.read_bytes())
+        copied_ref = DatasetRef(path=str(target), format=ref.format, column_map=dict(ref.column_map))
+        load_dataset(copied_ref, max_bytes=max_bytes, max_rows=max_rows)
+        data = target.read_bytes()
+        file = EvidenceFile(path=target.name, size=len(data), sha256=sha256_bytes(data))
+        bundle_ref = DatasetRef(path=target.name, format=ref.format, column_map=dict(ref.column_map))
+        digest = write_manifest(
+            evidence_dir,
+            kind=InputKind.DATASET,
+            files=[file],
+            pasted=None,
+            dataset=bundle_ref,
+        )
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+
+    return EvidenceBundle(
+        kind=InputKind.DATASET,
+        root=str(evidence_dir),
+        files=[file],
+        dataset=bundle_ref,
+        manifest_sha256=digest,
+    )
