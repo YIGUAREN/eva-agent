@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic_core import to_jsonable_python
+
 from eva_agent.domain.plan import EvalPlan
 from eva_agent.domain.result import MergedResult, Report
 from eva_agent.runtime.artifacts import run_paths
@@ -25,6 +27,16 @@ def _score(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.3f}"
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise ValueError("generated_at must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def build_report_payload(
     *,
     run_id: str,
@@ -32,18 +44,19 @@ def build_report_payload(
     merged: MergedResult,
     generated_at: datetime,
 ) -> dict[str, Any]:
+    metrics = to_jsonable_python(merged.metrics)
     return {
         "version": REPORT_VERSION,
         "run_id": run_id,
-        "generated_at": generated_at.isoformat(),
+        "generated_at": _as_utc(generated_at).isoformat(),
         "status": merged.status.value,
         "objective": plan.objective,
         "evidence_summary": plan.evidence_summary,
         "budget": plan.budget.model_dump(mode="json"),
-        "overall_score": merged.metrics.get("overall_score"),
+        "overall_score": metrics.get("overall_score"),
         "dimensions": [item.model_dump(mode="json") for item in merged.results],
         "skipped": [item.model_dump(mode="json") for item in merged.skipped],
-        "metrics": merged.metrics,
+        "metrics": metrics,
         "findings": [finding.model_dump(mode="json") for result in merged.results for finding in result.findings],
         "deferred": list(DEFERRED_CAPABILITIES),
     }
@@ -98,7 +111,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
         lines.extend(["| ID | 严重度 | 标题 | 证据 |", "|---|---|---|---|"])
         for finding in payload["findings"]:
             evidence = ", ".join(item["locator"] for item in finding["evidence"]) or "-"
-            lines.append(f"| {finding['id']} | {finding['severity']} | {finding['title']} | {evidence} |")
+            lines.append(
+                f"| {_cell(finding['id'])} | {_cell(finding['severity'])} | "
+                f"{_cell(finding['title'])} | {_cell(evidence)} |"
+            )
         lines.append("")
 
     lines.extend(["## 未执行维度", ""])
@@ -107,7 +123,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
     else:
         lines.extend(["| 维度 | 原因 |", "|---|---|"])
         for item in payload["skipped"]:
-            lines.append(f"| {item['dimension']} | {item['reason']} |")
+            lines.append(f"| {_cell(item['dimension'])} | {_cell(item['reason'])} |")
         lines.append("")
 
     lines.extend(["## 限制", ""])
@@ -135,6 +151,7 @@ def write_report(
     merged: MergedResult,
     generated_at: datetime,
 ) -> Report:
+    generated_at = _as_utc(generated_at)
     paths = run_paths(data_dir, run_id)
     paths.root.mkdir(parents=True, exist_ok=True)
     payload = build_report_payload(
@@ -143,14 +160,15 @@ def write_report(
         merged=merged,
         generated_at=generated_at,
     )
+    markdown = render_markdown(payload)
     paths.report_json.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    paths.report_markdown.write_text(render_markdown(payload), encoding="utf-8")
+    paths.report_markdown.write_text(markdown, encoding="utf-8")
     return Report(
         run_id=run_id,
         markdown_path=str(paths.report_markdown),
         json_path=str(paths.report_json),
-        generated_at=generated_at.astimezone(UTC),
+        generated_at=generated_at,
     )

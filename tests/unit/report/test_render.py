@@ -1,4 +1,7 @@
+import json
 from datetime import UTC, datetime
+
+import pytest
 
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.grader import GraderSpec
@@ -109,6 +112,71 @@ def test_markdown_handles_failed_dimension() -> None:
     markdown = render_markdown(payload)
 
     assert "failed" in markdown
+
+
+def test_payload_is_json_serializable_with_non_json_metrics() -> None:
+    payload = build_report_payload(
+        run_id="run-1",
+        plan=plan(),
+        merged=merged().model_copy(
+            update={"metrics": {"at": datetime(2026, 10, 27, 12, 0, tzinfo=UTC), "tags": {"a"}}}
+        ),
+        generated_at=datetime(2026, 10, 27, 12, 0, tzinfo=UTC),
+    )
+
+    text = json.dumps(payload, ensure_ascii=False)
+
+    assert "2026-10-27T12:00:00" in text
+    assert '"tags": ["a"]' in text
+
+
+def test_markdown_escapes_table_cells() -> None:
+    finding = Finding(
+        id="quality-low-2",
+        severity="medium",
+        category="quality",
+        title="a|b",
+        description="d",
+        evidence=[EvidenceRef(kind="dataset_row", locator="x|y")],
+    )
+    result = merged().results[0].model_copy(update={"findings": [finding]})
+    payload = build_report_payload(
+        run_id="run-1",
+        plan=plan(),
+        merged=merged().model_copy(update={"results": [result]}),
+        generated_at=datetime(2026, 10, 27, 12, 0, tzinfo=UTC),
+    )
+
+    markdown = render_markdown(payload)
+
+    assert "a\\|b" in markdown
+    assert "x\\|y" in markdown
+
+
+def test_markdown_handles_empty_sections() -> None:
+    payload = build_report_payload(
+        run_id="run-1",
+        plan=plan(),
+        merged=MergedResult(status=RunStatus.COMPLETED),
+        generated_at=datetime(2026, 10, 27, 12, 0, tzinfo=UTC),
+    )
+
+    markdown = render_markdown(payload)
+
+    assert "（没有任何维度产生结果）" in markdown
+    assert "（未发现问题）" in markdown
+    assert "（无）" in markdown
+
+
+def test_write_report_requires_aware_generated_at(tmp_path) -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        write_report(
+            data_dir=tmp_path,
+            run_id="run-1",
+            plan=plan(),
+            merged=merged(),
+            generated_at=datetime(2026, 10, 27, 12, 0),
+        )
 
 
 def test_write_report_writes_both_files(tmp_path) -> None:

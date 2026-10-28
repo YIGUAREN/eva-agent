@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
@@ -57,6 +59,21 @@ def test_plan_draft_does_not_overwrite_by_default(tmp_path) -> None:
     write_plan_draft(paths, plan().model_copy(update={"objective": "另一个目标"}))
 
     assert paths.plan_draft.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("run_id", ["..", "../../evil", "/abs", "a/b", "C:\\x", ""])
+def test_run_paths_rejects_unsafe_run_id(tmp_path, run_id: str) -> None:
+    with pytest.raises(ValueError, match="invalid run_id"):
+        run_paths(tmp_path, run_id)
+
+
+def test_plan_draft_overwrites_when_asked(tmp_path) -> None:
+    paths = run_paths(tmp_path, "run-1")
+    write_plan_draft(paths, plan())
+
+    write_plan_draft(paths, plan().model_copy(update={"objective": "另一个目标"}), overwrite=True)
+
+    assert read_plan_draft(paths).objective == "另一个目标"
 
 
 def test_plan_approved_writes_decision_time(tmp_path) -> None:

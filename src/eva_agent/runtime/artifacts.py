@@ -9,6 +9,7 @@ import yaml
 
 from eva_agent.domain.plan import EvalPlan
 from eva_agent.domain.result import Approval
+from eva_agent.domain.run import validate_run_id
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class RunPaths:
 
 
 def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
+    validate_run_id(run_id)
     root = Path(data_dir) / "runs" / run_id
     return RunPaths(
         root=root,
