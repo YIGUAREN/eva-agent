@@ -817,7 +817,12 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+demo = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 dev = [
+    { name = "httpx" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -844,7 +849,12 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+demo = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
 dev = [
+    { name = "httpx", specifier = ">=0.28" },
     { name = "pyright", specifier = ">=1.1.390" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },

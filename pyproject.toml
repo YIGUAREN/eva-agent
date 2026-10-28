@@ -30,6 +30,11 @@ dev = [
     "ruff>=0.8",
     "pyright>=1.1.390",
     "pytest-cov>=7.1.0",
+    "httpx>=0.28",
+]
+demo = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [build-system]
@@ -55,7 +60,7 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "demo_target"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false
