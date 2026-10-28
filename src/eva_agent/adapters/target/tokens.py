@@ -16,7 +16,7 @@ def _encoding(name: str):
     try:
         return tiktoken.get_encoding(name)
     except Exception as exc:  # tiktoken raises ValueError or KeyError depending on version
-        raise TokenEstimationError(f"unknown token encoding: {name}") from exc
+        raise TokenEstimationError(f"token estimation failed for encoding {name!r}: {exc}") from exc
 
 
 def estimate_tokens(text: str, encoding: str) -> int:
