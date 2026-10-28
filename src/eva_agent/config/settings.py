@@ -55,6 +55,24 @@ class StorageSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     url: str = Field(min_length=1)
+    data_dir: str = Field(default="./data", min_length=1)
+    checkpoint_path: str = Field(default="./data/checkpoints.sqlite", min_length=1)
+
+
+class PipelineSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dataset_max_bytes: int = Field(default=52_428_800, gt=0)
+    dataset_max_rows: int = Field(default=10_000, gt=0)
+    evidence_sample_rows: int = Field(default=5, gt=0)
+
+
+class OpenJudgeSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    catalog_path: str = Field(default="config/graders.yaml", min_length=1)
+    max_concurrency: int = Field(default=8, gt=0)
+    grader_timeout_s: float = Field(default=120.0, gt=0)
 
 
 class AppConfig(BaseModel):
@@ -65,6 +83,8 @@ class AppConfig(BaseModel):
     models: ModelsSettings
     agent: AgentSettings
     storage: StorageSettings
+    pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
+    openjudge: OpenJudgeSettings = Field(default_factory=OpenJudgeSettings)
 
 
 def load_config(path: Path) -> AppConfig:

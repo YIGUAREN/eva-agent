@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from eva_agent.domain.run import InputKind
+from eva_agent.domain.run import DatasetRef, InputKind
 
 
 class EvidenceFile(BaseModel):
@@ -20,4 +20,5 @@ class EvidenceBundle(BaseModel):
     root: str | None = None
     files: list[EvidenceFile] = Field(default_factory=list)
     pasted: dict[str, str] | None = None
+    dataset: DatasetRef | None = None
     manifest_sha256: str = Field(min_length=64, max_length=64)

@@ -14,7 +14,12 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
     "asyncpg>=0.30",
+    "py-openjudge==0.2.4",
+    "python-dotenv>=1.0",
 ]
+
+[project.scripts]
+eva = "eva_agent.cli:main"
 
 [dependency-groups]
 dev = [
@@ -34,6 +39,7 @@ packages = ["src/eva_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 
 [tool.coverage.run]

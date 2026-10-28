@@ -3,6 +3,18 @@ retention_days: 30
 
 storage:
   url: "sqlite+aiosqlite:///./data/eva.db"
+  data_dir: "./data"
+  checkpoint_path: "./data/checkpoints.sqlite"
+
+pipeline:
+  dataset_max_bytes: 52428800
+  dataset_max_rows: 10000
+  evidence_sample_rows: 5
+
+openjudge:
+  catalog_path: "config/graders.yaml"
+  max_concurrency: 8
+  grader_timeout_s: 120
 
 agent:
   max_steps: 12

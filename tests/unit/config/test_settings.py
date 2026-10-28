@@ -114,3 +114,50 @@ def test_resolve_api_key_missing_raises() -> None:
 
     with pytest.raises(MissingSecretError, match="MY_KEY"):
         resolve_api_key(model, {})
+
+
+def test_phase_one_sections_are_optional_with_defaults(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path, CONFIG_YAML))
+
+    assert config.storage.data_dir == "./data"
+    assert config.storage.checkpoint_path == "./data/checkpoints.sqlite"
+    assert config.pipeline.dataset_max_bytes == 52_428_800
+    assert config.pipeline.dataset_max_rows == 10_000
+    assert config.pipeline.evidence_sample_rows == 5
+    assert config.openjudge.catalog_path == "config/graders.yaml"
+    assert config.openjudge.max_concurrency == 8
+    assert config.openjudge.grader_timeout_s == 120.0
+
+
+def test_phase_one_sections_are_parsed(tmp_path: Path) -> None:
+    text = CONFIG_YAML.replace(
+        "storage:\n  url: sqlite+aiosqlite:///./data/eva.db\n",
+        "storage:\n"
+        "  url: sqlite+aiosqlite:///./data/eva.db\n"
+        "  data_dir: ./tmp-data\n"
+        "  checkpoint_path: ./tmp-data/checkpoints.sqlite\n"
+        "pipeline:\n"
+        "  dataset_max_bytes: 1024\n"
+        "  dataset_max_rows: 10\n"
+        "  evidence_sample_rows: 2\n"
+        "openjudge:\n"
+        "  catalog_path: config/graders.yaml\n"
+        "  max_concurrency: 2\n"
+        "  grader_timeout_s: 30\n",
+    )
+    config = load_config(write_config(tmp_path, text))
+
+    assert config.storage.data_dir == "./tmp-data"
+    assert config.pipeline.dataset_max_rows == 10
+    assert config.openjudge.max_concurrency == 2
+
+
+def test_pipeline_limits_must_be_positive(tmp_path: Path) -> None:
+    text = CONFIG_YAML.replace(
+        "storage:\n  url: sqlite+aiosqlite:///./data/eva.db\n",
+        "storage:\n  url: sqlite+aiosqlite:///./data/eva.db\n"
+        "pipeline:\n  dataset_max_bytes: 0\n  dataset_max_rows: 10\n  evidence_sample_rows: 2\n",
+    )
+
+    with pytest.raises(ConfigError):
+        load_config(write_config(tmp_path, text))
