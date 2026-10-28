@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
+from eva_agent.domain.target import TargetSpec
 from eva_agent.security.target_policy import ValidatedTarget
 
 
@@ -43,3 +45,28 @@ class TargetTransport(Protocol):
         timeout_s: float,
         max_response_bytes: int,
     ) -> TargetResponse: ...
+
+
+class TargetAdapter(Protocol):
+    def build_request(
+        self,
+        target: TargetSpec,
+        prompt: str,
+        *,
+        headers: dict[str, str],
+    ) -> TargetRequest: ...
+
+    def parse_response(self, target: TargetSpec, response: TargetResponse) -> ParsedTargetResponse: ...
+
+
+def load_json_body(response: TargetResponse) -> Any:
+    try:
+        return json.loads(response.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TargetResponseError("response body is not valid JSON") from exc
+
+
+def int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
