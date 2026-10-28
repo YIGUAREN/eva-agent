@@ -219,3 +219,42 @@ async def test_evidence_cannot_close_the_untrusted_block_early() -> None:
 
 def test_pasted_input_is_used_by_helper() -> None:
     assert PastedInput(query="q").query == "q"
+
+
+class RecordingChatModel:
+    def __init__(self) -> None:
+        self.methods: list[str | None] = []
+        self.runner = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+
+    def with_structured_output(self, schema: object, **kwargs: object) -> FakeStructured:
+        self.methods.append(kwargs.get("method"))  # type: ignore[arg-type]
+        return self.runner
+
+
+def test_planner_forwards_the_structured_output_method() -> None:
+    model = RecordingChatModel()
+
+    LlmPlanner(model, build_registry(), structured_method="json_mode")
+
+    assert model.methods == ["json_mode"]
+
+
+def test_planner_uses_the_provider_default_structured_output() -> None:
+    model = RecordingChatModel()
+
+    LlmPlanner(model, build_registry())
+
+    assert model.methods == [None]
+
+
+async def test_prompt_documents_the_full_planner_schema() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+
+    await planner.plan(evidence(), budget)
+
+    prompt = structured.prompts[0]
+    for field in ('"enabled"', '"sample_size"', '"graders"', '"name"', '"builtin_id"', '"rubric"'):
+        assert field in prompt
+    assert "Do not add any other fields" in prompt

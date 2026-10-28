@@ -3,7 +3,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 
 from eva_agent.config.settings import MissingSecretError, ModelConfig
-from eva_agent.llm.factory import build_agent_chat_model, build_aig_eval_model
+from eva_agent.llm.factory import build_agent_chat_model, build_aig_eval_model, structured_output_method
 
 
 def openai_config() -> ModelConfig:
@@ -67,3 +67,12 @@ def test_build_aig_eval_model() -> None:
         "token": "sk-test",
         "base_url": "https://api.deepseek.com/v1",
     }
+
+
+def test_openai_shaped_endpoints_use_json_mode_structured_output() -> None:
+    assert structured_output_method(openai_config()) == "json_mode"
+    assert structured_output_method(litellm_config()) == "json_mode"
+
+
+def test_anthropic_uses_the_provider_default_structured_output() -> None:
+    assert structured_output_method(anthropic_config()) is None

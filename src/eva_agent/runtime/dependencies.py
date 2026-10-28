@@ -12,7 +12,7 @@ from eva_agent.adapters.openjudge.runner import OpenJudgeRunner
 from eva_agent.config.settings import AppConfig
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.planner import LlmPlanner
-from eva_agent.llm.factory import build_agent_chat_model
+from eva_agent.llm.factory import build_agent_chat_model, structured_output_method
 from eva_agent.tools.bundle import ToolDependencies, build_tool_registry
 
 QUALITY_DEFAULT_SAMPLE_SIZE = 50
@@ -44,6 +44,7 @@ def build_runtime_dependencies(
     planner = LlmPlanner(
         build_agent_chat_model(config.models.agent, env),
         tools,
+        structured_method=structured_output_method(config.models.agent),
         sample_rows=config.pipeline.evidence_sample_rows,
     )
     return GraphDependencies(

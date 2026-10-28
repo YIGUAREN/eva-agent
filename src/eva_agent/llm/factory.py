@@ -32,6 +32,18 @@ def build_agent_chat_model(model: ModelConfig, env: Mapping[str, str] | None = N
     return ChatOpenAI(model=model.model, api_key=api_key, base_url=model.base_url, temperature=0)
 
 
+def structured_output_method(model: ModelConfig) -> str | None:
+    """Pick the structured-output mode LangChain should use for *model*.
+
+    JSON-schema response formats are not available on every OpenAI-compatible
+    endpoint (DeepSeek rejects them), while `json_object` mode is. Anthropic
+    keeps LangChain's provider default.
+    """
+    if model.provider == "anthropic":
+        return None
+    return "json_mode"
+
+
 def build_aig_eval_model(model: ModelConfig, env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Build the eval_model payload expected by AI-Infra-Guard."""
     return {

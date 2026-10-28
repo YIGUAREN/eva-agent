@@ -73,12 +73,14 @@ class LlmPlanner:
         tools: ToolRegistry,
         *,
         structured_runner: Any | None = None,
+        structured_method: str | None = None,
         sample_rows: int = 5,
     ) -> None:
         if structured_runner is not None:
             self._structured = structured_runner
         elif chat_model is not None:
-            self._structured = chat_model.with_structured_output(PlannerOutput)
+            kwargs = {} if structured_method is None else {"method": structured_method}
+            self._structured = chat_model.with_structured_output(PlannerOutput, **kwargs)
         else:
             raise ValueError("LlmPlanner requires chat_model or structured_runner")
         self._tools = tools
@@ -226,11 +228,21 @@ class LlmPlanner:
         safe_evidence = _escape_evidence(evidence_text)
         return f"""You are Eva-Agent's planning module. Return one JSON object only.
 
-The JSON must have this shape:
+The JSON must have exactly this shape:
 {{"objective": str,
  "evidence_summary": str,
- "dimensions": [dimension plan],
+ "dimensions": [{{"dimension": "quality",
+                 "enabled": true,
+                 "sample_size": int|null,
+                 "graders": [{{"level": "builtin"|"llm_rubric",
+                              "name": str,
+                              "builtin_id": str|null,
+                              "rubric": str|null,
+                              "mode": "pointwise"}}]}}],
  "skipped": [{{"dimension": str, "reason": str}}]}}
+
+Do not add any other fields. `mode` belongs to graders, never to a dimension.
+Every grader needs a unique non-empty `name`; for builtin graders use the catalog id as the name.
 
 Rules:
 - Only the quality dimension is implemented. latency, cost, and security MUST appear in skipped
