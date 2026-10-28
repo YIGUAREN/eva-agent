@@ -64,6 +64,7 @@ class RunInput(BaseModel):
     upload_id: str | None = None
     dataset_id: str | None = None
     target_ref: str | None = None
+    target_prompts: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _payload_matches_kind(self) -> RunInput:
@@ -73,8 +74,20 @@ class RunInput(BaseModel):
             raise ValueError("upload input requires 'upload_id'")
         if self.kind is InputKind.DATASET and self.dataset is None and not self.dataset_id:
             raise ValueError("dataset input requires 'dataset' or 'dataset_id'")
-        if self.kind is InputKind.TARGET and not self.target_ref:
-            raise ValueError("target input requires 'target_ref'")
+        if self.kind is InputKind.TARGET:
+            if not self.target_ref:
+                raise ValueError("target input requires 'target_ref'")
+            if not self.target_prompts:
+                raise ValueError("target input requires at least one prompt")
+            if len(self.target_prompts) > 100:
+                raise ValueError("target input allows at most 100 prompts")
+            for prompt in self.target_prompts:
+                if not prompt.strip():
+                    raise ValueError("target prompt must not be blank")
+                if len(prompt.encode("utf-8")) > 16_384:
+                    raise ValueError("target prompt exceeds 16384 bytes")
+        elif self.target_prompts:
+            raise ValueError("'target_prompts' is only valid for target input")
         if self.kind is not InputKind.PASTE and self.paste is not None:
             raise ValueError("'paste' is only valid for paste input")
         if self.kind is not InputKind.DATASET and self.dataset is not None:

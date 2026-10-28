@@ -1,8 +1,11 @@
 """Evidence bundle produced by input adapters."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from eva_agent.domain.run import DatasetRef, InputKind
+from eva_agent.domain.target import TargetSpec
 
 
 class EvidenceFile(BaseModel):
@@ -21,4 +24,14 @@ class EvidenceBundle(BaseModel):
     files: list[EvidenceFile] = Field(default_factory=list)
     pasted: dict[str, str] | None = None
     dataset: DatasetRef | None = None
+    target: TargetSpec | None = None
+    target_prompts: list[str] = Field(default_factory=list)
     manifest_sha256: str = Field(min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def _target_matches_kind(self) -> EvidenceBundle:
+        if self.kind is InputKind.TARGET and self.target is None:
+            raise ValueError("target evidence requires a target")
+        if self.kind is not InputKind.TARGET and self.target is not None:
+            raise ValueError("target is only valid for target evidence")
+        return self

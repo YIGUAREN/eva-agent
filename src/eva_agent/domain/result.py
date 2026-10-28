@@ -12,7 +12,7 @@ from eva_agent.domain.run import RunStatus
 class EvidenceRef(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    kind: Literal["file", "paste_field", "dataset_row"]
+    kind: Literal["file", "paste_field", "dataset_row", "target_request"]
     locator: str = Field(min_length=1)
     excerpt: str | None = None
 
