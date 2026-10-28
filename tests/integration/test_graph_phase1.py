@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
@@ -198,3 +199,31 @@ async def test_unscored_grader_results_emit_quality_failed(tmp_path: Path) -> No
     assert snapshot.values["expert_results"][0].status == "failed"
     assert "quality.failed" in events
     assert "quality.completed" not in events
+
+
+async def test_plan_draft_write_failure_fails_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("eva_agent.graph.nodes.plan.write_plan_draft", boom)
+    app = build_graph(dependencies(tmp_path))
+
+    result = await app.ainvoke(initial_state(paste_input()))
+
+    assert result["status"] is RunStatus.FAILED
+    assert any("写入计划草案失败" in error for error in result["errors"])
+
+
+async def test_approval_persistence_failure_fails_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    app = build_graph(dependencies(tmp_path), MemorySaver())
+    await app.ainvoke(initial_state(paste_input()), CONFIG)
+
+    monkeypatch.setattr("eva_agent.graph.nodes.approve.write_plan_approved", boom)
+    await app.ainvoke(Command(resume={"approved": True}), CONFIG)
+    snapshot = await app.aget_state(CONFIG)
+
+    assert snapshot.values["status"] is RunStatus.FAILED
+    assert any("写入批准计划失败" in error for error in snapshot.values["errors"])
