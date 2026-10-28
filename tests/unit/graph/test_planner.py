@@ -7,6 +7,7 @@ from eva_agent.domain.plan import Dimension, DimensionPlan, SkippedDimension
 from eva_agent.domain.run import InputKind, PastedInput
 from eva_agent.graph.plan_validation import PlanValidationError
 from eva_agent.graph.planner import LlmPlanner, PlannerOutput
+from eva_agent.tools.evidence import build_read_evidence_tool
 from eva_agent.tools.graders import ListGradersInput, ListGradersOutput
 from eva_agent.tools.registry import ToolRegistry, ToolSpec
 from eva_agent.tools.rubric import GenerateRubricInput, RubricOutput
@@ -76,6 +77,7 @@ def build_registry() -> ToolRegistry:
             handler=rubric_handler,
         )
     )
+    registry.register(build_read_evidence_tool(10_000))
     return registry
 
 
