@@ -58,3 +58,25 @@ def test_invalid_input_map_path_rejected():
 def test_non_declarative_spec_rejected():
     with pytest.raises(DeclarativeSpecError, match="declarative grader"):
         validate_declarative_spec(GraderSpec(level="builtin", name="x", builtin_id="relevance"))
+
+
+def test_list_valued_schema_type_rejected():
+    checks = [CheckSpec(type="json_schema", field="response", schema={"type": ["string", "null"]})]
+    with pytest.raises(DeclarativeSpecError, match="unknown schema type"):
+        validate_declarative_spec(spec(checks=checks))
+
+
+def test_nested_list_valued_schema_type_rejected():
+    schema = {"type": "object", "properties": {"value": {"type": ["string", "null"]}}}
+    checks = [CheckSpec(type="json_schema", field="response", schema=schema)]
+    with pytest.raises(DeclarativeSpecError, match="unknown schema type"):
+        validate_declarative_spec(spec(checks=checks))
+
+
+def test_listwise_declarative_mode_rejected():
+    with pytest.raises(DeclarativeSpecError, match="pointwise"):
+        validate_declarative_spec(spec(mode="listwise"))
+
+
+def test_pointwise_declarative_mode_accepted():
+    validate_declarative_spec(spec(mode="pointwise"))

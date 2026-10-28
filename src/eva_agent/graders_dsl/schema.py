@@ -22,6 +22,8 @@ class DeclarativeSpecError(ValueError):
 def validate_declarative_spec(spec: GraderSpec) -> None:
     if spec.level != "declarative":
         raise DeclarativeSpecError("only declarative graders are supported here")
+    if spec.mode != "pointwise":
+        raise DeclarativeSpecError("declarative graders support pointwise mode only")
     checks = spec.checks
     if not checks:
         raise DeclarativeSpecError("declarative grader requires checks")
@@ -64,8 +66,9 @@ def validate_schema_subset(schema: Any, *, depth: int = 0) -> None:
     if unknown:
         raise DeclarativeSpecError(f"unknown schema key: {sorted(unknown)[0]}")
 
-    if "type" in schema and schema["type"] not in _ALLOWED_SCHEMA_TYPES:
-        raise DeclarativeSpecError(f"unknown schema type: {schema['type']!r}")
+    declared_type = schema.get("type")
+    if "type" in schema and (not isinstance(declared_type, str) or declared_type not in _ALLOWED_SCHEMA_TYPES):
+        raise DeclarativeSpecError(f"unknown schema type: {declared_type!r}")
     if "enum" in schema and (not isinstance(schema["enum"], list) or not schema["enum"]):
         raise DeclarativeSpecError("enum must be a non-empty list")
     if "required" in schema:
