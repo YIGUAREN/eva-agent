@@ -9,7 +9,7 @@ from typing import Any, cast
 import httpcore
 from httpcore import AsyncNetworkBackend, AsyncNetworkStream
 
-from eva_agent.adapters.target.base import TargetRequest, TargetResponse
+from eva_agent.adapters.target.base import TargetRequest, TargetResponse, TargetResponseError
 from eva_agent.security.target_policy import SecurityPolicyError, ValidatedTarget
 
 
@@ -41,7 +41,7 @@ class PinnedNetworkBackend(AsyncNetworkBackend):
         if host.lower() != self._host:
             raise SecurityPolicyError(f"unexpected host during connect: {host!r}")
 
-        last_error: OSError | None = None
+        last_error: Exception | None = None
         for address in self._addresses:
             try:
                 return await self._inner.connect_tcp(
@@ -51,9 +51,21 @@ class PinnedNetworkBackend(AsyncNetworkBackend):
                     local_address=local_address,
                     socket_options=socket_options,
                 )
-            except OSError as exc:
+            # httpcore's anyio/trio backends map socket failures to ConnectError /
+            # ConnectTimeout; OSError is kept as a guard for third-party backends that
+            # surface the raw socket error instead.
+            except (httpcore.ConnectError, httpcore.ConnectTimeout, OSError) as exc:
                 last_error = exc
-        raise last_error or OSError("no pinned address available")
+
+        # A connect timeout stays a timeout so the transport can map it to the builtin
+        # TimeoutError contract; every other last cause becomes a domain error.
+        if isinstance(last_error, httpcore.TimeoutException):
+            raise last_error
+        if last_error is None:
+            raise TargetResponseError(f"no pinned address available for {self._host}")
+        raise TargetResponseError(
+            f"could not connect to any pinned address for {self._host}: {last_error}"
+        ) from last_error
 
     async def connect_unix_socket(
         self,
