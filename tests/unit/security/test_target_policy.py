@@ -1,3 +1,4 @@
+import socket
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,31 @@ def test_public_addresses_allowed(address: str):
     assert is_denied(address) is False
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        "2002:7f00:1::",  # 6to4 embedding 127.0.0.1
+        "2001::1",  # Teredo
+        "64:ff9b::7f00:1",  # NAT64 well-known prefix embedding 127.0.0.1
+        "64:ff9b:1::1",  # local-use NAT64
+        "::ffff:0:127.0.0.1",  # IPv4-translated
+        "::127.0.0.1",  # deprecated IPv4-compatible
+        "fec0::1",  # deprecated site-local
+    ],
+)
+def test_denied_ipv6_transition_addresses(address: str):
+    assert is_denied(address) is True
+
+
+@pytest.mark.parametrize("address", ["1.1.1.1", "2606:4700:4700::1111"])
+async def test_public_addresses_still_validate(address: str):
+    target = openai_target("https://api.example.com/v1")
+
+    validated = await TargetPolicy(SecurityPolicy(), resolver=resolver(address)).validate(target)
+
+    assert validated.addresses == (address,)
+
+
 async def test_https_public_target_is_accepted():
     target = openai_target("https://api.example.com/v1")
 
@@ -113,6 +139,23 @@ async def test_invalid_urls_are_rejected(url: str):
         await TargetPolicy(SecurityPolicy(), resolver=resolver("93.184.216.34")).validate(openai_target(url))
 
 
+async def test_empty_userinfo_is_rejected():
+    with pytest.raises(SecurityPolicyError, match="must not contain credentials"):
+        await TargetPolicy(SecurityPolicy(), resolver=resolver("93.184.216.34")).validate(
+            openai_target("http://@api.example.com/v1")
+        )
+
+
+async def test_resolution_failure_is_wrapped():
+    async def fail(host: str, port: int) -> list[str]:
+        raise socket.gaierror(-2, "Name or service not known")
+
+    with pytest.raises(SecurityPolicyError, match="api.example.com:443") as excinfo:
+        await TargetPolicy(SecurityPolicy(), resolver=fail).validate(openai_target("https://api.example.com/v1"))
+
+    assert "https://" not in str(excinfo.value)
+
+
 def test_load_security_policy(tmp_path: Path):
     path = tmp_path / "policy.yaml"
     path.write_text(
@@ -130,6 +173,21 @@ allowlist: []
 
     assert loaded.demo_targets[0].name == "demo"
     assert loaded.allowlist == []
+
+
+def test_load_security_policy_rejects_origin_with_empty_userinfo(tmp_path: Path):
+    path = tmp_path / "policy.yaml"
+    path.write_text(
+        """
+demo_targets:
+  - name: demo
+    origin: "http://@127.0.0.1:8100"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="credentials"):
+        load_security_policy(path)
 
 
 def test_load_security_policy_rejects_origin_without_port(tmp_path: Path):

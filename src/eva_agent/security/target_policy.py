@@ -33,7 +33,21 @@ _DENIED_V4 = tuple(
     )
 )
 _DENIED_V6 = tuple(
-    ipaddress.ip_network(network) for network in ("::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8")
+    ipaddress.ip_network(network)
+    for network in (
+        "::/128",
+        "::1/128",
+        "::/96",  # deprecated IPv4-compatible, embeds an IPv4 address
+        "::ffff:0:0:0/96",  # IPv4-translated
+        "64:ff9b::/96",  # NAT64 well-known prefix, embeds an IPv4 address
+        "64:ff9b:1::/48",  # local-use NAT64
+        "2001::/32",  # Teredo
+        "2002::/16",  # 6to4, embeds an IPv4 address
+        "fc00::/7",
+        "fec0::/10",  # deprecated site-local
+        "fe80::/10",
+        "ff00::/8",
+    )
 )
 
 
@@ -76,7 +90,7 @@ def parse_origin(origin: str) -> tuple[str, str, int]:
     parsed = urlparse(origin)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("demo target origin must include scheme, host, and port")
-    if parsed.username or parsed.password:
+    if parsed.username is not None or parsed.password is not None:
         raise ValueError("demo target origin must not include credentials")
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         raise ValueError("demo target origin must be scheme://host:port only")
@@ -116,11 +130,13 @@ async def resolve_addresses(host: str, port: int) -> list[str]:
 
 def is_denied(address: str) -> bool:
     ip = ipaddress.ip_address(address)
-    if isinstance(ip, ipaddress.IPv6Address):
-        if ip.ipv4_mapped is not None:
-            return is_denied(str(ip.ipv4_mapped))
-        return any(ip in network for network in _DENIED_V6)
-    return any(ip in network for network in _DENIED_V4)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return is_denied(str(ip.ipv4_mapped))
+    # Belt-and-braces: anything ipaddress does not classify as globally routable is denied.
+    if not ip.is_global:
+        return True
+    networks = _DENIED_V6 if isinstance(ip, ipaddress.IPv6Address) else _DENIED_V4
+    return any(ip in network for network in networks)
 
 
 class TargetPolicy:
@@ -136,7 +152,7 @@ class TargetPolicy:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             raise SecurityPolicyError("target scheme must be http or https")
-        if parsed.username or parsed.password:
+        if parsed.username is not None or parsed.password is not None:
             raise SecurityPolicyError("target URL must not contain credentials")
         if not parsed.hostname:
             raise SecurityPolicyError("target URL must include a host")
@@ -152,7 +168,10 @@ class TargetPolicy:
             for item in self._policy.demo_targets
         )
 
-        addresses = await self._resolver(host, port)
+        try:
+            addresses = await self._resolver(host, port)
+        except OSError:
+            raise SecurityPolicyError(f"target {host}:{port} could not be resolved") from None
         if not addresses:
             raise SecurityPolicyError(f"target {host}:{port} resolved to no addresses")
 
