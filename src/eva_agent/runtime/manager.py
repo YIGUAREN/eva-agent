@@ -16,7 +16,6 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
-from pydantic import ValidationError
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.domain.budget import Budget
@@ -24,7 +23,7 @@ from eva_agent.domain.plan import EvalPlan
 from eva_agent.domain.run import RunInput, RunStatus, validate_run_id
 from eva_agent.graph.build import build_graph
 from eva_agent.graph.dependencies import GraphDependencies
-from eva_agent.graph.plan_validation import PlanValidationError, validate_plan
+from eva_agent.graph.plan_validation import parse_plan_edit
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.dependencies import build_runtime_dependencies
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
@@ -172,14 +171,8 @@ class RunManager:
     @staticmethod
     def _validate_plan_edit(current: object, payload: dict[str, Any], catalog_ids: frozenset[str]) -> None:
         if not isinstance(current, EvalPlan):
-            raise PlanValidationError("plan", "no planned draft to amend")
-        try:
-            candidate = EvalPlan.model_validate(payload)
-            validate_plan(candidate, catalog_ids=set(catalog_ids), original=current)
-        except PlanValidationError:
-            raise
-        except ValidationError as exc:
-            raise PlanValidationError("plan", str(exc)) from exc
+            raise RunStateError("run has no planned draft to amend")
+        parse_plan_edit(payload, catalog_ids=set(catalog_ids), original=current)
 
     async def _sync(self, run_id: str, values: dict[str, Any]) -> None:
         repo = self._require_repo()
@@ -203,7 +196,7 @@ class RunManager:
         graph = self._require_graph()
         run_id = validate_run_id(run_id or f"run_{uuid4().hex[:12]}")
         await repo.create(run_id, run_input, budget)
-        await repo.append_event(run_id, "run.created", {"kind": run_input.kind.value})
+        await self._event_sink(run_id, "run.created", {"kind": run_input.kind.value})
 
         state = {
             "run_id": run_id,
@@ -222,7 +215,7 @@ class RunManager:
             values = await graph.ainvoke(state, self._thread(run_id))
         except Exception as exc:
             await repo.set_status(run_id, RunStatus.FAILED)
-            await repo.append_event(run_id, "run.failed", {"error": str(exc)})
+            await self._event_sink(run_id, "run.failed", {"error": str(exc)})
             raise
         await self._sync(run_id, values)
         return run_id
@@ -256,14 +249,17 @@ class RunManager:
             values = await graph.ainvoke(Command(resume=decision), self._thread(run_id))
         except Exception as exc:
             await repo.set_status(run_id, RunStatus.FAILED)
-            await repo.append_event(run_id, "run.failed", {"error": str(exc)})
+            await self._event_sink(run_id, "run.failed", {"error": str(exc)})
             raise
         await self._sync(run_id, values)
-        await repo.append_event(
-            run_id,
-            "run.approved" if approved else "run.rejected",
-            {"approved": approved},
-        )
+        if values.get("status") is RunStatus.FAILED:
+            await self._event_sink(run_id, "run.failed", {"errors": list(values.get("errors") or [])})
+        else:
+            await self._event_sink(
+                run_id,
+                "run.approved" if approved else "run.rejected",
+                {"approved": approved},
+            )
         return await self.status(run_id)
 
     async def status(self, run_id: str) -> RunStatusView:

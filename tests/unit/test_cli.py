@@ -1,6 +1,8 @@
 import pytest
 
-from eva_agent.cli import build_parser, parse_column_map
+from eva_agent.cli import _exit_code, build_parser, parse_column_map
+from eva_agent.domain.run import RunStatus
+from eva_agent.runtime.manager import RunStatusView
 
 BUDGET_ARGS = [
     "--max-cost-usd",
@@ -80,3 +82,12 @@ def test_report_command_takes_run_id() -> None:
     args = build_parser().parse_args(["run", "report", "run-1"])
 
     assert args.run_id == "run-1"
+
+
+def _view(status: RunStatus) -> RunStatusView:
+    return RunStatusView(run_id="run-1", status=status, plan=None, report_json_path=None, errors=[])
+
+
+def test_exit_code_reports_failed_runs() -> None:
+    assert _exit_code(_view(RunStatus.COMPLETED)) == 0
+    assert _exit_code(_view(RunStatus.FAILED)) == 1

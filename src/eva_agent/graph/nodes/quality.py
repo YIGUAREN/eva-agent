@@ -12,6 +12,7 @@ async def quality_node(state: EvalState, deps: GraphDependencies) -> dict:
     plan = state["plan"]
     evidence = state["evidence"]
     if plan is None or evidence is None:
+        await deps.event_sink(state["run_id"], "quality.failed", {"error": "quality 专家缺少计划或证据"})
         return {"status": RunStatus.FAILED, "errors": ["quality 专家缺少计划或证据"]}
 
     dimension_plan = next(
@@ -19,6 +20,7 @@ async def quality_node(state: EvalState, deps: GraphDependencies) -> dict:
         None,
     )
     if dimension_plan is None:
+        await deps.event_sink(state["run_id"], "quality.failed", {"error": "计划中没有启用的 quality 维度"})
         return {"status": RunStatus.FAILED, "errors": ["计划中没有启用的 quality 维度"]}
 
     expert = QualityExpert(deps.tools, default_sample_size=deps.default_sample_size)

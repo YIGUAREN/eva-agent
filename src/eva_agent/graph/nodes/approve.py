@@ -3,13 +3,11 @@
 from datetime import UTC, datetime
 
 from langgraph.types import interrupt
-from pydantic import ValidationError
 
-from eva_agent.domain.plan import EvalPlan
 from eva_agent.domain.result import Approval
 from eva_agent.domain.run import RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
-from eva_agent.graph.plan_validation import PlanValidationError, validate_plan
+from eva_agent.graph.plan_validation import PlanValidationError, parse_plan_edit
 from eva_agent.graph.state import EvalState
 from eva_agent.runtime.artifacts import run_paths, write_plan_approved
 
@@ -29,23 +27,17 @@ async def approve_node(state: EvalState, deps: GraphDependencies) -> dict:
     edited = decision.get("plan")
     if edited is not None:
         try:
-            candidate = EvalPlan.model_validate(edited)
-            validate_plan(
-                candidate,
-                catalog_ids=set(deps.catalog_ids),
-                original=plan,
-            )
-        except (ValidationError, PlanValidationError) as exc:
+            approved_plan = parse_plan_edit(edited, catalog_ids=set(deps.catalog_ids), original=plan)
+        except PlanValidationError as exc:
             await deps.event_sink(run_id, "plan.rejected", {"error": str(exc)})
             return {"status": RunStatus.FAILED, "errors": [f"计划修改无效: {exc}"]}
-        approved_plan = candidate
 
     approval = Approval(plan=approved_plan, decided_at=datetime.now(UTC))
     paths = run_paths(deps.data_dir, run_id)
     try:
         write_plan_approved(paths, approval)
     except Exception as exc:
-        await deps.event_sink(run_id, "plan.failed", {"error": str(exc)})
+        await deps.event_sink(run_id, "run.failed", {"error": str(exc)})
         return {"status": RunStatus.FAILED, "errors": [f"写入批准计划失败: {exc}"]}
 
     await deps.event_sink(run_id, "plan.approved", {"plan_path": str(paths.plan_approved)})

@@ -36,7 +36,7 @@ async def plan_node(state: EvalState, deps: GraphDependencies) -> dict:
         return await _fail(deps, run_id, f"写入计划草案失败: {exc}", error=str(exc))
 
     await deps.event_sink(
-        state["run_id"],
+        run_id,
         "plan.ready",
         {"plan_path": str(paths.plan_draft)},
     )

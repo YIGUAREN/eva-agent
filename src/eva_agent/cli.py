@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from eva_agent.config.settings import AppConfig, ConfigError, MissingSecretError, load_config
 from eva_agent.domain.budget import Budget
-from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput
+from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput, RunStatus
 from eva_agent.runtime.manager import RunManager, RunStateError, RunStatusView
 
 
@@ -78,6 +78,10 @@ def _view_payload(view: RunStatusView) -> dict[str, Any]:
     }
 
 
+def _exit_code(view: RunStatusView) -> int:
+    return 1 if view.status is RunStatus.FAILED else 0
+
+
 def _load_plan_file(path: str) -> dict[str, Any]:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -119,7 +123,7 @@ async def _start(args: argparse.Namespace, config: AppConfig) -> int:
         run_id = await manager.start(run_input, budget)
         view = await manager.status(run_id)
     print(json.dumps(_view_payload(view), ensure_ascii=False, indent=2))
-    return 0
+    return _exit_code(view)
 
 
 async def _approve(args: argparse.Namespace, config: AppConfig) -> int:
@@ -129,7 +133,7 @@ async def _approve(args: argparse.Namespace, config: AppConfig) -> int:
     async with RunManager.open(config) as manager:
         view = await manager.approve(args.run_id, approved=args.approve, plan=plan)
     print(json.dumps(_view_payload(view), ensure_ascii=False, indent=2))
-    return 0
+    return _exit_code(view)
 
 
 async def _status(args: argparse.Namespace, config: AppConfig) -> int:

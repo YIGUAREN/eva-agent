@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from eva_agent.domain.plan import Dimension, EvalPlan
 
 IMPLEMENTED_DIMENSIONS = frozenset({Dimension.QUALITY})
@@ -72,3 +74,12 @@ def validate_plan(
             raise PlanValidationError("objective", "objective is immutable after planning")
         if plan.evidence_summary != original.evidence_summary:
             raise PlanValidationError("evidence_summary", "evidence_summary is immutable after planning")
+
+
+def parse_plan_edit(payload: object, *, catalog_ids: set[str], original: EvalPlan) -> EvalPlan:
+    try:
+        candidate = EvalPlan.model_validate(payload)
+    except ValidationError as exc:
+        raise PlanValidationError("plan", str(exc)) from exc
+    validate_plan(candidate, catalog_ids=catalog_ids, original=original)
+    return candidate

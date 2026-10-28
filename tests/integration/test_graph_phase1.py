@@ -6,6 +6,7 @@ from langgraph.types import Command
 
 from eva_agent.domain.run import InputKind, RunStatus
 from eva_agent.graph.build import build_graph
+from eva_agent.graph.plan_validation import PlanValidationError
 from eva_agent.runtime.artifacts import run_paths
 from tests.support.runtime import (
     FakePlanner,
@@ -134,6 +135,22 @@ async def test_planner_exception_fails_run(tmp_path: Path) -> None:
 
     assert result["status"] is RunStatus.FAILED
     assert result["errors"] == ["制定评估计划失败: boom"]
+    assert "plan.failed" in events
+
+
+async def test_planner_validation_error_fails_run(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict | None = None) -> None:
+        events.append(event_type)
+
+    planner = FakePlanner(error=PlanValidationError("dimensions", "duplicate dimension"))
+    app = build_graph(dependencies(tmp_path, planner=planner, event_sink=sink))
+
+    result = await app.ainvoke(initial_state(paste_input()))
+
+    assert result["status"] is RunStatus.FAILED
+    assert result["errors"] == ["评估计划无效: dimensions: duplicate dimension"]
     assert "plan.failed" in events
 
 
