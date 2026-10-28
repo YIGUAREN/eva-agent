@@ -1,7 +1,7 @@
 import pytest
 
 from eva_agent.domain.budget import Budget
-from eva_agent.domain.grader import GraderSpec
+from eva_agent.domain.grader import CheckSpec, GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.graph.plan_validation import PlanValidationError, validate_plan
 
@@ -102,7 +102,13 @@ def test_declarative_grader_is_rejected() -> None:
                 DimensionPlan(
                     dimension=Dimension.QUALITY,
                     enabled=True,
-                    graders=[GraderSpec(level="declarative", name="x")],
+                    graders=[
+                        GraderSpec(
+                            level="declarative",
+                            name="x",
+                            checks=[CheckSpec(type="json_parse", field="response")],
+                        )
+                    ],
                 )
             ]
         }
