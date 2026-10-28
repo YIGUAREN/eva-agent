@@ -18,6 +18,9 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.scripts]
+eva = "eva_agent.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
