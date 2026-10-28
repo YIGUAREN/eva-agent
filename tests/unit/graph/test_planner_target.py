@@ -91,6 +91,24 @@ def target_evidence(tmp_path: Path) -> EvidenceBundle:
     )
 
 
+def custom_target_evidence(
+    tmp_path: Path,
+    target_payload: dict,
+    target_spec: TargetSpec,
+) -> EvidenceBundle:
+    root = tmp_path / "evidence"
+    root.mkdir()
+    payload = {"target": target_payload, "prompts": ["q1", "q2"]}
+    (root / "target.json").write_text(json.dumps(payload), encoding="utf-8")
+    return EvidenceBundle(
+        kind=InputKind.TARGET,
+        root=str(root),
+        target=target_spec,
+        target_prompts=["q1", "q2"],
+        manifest_sha256="a" * 64,
+    )
+
+
 def declarative(name: str, field: str, threshold: float) -> GraderSpec:
     return GraderSpec(
         level="declarative",
@@ -186,3 +204,47 @@ async def test_target_prompt_marks_prompts_as_untrusted(tmp_path: Path):
     assert "<evidence>" in prompt
     assert prompt.index("<evidence>") < prompt.index("q1") < prompt.index("</evidence>")
     assert "untrusted" in prompt
+
+
+async def test_target_prompt_renders_only_name_kind_provider_and_model(tmp_path: Path):
+    spec = TargetSpec(
+        name="leaky",
+        kind=TargetKind.HTTP_JSON,
+        provider="acme",
+        model="m-1",
+        url="https://example.invalid/secret-endpoint",
+        method="POST",
+        headers={"Content-Type": "application/x-secret-marker"},
+        request_template={"prompt": "{{prompt}}"},
+        response_path="$.output",
+    )
+    payload_target = spec.model_dump(mode="json")
+    payload_target["base_url"] = "https://base.example.invalid/secret-base"
+    payload_target["header_env"] = {"X-Api-Key": "TARGET_API_KEY"}
+    structured = FakeStructured(target_output())
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+
+    await planner.plan(custom_target_evidence(tmp_path, payload_target, spec), budget())
+
+    prompt = structured.prompts[0]
+    for rendered in ('"name": "leaky"', '"kind": "http_json"', '"provider": "acme"', '"model": "m-1"'):
+        assert rendered in prompt
+    for leaked in (
+        "base_url",
+        "https://base.example.invalid/secret-base",
+        "https://example.invalid/secret-endpoint",
+        "request_template",
+        "application/x-secret-marker",
+        "TARGET_API_KEY",
+        "$.output",
+    ):
+        assert leaked not in prompt
+
+
+async def test_target_prompt_states_unused_dimensions_need_skip_reason(tmp_path: Path):
+    structured = FakeStructured(target_output())
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+
+    await planner.plan(target_evidence(tmp_path), budget())
+
+    assert "未启用的维度必须出现在 skipped 中并给出非空理由" in structured.prompts[0]
