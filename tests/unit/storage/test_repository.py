@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.domain.budget import Budget
+from eva_agent.domain.plan import EvalPlan
 from eva_agent.domain.run import InputKind, PastedInput, RunInput, RunStatus
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
 from eva_agent.storage.models import RunEventCounterRow, RunEventRow, RunRow
@@ -150,3 +151,37 @@ async def test_deleting_run_cascades_events_and_counter(
         counter = await session.get(RunEventCounterRow, "run-1")
     assert event_count == 0
     assert counter is None
+
+
+async def test_set_plan_and_budget(repo: RunRepository) -> None:
+    await repo.create("run-1", sample_input(), sample_budget())
+    plan = EvalPlan(
+        objective="o",
+        evidence_summary="e",
+        dimensions=[],
+        skipped=[],
+        budget=sample_budget(),
+    )
+    updated_budget = Budget(max_cost_usd=2.0, max_wall_clock_s=60.0, max_target_requests=1)
+
+    await repo.set_plan("run-1", plan)
+    await repo.set_budget("run-1", updated_budget)
+    row = await repo.get("run-1")
+
+    assert row is not None
+    assert row.plan_json is not None
+    assert row.plan_json["objective"] == "o"
+    assert row.budget_json["max_cost_usd"] == 2.0
+
+
+async def test_set_plan_unknown_run_raises(repo: RunRepository) -> None:
+    plan = EvalPlan(
+        objective="o",
+        evidence_summary="e",
+        dimensions=[],
+        skipped=[],
+        budget=sample_budget(),
+    )
+
+    with pytest.raises(KeyError):
+        await repo.set_plan("missing", plan)

@@ -4,6 +4,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.domain.budget import Budget
+from eva_agent.domain.plan import EvalPlan
 from eva_agent.domain.run import RunInput, RunStatus
 from eva_agent.storage.models import RunEventCounterRow, RunEventRow, RunRow
 
@@ -51,3 +52,19 @@ class RunRepository:
             session.add(RunEventRow(run_id=run_id, seq=seq, type=event_type, payload_json=payload or {}))
             await session.commit()
             return seq
+
+    async def set_plan(self, run_id: str, plan: EvalPlan) -> None:
+        async with self._session_factory() as session:
+            row = await session.get(RunRow, run_id)
+            if row is None:
+                raise KeyError(run_id)
+            row.plan_json = plan.model_dump(mode="json")
+            await session.commit()
+
+    async def set_budget(self, run_id: str, budget: Budget) -> None:
+        async with self._session_factory() as session:
+            row = await session.get(RunRow, run_id)
+            if row is None:
+                raise KeyError(run_id)
+            row.budget_json = budget.model_dump(mode="json")
+            await session.commit()
