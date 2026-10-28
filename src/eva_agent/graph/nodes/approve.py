@@ -42,10 +42,16 @@ async def approve_node(state: EvalState, deps: GraphDependencies) -> dict:
 
     approval = Approval(plan=approved_plan, decided_at=datetime.now(UTC))
     paths = run_paths(deps.data_dir, run_id)
-    write_plan_approved(paths, approval)
+    try:
+        write_plan_approved(paths, approval)
+    except Exception as exc:
+        await deps.event_sink(run_id, "plan.failed", {"error": str(exc)})
+        return {"status": RunStatus.FAILED, "errors": [f"写入批准计划失败: {exc}"]}
+
     await deps.event_sink(run_id, "plan.approved", {"plan_path": str(paths.plan_approved)})
     return {
         "approval": approval,
         "plan": approved_plan,
+        "budget": approved_plan.budget,
         "status": RunStatus.RUNNING,
     }

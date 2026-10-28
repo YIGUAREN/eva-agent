@@ -106,13 +106,34 @@ async def test_upload_is_rejected_without_calling_planner(tmp_path: Path) -> Non
     assert planner.calls == 0
 
 
+async def test_valid_plan_edit_updates_budget_and_completes(tmp_path: Path) -> None:
+    app = build_graph(dependencies(tmp_path), MemorySaver())
+    await app.ainvoke(initial_state(paste_input()), CONFIG)
+    edited = sample_plan().model_dump(mode="json")
+    edited["dimensions"][0]["sample_size"] = 2
+    edited["budget"]["max_cost_usd"] = 2.0
+
+    await app.ainvoke(Command(resume={"approved": True, "plan": edited}), CONFIG)
+    snapshot = await app.aget_state(CONFIG)
+
+    assert snapshot.values["status"] is RunStatus.COMPLETED
+    assert snapshot.values["budget"].max_cost_usd == 2.0
+    assert snapshot.values["plan"].budget.max_cost_usd == 2.0
+
+
 async def test_planner_exception_fails_run(tmp_path: Path) -> None:
-    app = build_graph(dependencies(tmp_path, planner=FakePlanner(error=RuntimeError("boom"))))
+    events: list[str] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict | None = None) -> None:
+        events.append(event_type)
+
+    app = build_graph(dependencies(tmp_path, planner=FakePlanner(error=RuntimeError("boom")), event_sink=sink))
 
     result = await app.ainvoke(initial_state(paste_input()))
 
     assert result["status"] is RunStatus.FAILED
     assert result["errors"] == ["制定评估计划失败: boom"]
+    assert "plan.failed" in events
 
 
 async def test_dataset_run_end_to_end(tmp_path: Path) -> None:
@@ -138,8 +159,13 @@ async def test_dataset_run_end_to_end(tmp_path: Path) -> None:
 
 
 async def test_quality_failure_still_writes_report(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict | None = None) -> None:
+        events.append(event_type)
+
     app = build_graph(
-        dependencies(tmp_path, planner=FakePlanner(plan=sample_plan())),
+        dependencies(tmp_path, planner=FakePlanner(plan=sample_plan()), event_sink=sink),
         MemorySaver(),
     )
     await app.ainvoke(initial_state(paste_input(query="q", response=None)), CONFIG)
@@ -149,4 +175,26 @@ async def test_quality_failure_still_writes_report(tmp_path: Path) -> None:
 
     assert snapshot.values["status"] is RunStatus.FAILED
     assert snapshot.values["expert_results"][0].status == "failed"
+    assert "quality.failed" in events
     assert run_paths(tmp_path / "data", "run-1").report_json.is_file()
+
+
+async def test_unscored_grader_results_emit_quality_failed(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict | None = None) -> None:
+        events.append(event_type)
+
+    app = build_graph(
+        dependencies(tmp_path, runner=FakeRunner(unscored=True), event_sink=sink),
+        MemorySaver(),
+    )
+    await app.ainvoke(initial_state(paste_input()), CONFIG)
+
+    await app.ainvoke(Command(resume={"approved": True}), CONFIG)
+    snapshot = await app.aget_state(CONFIG)
+
+    assert snapshot.values["status"] is RunStatus.FAILED
+    assert snapshot.values["expert_results"][0].status == "failed"
+    assert "quality.failed" in events
+    assert "quality.completed" not in events

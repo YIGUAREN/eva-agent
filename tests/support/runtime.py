@@ -93,15 +93,36 @@ class FakePlanner:
 
 
 class FakeRunner:
-    def __init__(self, *, score: float = 0.8, error: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        score: float = 0.8,
+        error: str | None = None,
+        unscored: bool = False,
+    ) -> None:
         self._score = score
         self._error = error
+        self._unscored = unscored
         self.calls = 0
 
     async def run(self, specs: list[GraderSpec], rows: list[dict[str, str]]) -> GraderRunOutput:
         self.calls += 1
         if self._error is not None:
             raise RuntimeError(self._error)
+        if self._unscored:
+            return GraderRunOutput(
+                outcomes=[
+                    GraderSampleOutcome(
+                        grader=spec.name,
+                        sample_index=index,
+                        score=None,
+                        error="grader unavailable",
+                    )
+                    for spec in specs
+                    for index in range(len(rows))
+                ],
+                duration_ms=5,
+            )
         return GraderRunOutput(
             outcomes=[
                 GraderSampleOutcome(grader=spec.name, sample_index=index, score=self._score)

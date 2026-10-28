@@ -38,10 +38,12 @@ async def quality_node(state: EvalState, deps: GraphDependencies) -> dict:
             usage=Usage(),
             error=str(exc),
         )
+
+    if result.status == "failed":
         await deps.event_sink(
             state["run_id"],
             "quality.failed",
-            {"error": str(exc)},
+            {"error": result.error, "summary": result.summary},
         )
     else:
         await deps.event_sink(

@@ -4,6 +4,7 @@ import pytest
 
 from eva_agent.domain.plan import Dimension
 from eva_agent.domain.run import RunStatus
+from eva_agent.graph.plan_validation import PlanValidationError
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.manager import RunManager, RunStateError
 from tests.support.runtime import (
@@ -52,16 +53,25 @@ async def test_rejection_cancels_without_grading(tmp_path: Path) -> None:
     assert view.report_json_path is None
 
 
-async def test_invalid_plan_edit_fails_and_keeps_plan(tmp_path: Path) -> None:
+async def test_invalid_plan_edit_is_rejected_without_consuming_interrupt(tmp_path: Path) -> None:
     async with RunManager.open(fake_config(tmp_path), dependencies=dependencies(tmp_path)) as manager:
         await manager.start(paste_input(), budget(), run_id="run-1")
         edited = sample_plan().model_dump(mode="json")
         edited["objective"] = "另一个目标"
-        view = await manager.approve("run-1", approved=True, plan=edited)
 
-    assert view.status is RunStatus.FAILED
+        with pytest.raises(PlanValidationError):
+            await manager.approve("run-1", approved=True, plan=edited)
+        waiting = await manager.status("run-1")
+        assert waiting.status is RunStatus.WAITING_APPROVAL
+
+        valid = sample_plan().model_dump(mode="json")
+        valid["dimensions"][0]["sample_size"] = 2
+        valid["budget"]["max_cost_usd"] = 2.0
+        view = await manager.approve("run-1", approved=True, plan=valid)
+
+    assert view.status is RunStatus.COMPLETED
     assert view.plan is not None
-    assert any("计划修改无效" in error for error in view.errors)
+    assert view.plan.budget.max_cost_usd == 2.0
 
 
 async def test_unknown_run_raises(tmp_path: Path) -> None:
@@ -107,3 +117,17 @@ async def test_planner_failure_marks_run_failed(tmp_path: Path) -> None:
 
     assert view.status is RunStatus.FAILED
     assert view.errors == ["制定评估计划失败: boom"]
+
+
+async def test_event_sink_failure_is_logged_not_raised(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    async with RunManager.open(fake_config(tmp_path), dependencies=dependencies(tmp_path)) as manager:
+        await manager.start(paste_input(), budget(), run_id="run-1")
+        repo = manager._require_repo()
+
+        async def failing_append(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("db down")
+
+        repo.append_event = failing_append  # type: ignore[method-assign]
+        await manager._event_sink("run-1", "plan.ready", {})
+
+    assert "db down" in caplog.text

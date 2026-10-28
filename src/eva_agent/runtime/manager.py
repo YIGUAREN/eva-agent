@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -15,6 +16,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.domain.budget import Budget
@@ -22,10 +24,13 @@ from eva_agent.domain.plan import EvalPlan
 from eva_agent.domain.run import RunInput, RunStatus, validate_run_id
 from eva_agent.graph.build import build_graph
 from eva_agent.graph.dependencies import GraphDependencies
+from eva_agent.graph.plan_validation import PlanValidationError, validate_plan
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.dependencies import build_runtime_dependencies
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
 from eva_agent.storage.repository import RunRepository
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [
     ("eva_agent.domain.budget", "Budget"),
@@ -84,6 +89,7 @@ class RunManager:
         self._engine: Any = None
         self._repo: RunRepository | None = None
         self._graph: Any = None
+        self._dependencies: GraphDependencies | None = None
 
     @classmethod
     @asynccontextmanager
@@ -120,6 +126,7 @@ class RunManager:
             self._checkpoint_conn = conn
 
         base = self._base_dependencies or build_runtime_dependencies(self._config)
+        self._dependencies = base
         self._graph = build_graph(replace(base, event_sink=self._event_sink), self._checkpointer)
 
     async def close(self) -> None:
@@ -138,7 +145,10 @@ class RunManager:
     ) -> None:
         if self._repo is None:
             raise RuntimeError("RunManager.setup() must run before emitting events")
-        await self._repo.append_event(run_id, event_type, payload)
+        try:
+            await self._repo.append_event(run_id, event_type, payload)
+        except Exception:
+            logger.warning("failed to persist event '%s' for run '%s'", event_type, run_id, exc_info=True)
 
     @staticmethod
     def _thread(run_id: str) -> dict[str, Any]:
@@ -154,11 +164,31 @@ class RunManager:
             raise RuntimeError("RunManager.setup() must run before graph access")
         return self._graph
 
+    def _require_dependencies(self) -> GraphDependencies:
+        if self._dependencies is None:
+            raise RuntimeError("RunManager.setup() must run before dependency access")
+        return self._dependencies
+
+    @staticmethod
+    def _validate_plan_edit(current: object, payload: dict[str, Any], catalog_ids: frozenset[str]) -> None:
+        if not isinstance(current, EvalPlan):
+            raise PlanValidationError("plan", "no planned draft to amend")
+        try:
+            candidate = EvalPlan.model_validate(payload)
+            validate_plan(candidate, catalog_ids=set(catalog_ids), original=current)
+        except PlanValidationError:
+            raise
+        except ValidationError as exc:
+            raise PlanValidationError("plan", str(exc)) from exc
+
     async def _sync(self, run_id: str, values: dict[str, Any]) -> None:
         repo = self._require_repo()
         plan = values.get("plan")
         if plan is not None:
             await repo.set_plan(run_id, plan)
+        budget = values.get("budget")
+        if budget is not None:
+            await repo.set_budget(run_id, budget)
         status = values.get("status", RunStatus.RUNNING)
         await repo.set_status(run_id, status if isinstance(status, RunStatus) else RunStatus(status))
 
@@ -215,7 +245,12 @@ class RunManager:
             raise RunStateError(f"run '{run_id}' is not waiting for approval")
 
         decision: dict[str, Any] = {"approved": approved}
-        if plan is not None:
+        if approved and plan is not None:
+            self._validate_plan_edit(
+                snapshot.values.get("plan"),
+                plan,
+                self._require_dependencies().catalog_ids,
+            )
             decision["plan"] = plan
         try:
             values = await graph.ainvoke(Command(resume=decision), self._thread(run_id))
