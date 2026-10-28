@@ -7,14 +7,20 @@ from eva_agent.domain.probe import ProbeRecord
 from eva_agent.runtime.probe import ProbeStore, ProbeStoreError
 
 
-def record(index: int, *, status: int | None = 200, error: str | None = None) -> ProbeRecord:
+def record(
+    index: int,
+    *,
+    status: int | None = 200,
+    error: str | None = None,
+    response_text: str = "a",
+) -> ProbeRecord:
     return ProbeRecord(
         index=index,
         prompt="q",
         started_at=datetime(2026, 1, 1, tzinfo=UTC),
         status_code=status,
         latency_ms=10,
-        response_text="a",
+        response_text=response_text,
         error=error,
     )
 
@@ -53,6 +59,42 @@ def test_missing_file_reads_empty(tmp_path: Path):
 def test_malformed_line_rejected(tmp_path: Path):
     path = tmp_path / "target_probe.jsonl"
     path.write_text("{not json}\n", encoding="utf-8")
+
+    with pytest.raises(ProbeStoreError, match="invalid probe record"):
+        ProbeStore(path).read()
+
+
+def test_unicode_line_separators_round_trip(tmp_path: Path):
+    store = ProbeStore(tmp_path / "target_probe.jsonl")
+    store.reset()
+    separator_text = "a\u2028b\u2029c\u0085d"
+    store.append(record(0, response_text=separator_text))
+
+    records = store.read()
+
+    assert [item.index for item in records] == [0]
+    assert records[0].response_text == separator_text
+
+
+def test_append_writes_lf_terminated_lines(tmp_path: Path):
+    path = tmp_path / "target_probe.jsonl"
+    store = ProbeStore(path)
+    store.reset()
+    store.append(record(0))
+    store.append(record(1))
+    store.append(record(2))
+
+    raw = path.read_bytes()
+    parts = raw.split(b"\n")
+
+    assert len(parts) == 4
+    assert parts[-1] == b""
+    assert b"\r" not in raw
+
+
+def test_trailing_partial_line_is_rejected(tmp_path: Path):
+    path = tmp_path / "target_probe.jsonl"
+    path.write_bytes(b'{"index": 0}')
 
     with pytest.raises(ProbeStoreError, match="invalid probe record"):
         ProbeStore(path).read()

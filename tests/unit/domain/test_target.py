@@ -71,6 +71,38 @@ def test_headers_and_header_env_must_not_overlap():
         )
 
 
+def test_http_json_headers_accept_ordinary_values():
+    target = TargetSpec(
+        name="x",
+        kind=TargetKind.HTTP_JSON,
+        provider="custom",
+        model="m",
+        url="https://example.com/chat",
+        method="POST",
+        request_template={"q": "{{prompt}}"},
+        response_path="$.answer",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert target.headers == {"Content-Type": "application/json"}
+
+
+@pytest.mark.parametrize("header", ["Authorization", "X-Api-Key", "X_Access_Token"])
+def test_literal_credential_headers_rejected(header: str):
+    with pytest.raises(ValidationError, match="may carry a credential"):
+        TargetSpec(
+            name="x",
+            kind=TargetKind.HTTP_JSON,
+            provider="custom",
+            model="m",
+            url="https://example.com/chat",
+            method="POST",
+            request_template={"q": "{{prompt}}"},
+            response_path="$.answer",
+            headers={header: "Bearer x"},
+        )
+
+
 def test_usage_paths_requires_at_least_one_path():
     with pytest.raises(ValidationError, match="at least one token path"):
         UsagePaths()

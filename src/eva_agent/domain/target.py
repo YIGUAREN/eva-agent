@@ -78,7 +78,32 @@ class TargetSpec(BaseModel):
 
         if set(self.headers) & set(self.header_env):
             raise ValueError("headers and header_env must not share a key")
+        _reject_credential_headers(self.headers)
         return self
+
+
+_CREDENTIAL_HEADER_SEGMENTS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "key",
+        "password",
+        "passwd",
+        "secret",
+        "signature",
+        "token",
+    }
+)
+
+
+def _reject_credential_headers(headers: dict[str, str]) -> None:
+    for name in headers:
+        segments = name.strip().lower().replace("_", "-").split("-")
+        if any(segment in _CREDENTIAL_HEADER_SEGMENTS for segment in segments):
+            raise ValueError(f"literal header {name!r} may carry a credential; put it in header_env instead")
 
 
 def _contains_prompt(value: Any) -> bool:

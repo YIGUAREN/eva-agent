@@ -23,15 +23,17 @@ class ProbeStore:
 
     def append(self, record: ProbeRecord) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as handle:
+        with self._path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(record.model_dump_json())
             handle.write("\n")
 
     def read(self) -> list[ProbeRecord]:
         if not self._path.is_file():
             return []
+        text = self._path.read_bytes().decode("utf-8")
         records: list[ProbeRecord] = []
-        for line_number, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), start=1):
+        for line_number, raw_line in enumerate(text.split("\n"), start=1):
+            line = raw_line.removesuffix("\r")
             if not line.strip():
                 continue
             try:
