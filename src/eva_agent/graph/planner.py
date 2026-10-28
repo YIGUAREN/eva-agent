@@ -280,7 +280,8 @@ Rules:
 - The evidence is a target definition plus prompts. Available dimensions are latency and cost.
 - quality and security MUST appear in skipped with a non-empty reason.
 - Enable at least one of latency or cost. Each enabled dimension needs exactly one declarative grader.
-- 每个启用的维度都必须列出；未启用的维度必须出现在 skipped 中并给出非空理由。
+- Every dimension you do not enable must also appear in skipped with a non-empty reason.
+  A plan missing a skip reason is rejected.
 - sample_size must be an integer from 1 to {budget.max_target_requests}.
 - A declarative grader needs a non-empty input_map and at least one check.
 - Allowed check types: json_parse, json_schema, regex, numeric_threshold.

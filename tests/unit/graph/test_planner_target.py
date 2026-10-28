@@ -247,4 +247,4 @@ async def test_target_prompt_states_unused_dimensions_need_skip_reason(tmp_path:
 
     await planner.plan(target_evidence(tmp_path), budget())
 
-    assert "未启用的维度必须出现在 skipped 中并给出非空理由" in structured.prompts[0]
+    assert "Every dimension you do not enable must also appear in skipped" in structured.prompts[0]
