@@ -9,16 +9,6 @@ from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
 from eva_agent.domain.run import InputKind, PastedInput, validate_run_id
 
 
-def build_paste_evidence(pasted: PastedInput) -> EvidenceBundle:
-    """Phase-0 compatibility helper; removed when the phase-1 intake lands."""
-    payload = pasted.model_dump(exclude_none=True)
-    return EvidenceBundle(
-        kind=InputKind.PASTE,
-        pasted=payload,
-        manifest_sha256=sha256_bytes(canonical_json(payload)),
-    )
-
-
 def write_paste_workspace(run_id: str, pasted: PastedInput, data_dir: str | Path) -> EvidenceBundle:
     validate_run_id(run_id)
     evidence_dir = Path(data_dir) / "runs" / run_id / "evidence"
