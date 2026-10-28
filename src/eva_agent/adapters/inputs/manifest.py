@@ -8,6 +8,7 @@ from pathlib import Path
 
 from eva_agent.domain.evidence import EvidenceFile
 from eva_agent.domain.run import DatasetRef, InputKind
+from eva_agent.domain.target import TargetSpec
 
 
 def canonical_json(payload: dict) -> bytes:
@@ -25,6 +26,8 @@ def write_manifest(
     files: list[EvidenceFile],
     pasted: dict[str, str] | None,
     dataset: DatasetRef | None,
+    target: TargetSpec | None = None,
+    target_prompts: list[str] | None = None,
 ) -> str:
     """Write manifest.json and return the sha256 of its canonical form."""
     payload = {
@@ -32,6 +35,8 @@ def write_manifest(
         "files": [item.model_dump(mode="json") for item in files],
         "pasted": pasted,
         "dataset": dataset.model_dump(mode="json") if dataset is not None else None,
+        "target": target.model_dump(mode="json") if target is not None else None,
+        "target_prompts": list(target_prompts or []),
     }
     canonical = canonical_json(payload)
     evidence_dir.mkdir(parents=True, exist_ok=True)

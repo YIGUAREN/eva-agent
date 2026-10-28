@@ -18,6 +18,7 @@ class RunPaths:
     evidence: Path
     plan_draft: Path
     plan_approved: Path
+    target_probe: Path
     report_markdown: Path
     report_json: Path
 
@@ -30,6 +31,7 @@ def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
         evidence=root / "evidence",
         plan_draft=root / "plan.draft.yaml",
         plan_approved=root / "plan.approved.yaml",
+        target_probe=root / "target_probe.jsonl",
         report_markdown=root / "report.md",
         report_json=root / "report.json",
     )
