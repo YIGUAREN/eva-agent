@@ -60,7 +60,7 @@ def test_unimplemented_dimension_cannot_be_enabled() -> None:
         update={
             "dimensions": [
                 *valid_plan().dimensions,
-                DimensionPlan(dimension=Dimension.COST, enabled=True),
+                DimensionPlan(dimension=Dimension.SECURITY, enabled=True),
             ]
         }
     )
@@ -95,26 +95,26 @@ def test_unknown_builtin_id_is_rejected() -> None:
         validate_plan(plan, catalog_ids={"correctness"})
 
 
-def test_declarative_grader_is_rejected() -> None:
+def test_declarative_grader_is_rejected_on_quality() -> None:
+    spec = GraderSpec(
+        level="declarative",
+        name="x",
+        input_map={"response": "$.response"},
+        checks=[CheckSpec(type="json_parse", field="response")],
+    )
     plan = valid_plan().model_copy(
         update={
             "dimensions": [
                 DimensionPlan(
                     dimension=Dimension.QUALITY,
                     enabled=True,
-                    graders=[
-                        GraderSpec(
-                            level="declarative",
-                            name="x",
-                            checks=[CheckSpec(type="json_parse", field="response")],
-                        )
-                    ],
+                    graders=[spec],
                 )
             ]
         }
     )
 
-    with pytest.raises(PlanValidationError, match="declarative"):
+    with pytest.raises(PlanValidationError, match="only valid for target"):
         validate_plan(plan, catalog_ids={"correctness"})
 
 

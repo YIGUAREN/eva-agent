@@ -20,7 +20,7 @@ from langgraph.types import Command
 from eva_agent.config.settings import AppConfig
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.plan import EvalPlan
-from eva_agent.domain.run import RunInput, RunStatus, validate_run_id
+from eva_agent.domain.run import InputKind, RunInput, RunStatus, validate_run_id
 from eva_agent.graph.build import build_graph
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.plan_validation import parse_plan_edit
@@ -169,10 +169,15 @@ class RunManager:
         return self._dependencies
 
     @staticmethod
-    def _validate_plan_edit(current: object, payload: dict[str, Any], catalog_ids: frozenset[str]) -> None:
+    def _validate_plan_edit(
+        current: object,
+        payload: dict[str, Any],
+        catalog_ids: frozenset[str],
+        input_kind: InputKind,
+    ) -> None:
         if not isinstance(current, EvalPlan):
             raise RunStateError("run has no planned draft to amend")
-        parse_plan_edit(payload, catalog_ids=set(catalog_ids), original=current)
+        parse_plan_edit(payload, catalog_ids=set(catalog_ids), original=current, input_kind=input_kind)
 
     async def _sync(self, run_id: str, values: dict[str, Any]) -> None:
         repo = self._require_repo()
@@ -239,10 +244,13 @@ class RunManager:
 
         decision: dict[str, Any] = {"approved": approved}
         if approved and plan is not None:
+            snapshot_input = snapshot.values.get("input")
+            input_kind = snapshot_input.kind if isinstance(snapshot_input, RunInput) else InputKind.PASTE
             self._validate_plan_edit(
                 snapshot.values.get("plan"),
                 plan,
                 self._require_dependencies().catalog_ids,
+                input_kind,
             )
             decision["plan"] = plan
         try:

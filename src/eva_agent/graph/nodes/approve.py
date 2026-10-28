@@ -27,7 +27,12 @@ async def approve_node(state: EvalState, deps: GraphDependencies) -> dict:
     edited = decision.get("plan")
     if edited is not None:
         try:
-            approved_plan = parse_plan_edit(edited, catalog_ids=set(deps.catalog_ids), original=plan)
+            approved_plan = parse_plan_edit(
+                edited,
+                catalog_ids=set(deps.catalog_ids),
+                original=plan,
+                input_kind=state["input"].kind,
+            )
         except PlanValidationError as exc:
             await deps.event_sink(run_id, "plan.rejected", {"error": str(exc)})
             return {"status": RunStatus.FAILED, "errors": [f"计划修改无效: {exc}"]}
