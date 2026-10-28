@@ -75,6 +75,27 @@ class OpenJudgeSettings(BaseModel):
     grader_timeout_s: float = Field(default=120.0, gt=0)
 
 
+class TargetSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    targets_path: str = Field(default="config/targets.yaml", min_length=1)
+    timeout_s: float = Field(default=30.0, gt=0)
+    max_response_bytes: int = Field(default=1_048_576, gt=0)
+    token_encoding: str = Field(default="cl100k_base", min_length=1)
+
+
+class PricingSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(default="config/pricing.yaml", min_length=1)
+
+
+class SecuritySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    policy_path: str = Field(default="config/security_policy.yaml", min_length=1)
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -85,6 +106,9 @@ class AppConfig(BaseModel):
     storage: StorageSettings
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     openjudge: OpenJudgeSettings = Field(default_factory=OpenJudgeSettings)
+    target: TargetSettings = Field(default_factory=TargetSettings)
+    pricing: PricingSettings = Field(default_factory=PricingSettings)
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
 
 
 def load_config(path: Path) -> AppConfig:

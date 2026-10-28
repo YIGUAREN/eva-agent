@@ -2,6 +2,8 @@
 
 from eva_agent.adapters.inputs.dataset import write_dataset_workspace
 from eva_agent.adapters.inputs.paste import write_paste_workspace
+from eva_agent.adapters.inputs.target import write_target_workspace
+from eva_agent.adapters.target.secrets import validate_target_env
 from eva_agent.domain.run import InputKind, RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.state import EvalState
@@ -25,6 +27,27 @@ async def intake_node(state: EvalState, deps: GraphDependencies) -> dict:
                 deps.data_dir,
                 max_bytes=deps.max_input_bytes,
                 max_rows=deps.max_dataset_rows,
+            )
+        elif run_input.kind is InputKind.TARGET:
+            if run_input.target_ref is None:
+                raise ValueError("target input is missing a target reference")
+            target = deps.targets.get(run_input.target_ref)
+            if target is None:
+                raise ValueError(f"unknown target '{run_input.target_ref}'")
+            if deps.policy is None:
+                raise ValueError("target input requires a security policy")
+            validate_target_env(target, deps.env)
+            validated = await deps.policy.validate(target)
+            await deps.event_sink(
+                run_id,
+                "target.validated",
+                {"target": target.name, "kind": target.kind.value, "demo": validated.demo},
+            )
+            evidence = write_target_workspace(
+                run_id,
+                target,
+                run_input.target_prompts,
+                deps.data_dir,
             )
         else:
             raise ValueError(f"input kind '{run_input.kind.value}' is not supported in phase 1")

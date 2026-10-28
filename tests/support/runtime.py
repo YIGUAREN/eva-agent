@@ -19,6 +19,7 @@ from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
 from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput, RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.events import noop_event_sink
+from eva_agent.graph.state import EvalState
 from eva_agent.tools.dataset import build_sample_dataset_tool
 from eva_agent.tools.evidence import build_read_evidence_tool
 from eva_agent.tools.graders import RunGradersInput
@@ -200,7 +201,7 @@ def fake_config(tmp_path: Path) -> AppConfig:
     )
 
 
-def initial_state(run_input: RunInput, *, run_id: str = "run-1") -> dict:
+def initial_state(run_input: RunInput, *, run_id: str = "run-1") -> EvalState:
     return {
         "run_id": run_id,
         "input": run_input,
