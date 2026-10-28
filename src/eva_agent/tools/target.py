@@ -199,4 +199,5 @@ def _error_summary(exc: Exception) -> str:
         return f"secret: {exc}"
     if isinstance(exc, TargetResponseError):
         return f"response: {exc}"
-    return f"{type(exc).__name__}: {exc}"
+    # 未知异常只保留类型名：httpcore/h11 的消息可能回显 header 值，不能落进 probe 记录。
+    return type(exc).__name__

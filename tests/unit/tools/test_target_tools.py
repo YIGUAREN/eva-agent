@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import h11
 import pytest
 
 from eva_agent.adapters.target import tokens as tokens_module
@@ -204,6 +205,25 @@ async def test_timeout_is_recorded():
     )
 
     assert record.error == "timeout"
+
+
+async def test_unclassified_error_does_not_leak_secret():
+    secret = "sk-live-do-not-log"
+    # httpcore re-raises h11 errors verbatim, including the Authorization header value.
+    leak = h11.LocalProtocolError(f"Illegal header value b'Bearer {secret}\\n'")
+    tool = build(FakePolicy(), FakeTransport(error=leak), env={"API_KEY": secret})
+
+    record = await tool.handler(
+        CallTargetInput(
+            index=0, target=openai_target("API_KEY"), prompt="q", run_id="r", timeout_s=5
+        )
+    )
+
+    assert record.status_code is None
+    assert record.error == "LocalProtocolError"
+    assert secret not in str(record)
+    assert secret not in record.model_dump_json()
+    assert all(secret not in str(value) for value in record.model_dump().values())
 
 
 async def test_render_error_is_recorded():
