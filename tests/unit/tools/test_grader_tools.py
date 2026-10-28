@@ -56,9 +56,12 @@ async def test_registry_contains_phase_one_tools() -> None:
     registry, _ = build_registry()
 
     assert registry.names() == [
+        "count_tokens",
         "generate_rubric",
         "list_graders",
         "read_evidence",
+        "read_target_probe",
+        "run_declarative_checks",
         "run_graders",
         "sample_dataset",
     ]
