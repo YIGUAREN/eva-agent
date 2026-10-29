@@ -2,7 +2,7 @@
 
 自主评测 agent：给定证据包、文本、数据集或在线 API，自动调查证据、制定评测计划、执行质量 / 耗时 / 成本 / 安全四维评测，产出带证据引用的报告与可复用 grader。
 
-当前进度：**阶段 1（输入适配 + 证据工作区 + OpenJudge + quality 专家 + 报告 + 计划确认）**。图包含 `intake → plan → approve → dispatch → quality → merge → analyze → report`，运行前需要人工确认计划；upload 与 zip/tar 解压留待沙箱阶段。
+当前进度：**阶段 2（目标 API 评测 + latency/cost 专家 + SSRF 防护 + demo target）**。图包含 `intake → plan → approve → probe → dispatch → {quality | latency | cost} → merge → analyze → report`；target 输入在批准后共享一次 probe，然后并行执行 latency/cost。upload 与 zip/tar 解压留待沙箱阶段，security 专家留待阶段 3。
 
 ## 开发环境
 
@@ -15,6 +15,20 @@ cp config/config.example.yaml config/config.yaml
 ```
 
 运行前请准备 `config/config.yaml` 与 `.env`；CLI 与演示脚本会通过 `python-dotenv` 加载 `.env`。
+
+## Demo target
+
+```bash
+uv run uvicorn demo_target.app:app --host 127.0.0.1 --port 8100
+uv run python scripts/phase2_demo.py \
+  --target demo \
+  --prompt "如何重置密码？" \
+  --prompt "退款多久到账？" \
+  --max-cost-usd 0.5 \
+  --max-wall-clock-s 600 \
+  --max-target-requests 5 \
+  --yes
+```
 
 ## 检查与测试
 
@@ -39,8 +53,9 @@ src/eva_agent/
 tests/
 ├── unit/
 └── integration/
+demo_target/     # 本地 OpenAI 兼容演示目标
 ```
 
 ## 规格与计划
 
-设计规格见本地文件 `docs/superpowers/specs/2026-10-27-eva-agent-design.md`，阶段 1 设计见 `docs/superpowers/specs/2026-10-27-phase-1-design.md`，阶段 1 计划见本地文件 `docs/superpowers/plans/2026-10-27-phase-1-dataset-e2e.md`。这些文档是本地工作笔记，不随仓库提交。
+设计规格见本地文件 `docs/superpowers/specs/2026-10-27-eva-agent-design.md`，阶段 1 设计见 `docs/superpowers/specs/2026-10-27-phase-1-design.md`，阶段 2 设计见 `docs/superpowers/specs/2026-10-28-phase-2-target-eval-design.md`，阶段 1 计划见 `docs/superpowers/plans/2026-10-27-phase-1-dataset-e2e.md`，阶段 2 计划见 `docs/superpowers/plans/2026-10-28-phase-2-target-eval.md`。
