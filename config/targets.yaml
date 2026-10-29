@@ -1,0 +1,6 @@
+targets:
+  demo:
+    kind: openai_compatible
+    provider: demo
+    base_url: http://127.0.0.1:8100/v1
+    model: demo-echo

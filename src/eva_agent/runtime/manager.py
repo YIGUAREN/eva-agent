@@ -36,12 +36,16 @@ ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [
     ("eva_agent.domain.dataset", "DatasetSample"),
     ("eva_agent.domain.evidence", "EvidenceBundle"),
     ("eva_agent.domain.evidence", "EvidenceFile"),
+    ("eva_agent.domain.grader", "CheckSpec"),
     ("eva_agent.domain.grader", "GraderSpec"),
     ("eva_agent.domain.grader", "RubricSpec"),
+    ("eva_agent.domain.grader", "ScoreSpec"),
     ("eva_agent.domain.plan", "Dimension"),
     ("eva_agent.domain.plan", "DimensionPlan"),
     ("eva_agent.domain.plan", "EvalPlan"),
     ("eva_agent.domain.plan", "SkippedDimension"),
+    ("eva_agent.domain.probe", "ProbeRecord"),
+    ("eva_agent.domain.probe", "ProbeSummary"),
     ("eva_agent.domain.result", "Approval"),
     ("eva_agent.domain.result", "DimensionResult"),
     ("eva_agent.domain.result", "EvidenceRef"),
@@ -57,6 +61,9 @@ ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [
     ("eva_agent.domain.run", "PastedInput"),
     ("eva_agent.domain.run", "RunInput"),
     ("eva_agent.domain.run", "RunStatus"),
+    ("eva_agent.domain.target", "TargetKind"),
+    ("eva_agent.domain.target", "TargetSpec"),
+    ("eva_agent.domain.target", "UsagePaths"),
 ]
 
 
@@ -173,11 +180,17 @@ class RunManager:
         current: object,
         payload: dict[str, Any],
         catalog_ids: frozenset[str],
+        *,
         input_kind: InputKind,
     ) -> None:
         if not isinstance(current, EvalPlan):
             raise RunStateError("run has no planned draft to amend")
-        parse_plan_edit(payload, catalog_ids=set(catalog_ids), original=current, input_kind=input_kind)
+        parse_plan_edit(
+            payload,
+            catalog_ids=set(catalog_ids),
+            original=current,
+            input_kind=input_kind,
+        )
 
     async def _sync(self, run_id: str, values: dict[str, Any]) -> None:
         repo = self._require_repo()
@@ -199,6 +212,9 @@ class RunManager:
     ) -> str:
         repo = self._require_repo()
         graph = self._require_graph()
+        dependencies = self._require_dependencies()
+        if run_input.kind is InputKind.TARGET and run_input.target_ref not in dependencies.targets:
+            raise ValueError(f"unknown target '{run_input.target_ref}'")
         run_id = validate_run_id(run_id or f"run_{uuid4().hex[:12]}")
         await repo.create(run_id, run_input, budget)
         await self._event_sink(run_id, "run.created", {"kind": run_input.kind.value})
@@ -209,6 +225,7 @@ class RunManager:
             "budget": budget,
             "evidence": None,
             "plan": None,
+            "probe": None,
             "status": RunStatus.QUEUED,
             "errors": [],
             "approval": None,
@@ -244,13 +261,14 @@ class RunManager:
 
         decision: dict[str, Any] = {"approved": approved}
         if approved and plan is not None:
-            snapshot_input = snapshot.values.get("input")
-            input_kind = snapshot_input.kind if isinstance(snapshot_input, RunInput) else InputKind.PASTE
+            run_input = snapshot.values.get("input")
+            if not isinstance(run_input, RunInput):
+                raise RunStateError(f"run '{run_id}' has no recorded input")
             self._validate_plan_edit(
                 snapshot.values.get("plan"),
                 plan,
                 self._require_dependencies().catalog_ids,
-                input_kind,
+                input_kind=run_input.kind,
             )
             decision["plan"] = plan
         try:

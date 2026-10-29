@@ -8,6 +8,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
+from eva_agent.config.settings import (
+    AppConfig,
+    PricingSettings,
+    SecuritySettings,
+    TargetSettings,
+)
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.grader import CheckSpec, GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
@@ -21,7 +27,53 @@ from eva_agent.tools.declarative import build_run_declarative_checks_tool
 from eva_agent.tools.pricing import build_get_pricing_tool
 from eva_agent.tools.registry import ToolRegistry, ToolSpec
 from eva_agent.tools.target import CallTargetInput, build_read_target_probe_tool
-from tests.support.runtime import FakePlanner, initial_state
+from tests.support.runtime import FakePlanner, fake_config, initial_state
+
+
+def _write_yaml(path: Path, body: str) -> Path:
+    path.write_text(body.strip() + "\n", encoding="utf-8")
+    return path
+
+
+def runtime_config(tmp_path: Path, *, timeout_s: float = 30.0) -> AppConfig:
+    targets = _write_yaml(
+        tmp_path / "targets.yaml",
+        """
+targets:
+  demo:
+    kind: openai_compatible
+    provider: demo
+    base_url: http://127.0.0.1:8100/v1
+    model: demo-echo
+""",
+    )
+    pricing = _write_yaml(
+        tmp_path / "pricing.yaml",
+        """
+models:
+  - provider: demo
+    model: demo-echo
+    input_per_million: 0
+    output_per_million: 0
+""",
+    )
+    policy = _write_yaml(
+        tmp_path / "security_policy.yaml",
+        """
+active_scan_enabled: false
+demo_targets:
+  - name: demo
+    origin: "http://127.0.0.1:8100"
+allowlist: []
+""",
+    )
+    return fake_config(tmp_path).model_copy(
+        update={
+            "target": TargetSettings(targets_path=str(targets), timeout_s=timeout_s),
+            "pricing": PricingSettings(path=str(pricing)),
+            "security": SecuritySettings(policy_path=str(policy)),
+        }
+    )
 
 
 def demo_target() -> TargetSpec:
