@@ -20,6 +20,7 @@ async def report_node(state: EvalState, deps: GraphDependencies) -> dict:
             run_id=state["run_id"],
             plan=plan,
             merged=merged,
+            probe=state.get("probe"),
             generated_at=datetime.now(UTC),
         )
     except Exception as exc:
