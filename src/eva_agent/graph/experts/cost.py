@@ -69,14 +69,14 @@ def summarize_cost(
     mean_cost = total_cost / len(costs) if costs else None
     per_1k = mean_cost * Decimal(1000) if mean_cost is not None else None
 
-    if not rows or aggregate.scored == 0:
+    if not rows or aggregate.scored == 0 or aggregate.score == 0:
         status = "failed"
         if not rows:
             error = "no samples with token usage"
             summary = f"cost 失败：{total} 个样本均缺少 token 用量"
         else:
             error = "all declarative checks failed"
-            summary = f"cost 失败：{len(rows)} 个计价样本均无 L2 分数"
+            summary = f"cost 失败：{len(rows)} 个计价样本的 L2 检查全部失败"
     elif len(rows) < total or aggregate.scored < len(rows):
         status = "partial"
         error = None

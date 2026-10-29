@@ -161,14 +161,14 @@ def summarize_latency(
     p95 = nearest_rank(latencies, 95)
     p99 = nearest_rank(latencies, 99)
 
-    if not successful or aggregate.scored == 0:
+    if not successful or aggregate.scored == 0 or aggregate.score == 0:
         status = "failed"
         if not successful:
             error = "no successful target requests"
             summary = f"latency 失败：{total} 次请求均未成功"
         else:
             error = "all declarative checks failed"
-            summary = f"latency 失败：{len(successful)} 个成功样本均无 L2 分数"
+            summary = f"latency 失败：{len(successful)} 个成功样本的 L2 检查全部失败"
     elif failures or aggregate.scored < len(successful):
         status = "partial"
         error = None

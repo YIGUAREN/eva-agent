@@ -192,6 +192,21 @@ async def test_declarative_score_drives_the_dimension_score(tmp_path: Path) -> N
     assert result.metrics["grader_scores"] == {"latency_budget": 0.5}
 
 
+async def test_all_successful_samples_failing_checks_fail_the_dimension(tmp_path: Path) -> None:
+    result = await run_expert(
+        tmp_path,
+        [record(0, 100), record(1, 200)],
+        latency_plan(sample_size=2, threshold=50),
+    )
+
+    assert result.status == "failed"
+    assert result.score == 0.0
+    assert result.confidence == 1.0
+    assert result.error == "all declarative checks failed"
+    assert result.metrics["grader_scores"] == {"latency_budget": 0.0}
+    assert result.metrics["errors"] == ["numeric_threshold failed"]
+
+
 async def test_p95_above_the_l2_threshold_adds_a_low_finding(tmp_path: Path) -> None:
     result = await run_expert(
         tmp_path,

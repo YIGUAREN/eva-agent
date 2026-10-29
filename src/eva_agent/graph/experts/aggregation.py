@@ -41,10 +41,13 @@ def aggregate_graders(outcomes: list[GraderRunOutput], sample_size: int) -> Grad
     for output in outcomes:
         for outcome in output.outcomes:
             calls += 1
+            cause = outcome.error or outcome.reason
             if outcome.score is None:
-                if outcome.error:
-                    errors.add(outcome.error)
+                if cause:
+                    errors.add(cause)
                 continue
+            if outcome.score == 0 and cause:
+                errors.add(cause)
             scored += 1
             by_sample[outcome.sample_index].append(outcome.score)
             by_grader[outcome.grader].append(outcome.score)

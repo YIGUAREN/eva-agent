@@ -204,6 +204,21 @@ async def test_declarative_cost_check_drives_the_score(tmp_path: Path) -> None:
     assert result.metrics["grader_scores"] == {"cost_budget": 0.5}
 
 
+async def test_all_samples_failing_checks_fail_the_dimension(tmp_path: Path) -> None:
+    result = await run_expert(
+        tmp_path,
+        [record(0), record(1)],
+        cost_plan(sample_size=2, threshold=0.001),
+    )
+
+    assert result.status == "failed"
+    assert result.score == 0.0
+    assert result.confidence == 1.0
+    assert result.error == "all declarative checks failed"
+    assert result.metrics["grader_scores"] == {"cost_budget": 0.0}
+    assert result.metrics["errors"] == ["numeric_threshold failed"]
+
+
 async def test_unknown_pricing_fails_closed(tmp_path: Path) -> None:
     evidence = probe_evidence(tmp_path, [record(0)])
 

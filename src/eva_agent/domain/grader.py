@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class RubricSpec(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     name: str = Field(min_length=1)
     description: str = ""
@@ -16,7 +16,7 @@ class RubricSpec(BaseModel):
 
 
 class CheckSpec(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     name: str | None = Field(default=None, min_length=1)
     type: Literal["json_parse", "json_schema", "regex", "numeric_threshold"]
@@ -54,7 +54,7 @@ class CheckSpec(BaseModel):
 
 
 class ScoreSpec(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     aggregation: Literal["weighted_mean"] = "weighted_mean"
     weights: dict[str, float] = Field(default_factory=dict)
