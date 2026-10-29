@@ -40,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     inputs = start.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--query")
     inputs.add_argument("--dataset")
+    inputs.add_argument("--target")
+    start.add_argument("--prompt", action="append", default=[])
     start.add_argument("--response")
     start.add_argument("--context")
     start.add_argument("--dataset-format", choices=["csv", "jsonl"], default="csv")
@@ -82,6 +84,39 @@ def _exit_code(view: RunStatusView) -> int:
     return 1 if view.status is RunStatus.FAILED else 0
 
 
+def build_run_input(args: argparse.Namespace) -> RunInput:
+    if args.target:
+        if not args.prompt:
+            raise ValueError("--target requires at least one --prompt")
+        return RunInput(
+            kind=InputKind.TARGET,
+            objective=args.objective,
+            target_ref=args.target,
+            target_prompts=list(args.prompt),
+        )
+    if args.prompt:
+        raise ValueError("--prompt requires --target")
+    if args.dataset:
+        return RunInput(
+            kind=InputKind.DATASET,
+            objective=args.objective,
+            dataset=DatasetRef(
+                path=args.dataset,
+                format=args.dataset_format,
+                column_map=parse_column_map(args.column_map),
+            ),
+        )
+    return RunInput(
+        kind=InputKind.PASTE,
+        objective=args.objective,
+        paste=PastedInput(
+            query=args.query,
+            response=args.response,
+            context=args.context,
+        ),
+    )
+
+
 def _load_plan_file(path: str) -> dict[str, Any]:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -93,27 +128,7 @@ def _load_plan_file(path: str) -> dict[str, Any]:
 
 
 async def _start(args: argparse.Namespace, config: AppConfig) -> int:
-    if args.dataset:
-        run_input = RunInput(
-            kind=InputKind.DATASET,
-            objective=args.objective,
-            dataset=DatasetRef(
-                path=args.dataset,
-                format=args.dataset_format,
-                column_map=parse_column_map(args.column_map),
-            ),
-        )
-    else:
-        run_input = RunInput(
-            kind=InputKind.PASTE,
-            objective=args.objective,
-            paste=PastedInput(
-                query=args.query,
-                response=args.response,
-                context=args.context,
-            ),
-        )
-
+    run_input = build_run_input(args)
     budget = Budget(
         max_cost_usd=args.max_cost_usd,
         max_wall_clock_s=args.max_wall_clock_s,
