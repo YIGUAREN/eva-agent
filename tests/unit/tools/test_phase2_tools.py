@@ -28,9 +28,7 @@ async def test_count_tokens_tool(monkeypatch: pytest.MonkeyPatch):
 
 
 async def test_get_pricing_tool():
-    price = ModelPrice(
-        provider="demo", model="demo-echo", input_per_million=Decimal(0), output_per_million=Decimal(0)
-    )
+    price = ModelPrice(provider="demo", model="demo-echo", input_per_million=Decimal(0), output_per_million=Decimal(0))
     tool = build_get_pricing_tool(PricingTable([price]))
 
     output = await tool.handler(GetPricingInput(provider="demo", model="demo-echo"))

@@ -139,11 +139,7 @@ class LlmPlanner:
             payload = json.loads(raw)
             raw_target = payload.get("target")
             raw_target = raw_target if isinstance(raw_target, dict) else {}
-            target = {
-                key: raw_target[key]
-                for key in ("name", "kind", "provider", "model")
-                if key in raw_target
-            }
+            target = {key: raw_target[key] for key in ("name", "kind", "provider", "model") if key in raw_target}
             prompts = list(evidence.target_prompts)
             text = json.dumps(
                 {"kind": "target", "target": target, "prompts": prompts},

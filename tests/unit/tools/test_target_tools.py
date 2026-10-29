@@ -109,9 +109,7 @@ async def test_success_records_target_usage():
     transport = FakeTransport(TargetResponse(200, {}, response_body("ok")))
     tool = build(FakePolicy(), transport)
 
-    record = await tool.handler(
-        CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5)
-    )
+    record = await tool.handler(CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5))
 
     assert record.status_code == 200
     assert record.response_text == "ok"
@@ -140,9 +138,7 @@ async def test_empty_response_marks_usage_missing():
     transport = FakeTransport(TargetResponse(200, {}, response_body("", usage=False)))
     tool = build(FakePolicy(), transport)
 
-    record = await tool.handler(
-        CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5)
-    )
+    record = await tool.handler(CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5))
 
     assert record.usage_source == "missing"
     assert record.input_tokens is None
@@ -152,9 +148,7 @@ async def test_http_error_is_recorded():
     transport = FakeTransport(TargetResponse(500, {}, b"boom"))
     tool = build(FakePolicy(), transport)
 
-    record = await tool.handler(
-        CallTargetInput(index=1, target=openai_target(), prompt="q", run_id="r", timeout_s=5)
-    )
+    record = await tool.handler(CallTargetInput(index=1, target=openai_target(), prompt="q", run_id="r", timeout_s=5))
 
     assert record.status_code == 500
     assert record.error == "http 500"
@@ -166,9 +160,7 @@ async def test_redirect_is_not_followed():
     transport = FakeTransport(TargetResponse(302, {"location": "http://evil"}, b""))
     tool = build(FakePolicy(), transport)
 
-    record = await tool.handler(
-        CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5)
-    )
+    record = await tool.handler(CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5))
 
     assert record.error == "redirect_not_allowed"
 
@@ -176,9 +168,7 @@ async def test_redirect_is_not_followed():
 async def test_policy_error_is_recorded():
     tool = build(FakePolicy(SecurityPolicyError("denied")), FakeTransport())
 
-    record = await tool.handler(
-        CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5)
-    )
+    record = await tool.handler(CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5))
 
     assert record.status_code is None
     assert record.error == "policy: denied"
@@ -200,9 +190,7 @@ async def test_missing_secret_is_recorded():
 async def test_timeout_is_recorded():
     tool = build(FakePolicy(), FakeTransport(error=TimeoutError()))
 
-    record = await tool.handler(
-        CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5)
-    )
+    record = await tool.handler(CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5))
 
     assert record.error == "timeout"
 
@@ -214,9 +202,7 @@ async def test_unclassified_error_does_not_leak_secret():
     tool = build(FakePolicy(), FakeTransport(error=leak), env={"API_KEY": secret})
 
     record = await tool.handler(
-        CallTargetInput(
-            index=0, target=openai_target("API_KEY"), prompt="q", run_id="r", timeout_s=5
-        )
+        CallTargetInput(index=0, target=openai_target("API_KEY"), prompt="q", run_id="r", timeout_s=5)
     )
 
     assert record.status_code is None
@@ -229,9 +215,7 @@ async def test_unclassified_error_does_not_leak_secret():
 async def test_render_error_is_recorded():
     tool = build(FakePolicy(), FakeTransport(TargetResponse(200, {}, b"not json")))
 
-    record = await tool.handler(
-        CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5)
-    )
+    record = await tool.handler(CallTargetInput(index=0, target=openai_target(), prompt="q", run_id="r", timeout_s=5))
 
     assert record.status_code == 200
     assert record.error is not None and record.error.startswith("response:")
