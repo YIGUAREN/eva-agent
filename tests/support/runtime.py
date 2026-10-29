@@ -208,6 +208,7 @@ def initial_state(run_input: RunInput, *, run_id: str = "run-1") -> EvalState:
         "budget": budget(),
         "evidence": None,
         "plan": None,
+        "probe": None,
         "status": RunStatus.QUEUED,
         "errors": [],
         "approval": None,

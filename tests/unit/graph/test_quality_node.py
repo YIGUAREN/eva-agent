@@ -3,8 +3,8 @@ from typing import cast
 
 from eva_agent.domain.run import RunStatus
 from eva_agent.graph.nodes.quality import quality_node
-from eva_agent.graph.state import EvalState
-from tests.support.runtime import dependencies, initial_state, paste_input, sample_plan
+from eva_agent.graph.state import ExpertState
+from tests.support.runtime import budget, dependencies
 
 
 async def test_missing_evidence_emits_quality_failed(tmp_path: Path) -> None:
@@ -14,7 +14,16 @@ async def test_missing_evidence_emits_quality_failed(tmp_path: Path) -> None:
         events.append(event_type)
 
     deps = dependencies(tmp_path, event_sink=sink)
-    state = cast(EvalState, {**initial_state(paste_input()), "plan": sample_plan(), "evidence": None})
+    state = cast(
+        ExpertState,
+        {
+            "run_id": "run-1",
+            "dimension_plan": None,
+            "evidence": None,
+            "probe": None,
+            "budget": budget(),
+        },
+    )
 
     result = await quality_node(state, deps)
 

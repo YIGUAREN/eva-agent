@@ -5,23 +5,27 @@ from eva_agent.domain.result import DimensionResult, Usage
 from eva_agent.domain.run import RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.experts.quality import QualityExpert
-from eva_agent.graph.state import EvalState
+from eva_agent.graph.state import ExpertState
 
 
-async def quality_node(state: EvalState, deps: GraphDependencies) -> dict:
-    plan = state["plan"]
-    evidence = state["evidence"]
-    if plan is None or evidence is None:
-        await deps.event_sink(state["run_id"], "quality.failed", {"error": "quality 专家缺少计划或证据"})
+async def quality_node(state: ExpertState, deps: GraphDependencies) -> dict:
+    dimension_plan = state.get("dimension_plan")
+    evidence = state.get("evidence")
+    if dimension_plan is None or evidence is None:
+        await deps.event_sink(
+            state["run_id"],
+            "quality.failed",
+            {"error": "quality 专家缺少计划或证据"},
+        )
         return {"status": RunStatus.FAILED, "errors": ["quality 专家缺少计划或证据"]}
 
-    dimension_plan = next(
-        (item for item in plan.dimensions if item.enabled and item.dimension is Dimension.QUALITY),
-        None,
-    )
-    if dimension_plan is None:
-        await deps.event_sink(state["run_id"], "quality.failed", {"error": "计划中没有启用的 quality 维度"})
-        return {"status": RunStatus.FAILED, "errors": ["计划中没有启用的 quality 维度"]}
+    if dimension_plan.dimension is not Dimension.QUALITY:
+        await deps.event_sink(
+            state["run_id"],
+            "quality.failed",
+            {"error": "quality 专家收到错误的维度"},
+        )
+        return {"status": RunStatus.FAILED, "errors": ["quality 专家收到错误的维度"]}
 
     expert = QualityExpert(deps.tools, default_sample_size=deps.default_sample_size)
     try:
