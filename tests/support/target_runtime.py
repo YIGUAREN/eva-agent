@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -87,7 +88,7 @@ class FakePolicy:
         )
 
 
-def build_tools(calls: list[str]) -> ToolRegistry:
+def build_tools(calls: list[str], *, pricing_error: str | None = None) -> ToolRegistry:
     registry = ToolRegistry()
 
     async def target_handler(payload: CallTargetInput) -> ProbeRecord:
@@ -119,20 +120,26 @@ def build_tools(calls: list[str]) -> ToolRegistry:
     )
     registry.register(build_read_target_probe_tool())
     registry.register(build_run_declarative_checks_tool(max_rows=100))
-    registry.register(
-        build_get_pricing_tool(
-            PricingTable(
-                [
-                    ModelPrice(
-                        provider="demo",
-                        model="demo-echo",
-                        input_per_million=Decimal("1"),
-                        output_per_million=Decimal("2"),
-                    )
-                ]
-            )
+    pricing = build_get_pricing_tool(
+        PricingTable(
+            [
+                ModelPrice(
+                    provider="demo",
+                    model="demo-echo",
+                    input_per_million=Decimal("1"),
+                    output_per_million=Decimal("2"),
+                )
+            ]
         )
     )
+    if pricing_error is not None:
+
+        async def failing_pricing(_: Any) -> Any:
+            raise RuntimeError(pricing_error)
+
+        # Only the cost expert resolves pricing, so this fails exactly one dimension.
+        pricing = replace(pricing, handler=failing_pricing)
+    registry.register(pricing)
     return registry
 
 
@@ -140,13 +147,15 @@ def target_dependencies(
     tmp_path: Path,
     calls: list[str],
     events: list[str],
+    *,
+    pricing_error: str | None = None,
 ) -> GraphDependencies:
     async def sink(run_id: str, event_type: str, payload: dict | None = None) -> None:
         events.append(event_type)
 
     return GraphDependencies(
         planner=FakePlanner(plan=target_plan()),
-        tools=build_tools(calls),
+        tools=build_tools(calls, pricing_error=pricing_error),
         catalog_ids=frozenset(),
         data_dir=str(tmp_path / "data"),
         max_input_bytes=1_000_000,
