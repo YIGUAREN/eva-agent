@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 from typing import Any, TypedDict
@@ -22,6 +21,7 @@ from eva_agent.domain.result import (
     Usage,
 )
 from eva_agent.domain.run import InputKind
+from eva_agent.graph.experts.aggregation import aggregate_graders
 from eva_agent.tools.declarative import RunDeclarativeChecksInput
 from eva_agent.tools.registry import ToolRegistry
 from eva_agent.tools.target import ReadTargetProbeInput
@@ -156,28 +156,12 @@ def summarize_latency(
     failures = [record for record in records if not is_successful(record)]
     latencies = [record.latency_ms for record in successful]
 
-    by_sample: dict[int, list[float]] = defaultdict(list)
-    by_grader: dict[str, list[float]] = defaultdict(list)
-    errors: set[str] = set()
-    scored = 0
-    for output in outcomes:
-        for outcome in output.outcomes:
-            if outcome.score is None:
-                if outcome.error:
-                    errors.add(outcome.error)
-                continue
-            scored += 1
-            by_sample[outcome.sample_index].append(outcome.score)
-            by_grader[outcome.grader].append(outcome.score)
-
-    sample_scores = {index: mean(values) for index, values in sorted(by_sample.items())}
-    score = mean(sample_scores.values()) if sample_scores else None
-    confidence = min(1.0, scored / sample_size) if sample_size else 0.0
+    aggregate = aggregate_graders(outcomes, sample_size)
     p50 = nearest_rank(latencies, 50)
     p95 = nearest_rank(latencies, 95)
     p99 = nearest_rank(latencies, 99)
 
-    if not successful or scored == 0:
+    if not successful or aggregate.scored == 0:
         status = "failed"
         if not successful:
             error = "no successful target requests"
@@ -185,12 +169,12 @@ def summarize_latency(
         else:
             error = "all declarative checks failed"
             summary = f"latency 失败：{len(successful)} 个成功样本均无 L2 分数"
-    elif failures or scored < len(successful):
+    elif failures or aggregate.scored < len(successful):
         status = "partial"
         error = None
         summary = (
             f"latency 部分成功：{len(successful)}/{total} 次请求成功，"
-            f"{scored}/{len(successful)} 个成功样本有分数，p95 {p95} ms"
+            f"{aggregate.scored}/{len(successful)} 个成功样本有分数，p95 {p95} ms"
         )
     else:
         status = "ok"
@@ -211,23 +195,20 @@ def summarize_latency(
         "max_ms": max(latencies) if latencies else None,
         "first_token_ms": None,
         "first_token_note": "non-streaming target",
-        "grader_scores": {name: round(mean(values), 4) for name, values in by_grader.items()},
-        "scored_sample_count": scored,
-        "sample_size": sample_size,
-        "errors": sorted(errors),
+        **aggregate.metrics(sample_size),
     }
 
     return DimensionResult(
         dimension=Dimension.LATENCY,
         status=status,
-        score=score,
-        confidence=confidence,
+        score=aggregate.score,
+        confidence=aggregate.confidence,
         summary=summary,
         metrics=metrics,
         findings=_findings(records, failures, successful, specs, p95),
         evidence=[EvidenceRef(kind="target_request", locator=PROBE_PATH)],
         usage=Usage(
-            grader_calls=len([item for output in outcomes for item in output.outcomes]),
+            grader_calls=aggregate.calls,
             samples=total,
             duration_ms=sum(output.duration_ms for output in outcomes),
         ),

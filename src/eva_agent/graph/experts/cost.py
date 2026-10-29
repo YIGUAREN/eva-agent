@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from decimal import Decimal
 from pathlib import Path
-from statistics import mean
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -21,6 +19,7 @@ from eva_agent.domain.result import (
     Usage,
 )
 from eva_agent.domain.run import InputKind
+from eva_agent.graph.experts.aggregation import aggregate_graders
 from eva_agent.tools.declarative import RunDeclarativeChecksInput
 from eva_agent.tools.pricing import GetPricingInput
 from eva_agent.tools.registry import ToolRegistry
@@ -64,29 +63,13 @@ def summarize_cost(
     sample_size: int,
 ) -> DimensionResult:
     total = len(records)
-    by_sample: dict[int, list[float]] = defaultdict(list)
-    by_grader: dict[str, list[float]] = defaultdict(list)
-    errors: set[str] = set()
-    scored = 0
-    for output in outcomes:
-        for outcome in output.outcomes:
-            if outcome.score is None:
-                if outcome.error:
-                    errors.add(outcome.error)
-                continue
-            scored += 1
-            by_sample[outcome.sample_index].append(outcome.score)
-            by_grader[outcome.grader].append(outcome.score)
-
-    sample_scores = {index: mean(values) for index, values in sorted(by_sample.items())}
-    score = mean(sample_scores.values()) if sample_scores else None
-    confidence = min(1.0, scored / sample_size) if sample_size else 0.0
+    aggregate = aggregate_graders(outcomes, sample_size)
 
     total_cost = sum(costs, Decimal("0"))
     mean_cost = total_cost / len(costs) if costs else None
     per_1k = mean_cost * Decimal(1000) if mean_cost is not None else None
 
-    if not rows or scored == 0:
+    if not rows or aggregate.scored == 0:
         status = "failed"
         if not rows:
             error = "no samples with token usage"
@@ -94,7 +77,7 @@ def summarize_cost(
         else:
             error = "all declarative checks failed"
             summary = f"cost 失败：{len(rows)} 个计价样本均无 L2 分数"
-    elif len(rows) < total or scored < len(rows):
+    elif len(rows) < total or aggregate.scored < len(rows):
         status = "partial"
         error = None
         summary = f"cost 部分成功：{len(rows)}/{total} 个样本计价，总成本 ${total_cost:.6f}"
@@ -117,23 +100,20 @@ def summarize_cost(
         "cost_total_usd": round(float(total_cost), 6),
         "cost_mean_usd": round(float(mean_cost), 6) if mean_cost is not None else None,
         "cost_per_1k_requests_usd": round(float(per_1k), 6) if per_1k is not None else None,
-        "grader_scores": {name: round(mean(values), 4) for name, values in by_grader.items()},
-        "scored_sample_count": scored,
-        "sample_size": sample_size,
-        "errors": sorted(errors),
+        **aggregate.metrics(sample_size),
     }
 
     return DimensionResult(
         dimension=Dimension.COST,
         status=status,
-        score=score,
-        confidence=confidence,
+        score=aggregate.score,
+        confidence=aggregate.confidence,
         summary=summary,
         metrics=metrics,
         findings=[],
         evidence=[EvidenceRef(kind="target_request", locator=PROBE_PATH)],
         usage=Usage(
-            grader_calls=len([item for output in outcomes for item in output.outcomes]),
+            grader_calls=aggregate.calls,
             samples=total,
             input_tokens=input_total,
             output_tokens=output_total,
