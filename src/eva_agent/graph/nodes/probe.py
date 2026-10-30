@@ -14,7 +14,9 @@ from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.probe import ProbeStore
 from eva_agent.tools.target import CallTargetInput
 
-TARGET_DIMENSIONS = frozenset({Dimension.LATENCY, Dimension.COST})
+TARGET_DIMENSIONS = frozenset(
+    {Dimension.QUALITY, Dimension.LATENCY, Dimension.COST, Dimension.SECURITY}
+)
 
 
 def request_count(plan: EvalPlan) -> int:

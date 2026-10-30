@@ -138,13 +138,14 @@ def test_explicit_max_target_requests_overrides_plan_budget():
     )
 
 
-def test_quality_is_not_implemented_on_target():
+def test_target_quality_rejects_reference_grader():
     plan = target_plan().model_copy(
         update={
             "dimensions": [
                 DimensionPlan(
                     dimension=Dimension.QUALITY,
                     enabled=True,
+                    sample_size=1,
                     graders=[GraderSpec(level="builtin", name="c", builtin_id="correctness")],
                 )
             ],
@@ -156,7 +157,7 @@ def test_quality_is_not_implemented_on_target():
         }
     )
 
-    with pytest.raises(PlanValidationError, match="quality"):
+    with pytest.raises(PlanValidationError, match="only relevance"):
         validate_plan(plan, catalog_ids={"correctness"}, input_kind=InputKind.TARGET)
 
 

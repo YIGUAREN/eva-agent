@@ -66,7 +66,11 @@ def test_unimplemented_dimension_cannot_be_enabled() -> None:
     )
 
     with pytest.raises(PlanValidationError, match="not implemented"):
-        validate_plan(plan, catalog_ids={"correctness"})
+        validate_plan(
+            plan,
+            catalog_ids={"correctness"},
+            implemented=frozenset({Dimension.QUALITY}),
+        )
 
 
 def test_enabled_dimension_requires_a_grader() -> None:
@@ -114,7 +118,7 @@ def test_declarative_grader_is_rejected_on_quality() -> None:
         }
     )
 
-    with pytest.raises(PlanValidationError, match="only valid for target"):
+    with pytest.raises(PlanValidationError, match="only valid for latency and cost"):
         validate_plan(plan, catalog_ids={"correctness"})
 
 

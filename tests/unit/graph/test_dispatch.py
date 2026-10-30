@@ -45,15 +45,20 @@ async def test_dispatch_accepts_target_dimensions(tmp_path) -> None:
     assert events == [("dispatch.ready", {"dimensions": ["latency", "cost"]})]
 
 
-async def test_dispatch_fails_without_a_supported_dimension(tmp_path) -> None:
-    deps = dependencies(tmp_path)
-    plan = target_plan(DimensionPlan(dimension=Dimension.SECURITY, enabled=True))
+async def test_dispatch_accepts_security(tmp_path) -> None:
+    events: list[tuple[str, dict]] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict | None = None) -> None:
+        events.append((event_type, payload or {}))
+
+    deps = dependencies(tmp_path, event_sink=sink)
+    plan = target_plan(DimensionPlan(dimension=Dimension.SECURITY, enabled=True, sample_size=1))
     state = cast(EvalState, {**initial_state(paste_input()), "plan": plan})
 
     result = await dispatch_node(state, deps)
 
-    assert result["status"] is RunStatus.FAILED
-    assert result["errors"] == ["没有可执行的维度"]
+    assert result["status"] is RunStatus.RUNNING
+    assert events == [("dispatch.ready", {"dimensions": ["security"]})]
 
 
 def test_route_experts_sends_one_payload_per_dimension() -> None:

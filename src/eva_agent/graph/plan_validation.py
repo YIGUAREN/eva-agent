@@ -8,8 +8,11 @@ from eva_agent.domain.plan import Dimension, EvalPlan
 from eva_agent.domain.run import InputKind
 from eva_agent.graders_dsl.schema import DeclarativeSpecError, validate_declarative_spec
 
-IMPLEMENTED_DIMENSIONS = frozenset({Dimension.QUALITY, Dimension.LATENCY, Dimension.COST})
-TARGET_DIMENSIONS = frozenset({Dimension.LATENCY, Dimension.COST})
+IMPLEMENTED_DIMENSIONS = frozenset(Dimension)
+TARGET_DIMENSIONS = frozenset(Dimension)
+TARGET_ONLY_DIMENSIONS = frozenset({Dimension.LATENCY, Dimension.COST})
+DECLARATIVE_DIMENSIONS = frozenset({Dimension.LATENCY, Dimension.COST})
+TARGET_QUALITY_BUILTINS = frozenset({"relevance"})
 
 
 class PlanValidationError(ValueError):
@@ -46,21 +49,23 @@ def validate_plan(
         if item.dimension not in implemented:
             raise PlanValidationError(
                 f"{path}.enabled",
-                f"dimension '{item.dimension.value}' is not implemented in phase 2",
+                f"dimension '{item.dimension.value}' is not implemented in phase 3",
             )
-        if item.dimension in TARGET_DIMENSIONS:
-            if input_kind is not InputKind.TARGET:
-                raise PlanValidationError(
-                    f"{path}.enabled",
-                    f"dimension '{item.dimension.value}' requires target input",
-                )
-            if item.sample_size is None:
-                raise PlanValidationError(f"{path}.sample_size", "target dimensions require sample_size")
-        elif input_kind is InputKind.TARGET and item.dimension is Dimension.QUALITY:
+        if item.dimension in TARGET_ONLY_DIMENSIONS and input_kind is not InputKind.TARGET:
             raise PlanValidationError(
                 f"{path}.enabled",
-                "quality on target input is not implemented in phase 2",
+                f"dimension '{item.dimension.value}' requires target input",
             )
+        if input_kind is InputKind.TARGET and item.dimension in TARGET_DIMENSIONS and item.sample_size is None:
+            raise PlanValidationError(f"{path}.sample_size", "target dimensions require sample_size")
+
+        if item.dimension is Dimension.SECURITY:
+            if item.graders:
+                raise PlanValidationError(
+                    f"{path}.graders",
+                    "security graders are fixed by the evaluator; leave graders empty",
+                )
+            continue
 
         if not item.graders:
             raise PlanValidationError(f"{path}.graders", "an enabled dimension needs at least one grader")
@@ -72,16 +77,26 @@ def validate_plan(
             spec_path = f"{path}.graders[{index}]"
             if spec.mode != "pointwise":
                 raise PlanValidationError(f"{spec_path}.mode", "only pointwise graders are supported")
-            if item.dimension in TARGET_DIMENSIONS:
+            if item.dimension in DECLARATIVE_DIMENSIONS:
                 if spec.level != "declarative":
                     raise PlanValidationError(
                         f"{spec_path}.level",
-                        "target dimensions require exactly one declarative grader",
+                        "latency and cost require exactly one declarative grader",
                     )
             elif spec.level == "declarative":
                 raise PlanValidationError(
                     f"{spec_path}.level",
-                    "declarative graders are only valid for target dimensions",
+                    "declarative graders are only valid for latency and cost",
+                )
+            if (
+                item.dimension is Dimension.QUALITY
+                and input_kind is InputKind.TARGET
+                and spec.level == "builtin"
+                and spec.builtin_id not in TARGET_QUALITY_BUILTINS
+            ):
+                raise PlanValidationError(
+                    f"{spec_path}.builtin_id",
+                    "target quality supports only relevance or an llm_rubric grader",
                 )
             if spec.level == "builtin" and (spec.builtin_id is None or spec.builtin_id not in catalog_ids):
                 raise PlanValidationError(
@@ -91,12 +106,12 @@ def validate_plan(
             if spec.level == "llm_rubric" and not (spec.rubric and spec.rubric.strip()):
                 raise PlanValidationError(f"{spec_path}.rubric", "llm_rubric grader requires a rubric")
 
-        if item.dimension in TARGET_DIMENSIONS:
+        if item.dimension in DECLARATIVE_DIMENSIONS:
             declarative = [spec for spec in item.graders if spec.level == "declarative"]
             if len(declarative) != 1:
                 raise PlanValidationError(
                     f"{path}.graders",
-                    "target dimensions require exactly one declarative grader",
+                    "latency and cost require exactly one declarative grader",
                 )
             try:
                 validate_declarative_spec(declarative[0])
@@ -110,7 +125,9 @@ def validate_plan(
         if dimension not in enabled_dimensions and dimension not in skipped:
             raise PlanValidationError("skipped", f"missing skip reason for '{dimension.value}'")
 
-    target_enabled = [item for item in enabled if item.dimension in TARGET_DIMENSIONS]
+    target_enabled = [
+        item for item in enabled if input_kind is InputKind.TARGET and item.dimension in TARGET_DIMENSIONS
+    ]
     if target_enabled:
         probe_count = max(item.sample_size or 0 for item in target_enabled)
         limit = max_target_requests if max_target_requests is not None else plan.budget.max_target_requests

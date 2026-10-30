@@ -159,6 +159,8 @@ async def test_target_planner_builds_latency_and_cost(tmp_path: Path):
     assert "json_parse" in prompt
     assert "q1" in prompt
     assert "max_target_requests=5" in prompt
+    assert '"dimension": "quality"|"latency"|"cost"|"security"' in prompt
+    assert 'security MUST set `"graders": []`' in prompt
 
 
 async def test_target_planner_reads_target_json_not_manifest(tmp_path: Path):
@@ -247,4 +249,4 @@ async def test_target_prompt_states_unused_dimensions_need_skip_reason(tmp_path:
 
     await planner.plan(target_evidence(tmp_path), budget())
 
-    assert "Every dimension you do not enable must also appear in skipped" in structured.prompts[0]
+    assert "Every dimension you do not enable MUST appear in skipped" in structured.prompts[0]
