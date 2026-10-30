@@ -23,11 +23,27 @@ logger = logging.getLogger(__name__)
 
 HANDLED_KINDS = frozenset({"start", "approve", "cancel", "resume"})
 
+TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
+
 REPORT_RECORD_ERROR = "failed to record the run report"
+GENERIC_COMMAND_ERROR = "command failed"
 
 
 class ReportRecordError(RuntimeError):
     """Raised when a completed run's report or artifacts cannot be persisted."""
+
+
+def _public_error(exc: Exception) -> str:
+    """Return error text that is safe to persist.
+
+    Only locally constructed errors may expose their message; anything else can
+    embed absolute paths or raw provider output, which must never reach storage.
+    """
+    if isinstance(exc, ReportRecordError):
+        return REPORT_RECORD_ERROR
+    if isinstance(exc, (RunStateError, ValueError)):
+        return str(exc)
+    return GENERIC_COMMAND_ERROR
 
 
 def _report_version(payload: dict, run_id: str) -> int:
@@ -116,9 +132,8 @@ class RunWorker:
         except Exception as exc:
             logger.warning("command %s (%s) failed", command.id, command.kind, exc_info=True)
             # The underlying error may embed an absolute path, which the plan
-            # forbids in error messages, so keep a generic reason instead.
-            error = REPORT_RECORD_ERROR if isinstance(exc, ReportRecordError) else f"{type(exc).__name__}: {exc}"
-            await self.commands.finish(command.id, "failed", error[:500])
+            # forbids in error messages, so persist only sanitized text.
+            await self.commands.finish(command.id, "failed", _public_error(exc)[:500])
         else:
             await self.commands.finish(command.id, "done")
         return True
@@ -137,7 +152,15 @@ class RunWorker:
             elif status is RunStatus.RUNNING:
                 await self._resume(command.run_id)
         elif command.kind == "resume":
-            await self._resume(command.run_id)
+            if status is RunStatus.RUNNING:
+                await self._resume(command.run_id)
+            elif status not in TERMINAL_STATUSES:
+                # Forwarding a resume blindly would either corrupt the lifecycle
+                # or hide the caller's mistake; name the status so it can be fixed.
+                raise RunStateError(f"run '{command.run_id}' cannot be resumed from status '{status.value}'")
+            # A terminal run cannot be resumed, but the command may be a replay
+            # after a crash following completion; fall through to _after so the
+            # report and artifact rows are repaired.
         elif command.kind == "approve":
             if status is RunStatus.WAITING_APPROVAL:
                 await self.manager.approve(
@@ -171,7 +194,7 @@ class RunWorker:
                 and row.status == RunStatus.RUNNING.value
                 and await self.runs.claim(run_id, from_statuses=(RunStatus.RUNNING,), to_status=RunStatus.FAILED)
             ):
-                await self.runs.set_error(run_id, f"{type(exc).__name__}: {exc}")
+                await self.runs.set_error(run_id, _public_error(exc))
             raise
 
     async def _after(self, run_id: str) -> None:

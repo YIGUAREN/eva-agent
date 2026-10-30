@@ -94,7 +94,7 @@ async def test_worker_failure_does_not_crash_the_loop(tmp_path) -> None:
     assert await worker.tick() is True
     commands = await worker.commands.list_for_run(run_id)
     assert commands[-1].status == "failed"
-    assert "no checkpoint" in (commands[-1].error or "")
+    assert "cannot be resumed from status 'queued'" in (commands[-1].error or "")
     await manager.close()
 
 
@@ -203,6 +203,75 @@ async def test_report_persistence_failure_is_not_leaked_in_the_command_error(tmp
     commands = await worker.commands.list_for_run(run_id)
     assert commands[-1].status == "failed"
     assert commands[-1].error == "failed to record the run report"
+    await manager.close()
+
+
+async def test_duplicate_resume_backfills_report_rows_after_a_crash(tmp_path) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await manager.create_run(paste_input(), budget())
+    await manager.start_existing(run_id)
+    await manager.approve(run_id, approved=True)
+
+    # The run was driven by a resume command that committed COMPLETED, but the
+    # worker crashed before _after persisted the report and artifact rows, so
+    # reset_stale requeued it. Replaying resume must repair the rows.
+    row = await worker.runs.get(run_id)
+    assert row is not None and row.status == RunStatus.COMPLETED.value
+    assert await worker.reports.get(run_id) is None
+    assert await worker.artifacts.get(run_id, "report.json") is None
+
+    await worker.commands.enqueue(run_id, "resume")
+    assert await worker.tick() is True
+
+    snapshot = await worker.reports.get(run_id)
+    assert snapshot is not None and snapshot.payload["run_id"] == run_id
+    assert await worker.artifacts.get(run_id, "report.json") is not None
+    commands = await worker.commands.list_for_run(run_id)
+    assert commands[-1].status == "done"
+    await manager.close()
+
+
+async def test_resume_on_a_run_awaiting_approval_fails_with_the_status(tmp_path, monkeypatch) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await manager.create_run(paste_input(), budget())
+    await worker.commands.enqueue(run_id, "start")
+    await worker.tick()
+    resumed: list[str] = []
+
+    async def fake_resume(rid: str) -> None:
+        resumed.append(rid)
+
+    monkeypatch.setattr(manager, "resume", fake_resume)
+    await worker.commands.enqueue(run_id, "resume")
+    assert await worker.tick() is True
+
+    commands = await worker.commands.list_for_run(run_id)
+    assert commands[-1].status == "failed"
+    assert "waiting_approval" in (commands[-1].error or "")
+    assert resumed == []
+    row = await worker.runs.get(run_id)
+    assert row is not None and row.status == RunStatus.WAITING_APPROVAL.value
+    await manager.close()
+
+
+async def test_unexpected_error_is_sanitized_before_persisting(tmp_path, monkeypatch) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await manager.create_run(paste_input(), budget())
+    secret = r"C:\secret\path"
+
+    async def failing_start(rid: str):
+        raise RuntimeError(f"{secret} " + "x" * 600)
+
+    monkeypatch.setattr(manager, "start_existing", failing_start)
+    await worker.commands.enqueue(run_id, "start")
+    assert await worker.tick() is True
+
+    commands = await worker.commands.list_for_run(run_id)
+    error = commands[-1].error or ""
+    assert commands[-1].status == "failed"
+    assert secret not in error
+    assert "secret" not in error
+    assert len(error) <= 500
     await manager.close()
 
 
