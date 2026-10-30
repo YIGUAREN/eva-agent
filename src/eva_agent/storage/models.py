@@ -10,6 +10,11 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def ensure_utc(value: datetime) -> datetime:
+    """SQLite drops tzinfo; re-attach UTC so comparisons never mix naive and aware values."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 class Base(DeclarativeBase):
     pass
 

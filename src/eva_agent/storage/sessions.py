@@ -1,16 +1,11 @@
 """Server-side admin sessions."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from eva_agent.storage.models import AdminSessionRow, utcnow
-
-
-def _aware(value: datetime) -> datetime:
-    """SQLite returns naive datetimes; treat stored values as UTC."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+from eva_agent.storage.models import AdminSessionRow, ensure_utc, utcnow
 
 
 class AdminSessionRepository:
@@ -41,7 +36,7 @@ class AdminSessionRepository:
             row = await session.get(AdminSessionRow, id_hash)
             if row is None or row.revoked_at is not None:
                 return None
-            if _aware(row.expires_at) <= moment or _aware(row.absolute_expires_at) <= moment:
+            if ensure_utc(row.expires_at) <= moment or ensure_utc(row.absolute_expires_at) <= moment:
                 return None
             return row
 
