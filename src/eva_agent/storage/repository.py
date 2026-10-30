@@ -99,6 +99,13 @@ class RunRepository:
             await session.commit()
             return row
 
+    async def list_recent(self, limit: int = 50) -> list[RunRow]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(RunRow).order_by(RunRow.created_at.desc(), RunRow.id.desc()).limit(limit)
+            )
+            return list(rows)
+
     async def list_public(
         self,
         *,
