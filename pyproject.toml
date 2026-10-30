@@ -48,6 +48,10 @@ packages = ["src/eva_agent"]
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+addopts = "-m 'not aig'"
+markers = [
+    "aig: requires a running AIG dev stack; excluded by default",
+]
 
 [tool.coverage.run]
 source = ["eva_agent"]
