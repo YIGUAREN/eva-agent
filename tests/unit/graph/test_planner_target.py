@@ -173,7 +173,7 @@ async def test_target_planner_reads_target_json_not_manifest(tmp_path: Path):
     assert '"name": "demo"' in structured.prompts[0]
 
 
-async def test_target_planner_rejects_quality_dimension(tmp_path: Path):
+async def test_target_planner_rejects_dimension_without_sample_size(tmp_path: Path):
     output = PlannerOutput(
         objective="x",
         evidence_summary="x",

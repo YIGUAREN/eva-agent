@@ -249,6 +249,19 @@ def test_planner_uses_the_provider_default_structured_output() -> None:
     assert model.methods == [None]
 
 
+async def test_paste_prompt_allows_quality_and_security() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+
+    await planner.plan(evidence(), budget)
+
+    prompt = structured.prompts[0]
+    assert "quality and security are available for paste/dataset input" in prompt
+    assert "latency and cost MUST appear in skipped with a non-empty reason" in prompt
+    assert 'security MUST set `"graders": []`' in prompt
+
+
 async def test_prompt_documents_the_full_planner_schema() -> None:
     structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
     planner = LlmPlanner(None, build_registry(), structured_runner=structured)
