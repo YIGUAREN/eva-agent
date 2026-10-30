@@ -151,6 +151,10 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
             "posix": "//server/share/f.jsonl#3",
             "spaced": "C:\\Users\\John Doe\\ds.jsonl",
         },
+        "links": {
+            "agent": "http://127.0.0.1:8088/agent",
+            "token": "sk-secret12345",
+        },
         "references": [{"url": "https://gitlab.com/g/a/-/jobs/1"}],
     }
     markdown = (
@@ -159,6 +163,8 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
         "- 记录文件：`C:/secret/report.md`\n"
         "- 详情：`/tmp/secret/report.md`\n"
         "- 定位：`/data/ds.jsonl#3`\n"
+        "- 间隔路径：`C:\\Users\\John Doe\\ds.jsonl#3`\n"
+        "- 间隔路径：`/Users/John Doe/ds.jsonl#3`\n"
         "- 通过率：2/3\n"
         "- 生成时间：2026-01-01T00:00:00+00:00\n"
         "- 参考：https://example.com/eval\n"
@@ -182,6 +188,9 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
     assert report["unc"]["posix"] == "<path>"
     assert report["unc"]["spaced"] == "<path>"
     assert report["references"][0]["url"] == "https://gitlab.com/g/a/-/jobs/1"
+    assert "127.0.0.1" not in report["links"]["agent"]
+    assert "<internal>" in report["links"]["agent"]
+    assert report["links"]["token"] == "<secret>"
     assert "D:\\data" not in response.text
     assert "D:\\\\data" not in response.text
     assert "/data/ds.jsonl" not in response.text
@@ -189,11 +198,16 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
     assert "share" not in response.text
     assert "John Doe" not in response.text
     assert "ds.jsonl" not in response.text
+    assert "127.0.0.1" not in response.text
+    assert "sk-secret12345" not in response.text
     assert "预算" not in body["markdown"]
     assert "C:/secret" not in body["markdown"]
     assert "/tmp/secret" not in body["markdown"]
     assert "/data/ds.jsonl" not in body["markdown"]
-    assert "<path>#3" in body["markdown"]
+    assert "John Doe" not in body["markdown"]
+    assert "Doe\\ds.jsonl" not in body["markdown"]
+    assert "Doe/ds.jsonl" not in body["markdown"]
+    assert body["markdown"].count("<path>#3") == 3
     assert "2/3" in body["markdown"]
     assert "2026-01-01T00:00:00+00:00" in body["markdown"]
     assert "https://example.com/eval" in body["markdown"]
@@ -211,6 +225,41 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
     assert admin_report["unc"]["windows"] == "\\\\server\\share\\f.jsonl#3"
     assert admin_report["unc"]["posix"] == "//server/share/f.jsonl#3"
     assert admin_report["unc"]["spaced"] == "C:\\Users\\John Doe\\ds.jsonl"
+
+
+async def test_public_run_objective_is_sanitized(client: AsyncClient, state: AppState) -> None:
+    objective = (
+        "inspect C:\\Users\\John Doe\\ds.jsonl at http://10.0.0.5:8088/x with sk-abcdefgh123"
+    )
+    payload = {
+        **PASTE_PAYLOAD,
+        "input": {**PASTE_PAYLOAD["input"], "objective": objective},
+    }
+    csrf = await login(client)
+    created = await client.post("/api/runs", json=payload, headers=csrf_headers(csrf))
+    assert created.status_code == 201
+    run_id = created.json()["run_id"]
+    await state.runs.set_status(run_id, RunStatus.COMPLETED)
+    await state.runs.set_public(run_id, True, now=state.now())
+
+    detail = await client.get(f"/api/public/runs/{run_id}")
+    listing = await client.get("/api/public/runs")
+
+    assert detail.status_code == 200
+    assert listing.status_code == 200
+    for body in (detail.json(), listing.json()):
+        encoded = json.dumps(body)
+        for raw in ("John Doe", "ds.jsonl", "10.0.0.5", "sk-abcdefgh123"):
+            assert raw not in encoded
+    public_objective = detail.json()["objective"]
+    assert "<path>" in public_objective
+    assert "<internal>" in public_objective
+    assert "<secret>" in public_objective
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}", headers=csrf_headers(csrf))
+    assert admin.status_code == 200
+    assert admin.json()["objective"] == objective
 
 
 async def test_artifact_download_respects_visibility(client: AsyncClient, state: AppState, tmp_path: Path) -> None:

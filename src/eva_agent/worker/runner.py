@@ -41,7 +41,9 @@ def _public_error(exc: Exception) -> str:
     """
     if isinstance(exc, ReportRecordError):
         return REPORT_RECORD_ERROR
-    if isinstance(exc, (RunStateError, ValueError)):
+    # Only an exact ``ValueError`` is locally constructed. Subclasses such as
+    # json.JSONDecodeError can carry raw document text and must stay hidden.
+    if isinstance(exc, RunStateError) or type(exc) is ValueError:
         return str(exc)
     return GENERIC_COMMAND_ERROR
 
@@ -174,11 +176,17 @@ class RunWorker:
         # Run _after for every handled command, including no-ops. A worker crash
         # between the graph finishing and _after leaves the command claimed, so
         # reset_stale requeues it; replaying a duplicate start/approve must still
-        # backfill the report and artifact rows. _after is idempotent.
-        try:
-            await self._after(command.run_id)
-        except Exception as exc:
-            raise ReportRecordError(REPORT_RECORD_ERROR) from exc
+        # backfill the report and artifact rows. _after is idempotent, so a
+        # transient storage error is retried before the command is failed.
+        for attempt in range(3):
+            try:
+                await self._after(command.run_id)
+            except Exception as exc:
+                if attempt == 2:
+                    raise ReportRecordError(REPORT_RECORD_ERROR) from exc
+                await asyncio.sleep(0.05 if attempt == 0 else 0.1)
+            else:
+                break
 
     async def _resume(self, run_id: str) -> None:
         """Resume a RUNNING run, failing it when it has no checkpoint to resume from."""

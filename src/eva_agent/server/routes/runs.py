@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -59,6 +60,18 @@ async def _audit_rejection(state: AppState, row: RunRow, action: str) -> None:
             authorization_ref=row.authorization_ref,
         )
     )
+
+
+def _internal_hosts(state: AppState) -> tuple[str, ...]:
+    """Return the AIG host that public serializers must redact, when configured."""
+    aig = state.config.aig
+    if aig is None:
+        return ()
+    try:
+        hostname = urlsplit(aig.base_url).hostname
+    except ValueError:
+        return ()
+    return (hostname,) if hostname else ()
 
 
 def _target_names(state: AppState) -> Mapping[str, object]:
@@ -160,12 +173,18 @@ async def list_public_runs(
     state = get_state(request)
     rows = await state.runs.list_public(cursor=decode_cursor(cursor) if cursor else None, limit=limit)
     next_cursor = encode_cursor(rows[-1]) if len(rows) == limit else None
-    return {"items": [public_run_detail(row) for row in rows], "next_cursor": next_cursor}
+    internal_hosts = _internal_hosts(state)
+    return {
+        "items": [public_run_detail(row, internal_hosts=internal_hosts) for row in rows],
+        "next_cursor": next_cursor,
+    }
 
 
 @router.get("/public/runs/{run_id}")
 async def get_public_run(run_id: str, request: Request) -> dict[str, object]:
-    return public_run_detail(await _load_public_run(get_state(request), run_id))
+    state = get_state(request)
+    row = await _load_public_run(state, run_id)
+    return public_run_detail(row, internal_hosts=_internal_hosts(state))
 
 
 @router.post("/runs/{run_id}/approve", status_code=202)

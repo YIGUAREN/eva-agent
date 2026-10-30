@@ -9,6 +9,7 @@ from pathlib import Path
 
 from eva_agent.config.settings import load_config
 from eva_agent.runtime.manager import RunManager
+from eva_agent.storage.migrate import run_migrations
 from eva_agent.worker.runner import RunWorker
 
 
@@ -28,6 +29,7 @@ async def _run(config_path: Path) -> None:
             loop.add_signal_handler(sig, stop.set)
     except NotImplementedError:
         pass
+    await asyncio.to_thread(run_migrations, config.storage.url)
     async with RunManager.open(config) as manager:
         worker = RunWorker.from_manager(
             manager,

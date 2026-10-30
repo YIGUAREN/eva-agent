@@ -4,7 +4,7 @@ import json
 from eva_agent.domain.run import RunStatus
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.manager import RunManager
-from eva_agent.worker.runner import RunWorker
+from eva_agent.worker.runner import RunWorker, _public_error
 from tests.support.runtime import budget, dependencies, fake_config, paste_input
 
 
@@ -273,6 +273,70 @@ async def test_unexpected_error_is_sanitized_before_persisting(tmp_path, monkeyp
     assert secret not in error
     assert "secret" not in error
     assert len(error) <= 500
+    await manager.close()
+
+
+def test_public_error_keeps_an_exact_value_error() -> None:
+    assert _public_error(ValueError("safe")) == "safe"
+
+
+def test_public_error_hides_value_error_subclasses() -> None:
+    error = json.JSONDecodeError("bad", '{"sk-secret12345": 1}', 1)
+
+    assert _public_error(error) == "command failed"
+
+
+async def _completed_run(manager) -> str:
+    run_id = await manager.create_run(paste_input(), budget())
+    await manager.start_existing(run_id)
+    await manager.approve(run_id, approved=True)
+    return run_id
+
+
+async def test_transient_report_upsert_failure_is_retried(tmp_path, monkeypatch) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await _completed_run(manager)
+
+    original = worker.reports.upsert
+    calls = 0
+
+    async def flaky_upsert(rid: str, version: int, payload: dict, markdown: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary database error")
+        await original(rid, version, payload, markdown)
+
+    monkeypatch.setattr(worker.reports, "upsert", flaky_upsert)
+    await worker.commands.enqueue(run_id, "start")
+
+    assert await worker.tick() is True
+    commands = await worker.commands.list_for_run(run_id)
+    assert commands[-1].status == "done"
+    assert calls == 2
+    assert await worker.reports.get(run_id) is not None
+    await manager.close()
+
+
+async def test_permanent_report_upsert_failure_fails_after_retries(tmp_path, monkeypatch) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await _completed_run(manager)
+
+    calls = 0
+
+    async def failing_upsert(rid: str, version: int, payload: dict, markdown: str) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError(f"cannot read {tmp_path / 'data' / rid / 'report.json'}")
+
+    monkeypatch.setattr(worker.reports, "upsert", failing_upsert)
+    await worker.commands.enqueue(run_id, "start")
+
+    assert await worker.tick() is True
+    commands = await worker.commands.list_for_run(run_id)
+    assert commands[-1].status == "failed"
+    assert commands[-1].error == "failed to record the run report"
+    assert calls == 3
     await manager.close()
 
 

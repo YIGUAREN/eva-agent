@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,9 +27,42 @@ def _client_key(request: Request) -> str:
     return request.client.host if request.client is not None else "unknown"
 
 
+def _origin_parts(value: str) -> tuple[str, str, int] | None:
+    """Normalize an origin/URL into ``(scheme, hostname, port)``."""
+    try:
+        parsed = urlsplit(value)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if scheme not in {"http", "https"} or not hostname:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, hostname.lower(), port
+
+
+def _validate_login_origin(request: Request, public_base_url: str) -> None:
+    """Reject cross-origin browser logins, while allowing non-browser clients.
+
+    ``Origin`` wins when present; otherwise ``Referer`` is checked; when neither
+    header is sent (CLI clients), the request is allowed.
+    """
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    candidate = origin if origin is not None else referer
+    if candidate is None:
+        return
+    expected = _origin_parts(public_base_url)
+    if expected is None or _origin_parts(candidate) != expected:
+        raise ApiError(403, "forbidden", "cross-origin login rejected")
+
+
 @router.post("/login")
 async def login(payload: LoginRequest, request: Request, response: Response) -> dict[str, str]:
     state = get_state(request)
+    _validate_login_origin(request, state.config.public_base_url)
     key = _client_key(request)
     if state.login_limiter.is_blocked(key):
         raise ApiError(429, "rate_limited", "too many failed login attempts")

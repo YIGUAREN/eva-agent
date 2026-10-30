@@ -105,3 +105,5 @@ uv run eva-worker --config config/config.yaml
 ```
 
 公开页：`http://127.0.0.1:8000/share/<run_id>`（需先发布）。开发前端时用 `cd web && pnpm dev`，Vite 会把 `/api` 代理到 `127.0.0.1:8000`。
+
+> 本地用 `http://127.0.0.1:8000` 做明文 HTTP 验收时，请先在 `config/config.yaml` 中把 `web.cookie_secure` 设为 `false`，否则浏览器不会保存登录 Cookie。生产环境必须保持 `true`（需要 TLS）。

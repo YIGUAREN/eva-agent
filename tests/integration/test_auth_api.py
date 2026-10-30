@@ -81,3 +81,57 @@ async def test_login_body_is_validated(client: AsyncClient) -> None:
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_request"
     assert response.json()["error"]["fields"] == ["body.password"]
+
+
+async def test_login_accepts_a_matching_origin(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/auth/login",
+        json={"password": TEST_PASSWORD},
+        headers={"Origin": "http://localhost"},
+    )
+
+    assert response.status_code == 200
+
+
+async def test_login_rejects_a_mismatched_origin(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/auth/login",
+        json={"password": TEST_PASSWORD},
+        headers={"Origin": "https://evil.example"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+    assert SESSION_COOKIE not in response.cookies
+
+
+async def test_login_rejects_a_null_origin(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/auth/login",
+        json={"password": TEST_PASSWORD},
+        headers={"Origin": "null"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+async def test_login_accepts_a_matching_referer(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/auth/login",
+        json={"password": TEST_PASSWORD},
+        headers={"Referer": "http://localhost/some/page"},
+    )
+
+    assert response.status_code == 200
+
+
+async def test_login_rejects_a_mismatched_referer(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/auth/login",
+        json={"password": TEST_PASSWORD},
+        headers={"Referer": "https://evil.example/login"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"

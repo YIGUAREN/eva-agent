@@ -18,8 +18,8 @@ from eva_agent.runtime.artifacts import run_paths
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
 from eva_agent.server.errors import ApiError
-from eva_agent.server.routes.runs import _load_public_run, _load_run
-from eva_agent.server.schemas import redact_absolute_paths, sanitize_public_payload
+from eva_agent.server.routes.runs import _internal_hosts, _load_public_run, _load_run
+from eva_agent.server.schemas import sanitize_public_payload, sanitize_public_text
 from eva_agent.storage.models import AdminSessionRow
 
 router = APIRouter(prefix="/api", tags=["reports"])
@@ -34,13 +34,14 @@ def _redact_data_dir(text: str, data_dir: str) -> str:
     return text.replace(resolved, "<data>").replace(str(data_dir), "<data>")
 
 
-def _sanitize_public_markdown(markdown: str, data_dir: str) -> str:
+def _sanitize_public_markdown(markdown: str, data_dir: str, *, internal_hosts: tuple[str, ...] = ()) -> str:
     """Sanitize report markdown for the public route only.
 
     Admin responses return the stored markdown unchanged. Public reports must
-    never reveal absolute filesystem paths or budget figures.
+    never reveal absolute filesystem paths, internal addresses, secrets, or
+    budget figures.
     """
-    text = redact_absolute_paths(_redact_data_dir(markdown, data_dir))
+    text = sanitize_public_text(_redact_data_dir(markdown, data_dir), internal_hosts=internal_hosts)
     return "\n".join(line for line in text.split("\n") if not line.startswith(_BUDGET_LINE_PREFIX))
 
 
@@ -52,12 +53,17 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
     digest = snapshot.sha256
     markdown = snapshot.markdown
     if public:
-        payload = sanitize_public_payload(snapshot.payload)
+        internal_hosts = _internal_hosts(state)
+        payload = sanitize_public_payload(snapshot.payload, internal_hosts=internal_hosts)
         # The stored digest covers the unsanitized payload, so recompute it with
         # the same canonicalization used by ReportRepository.upsert.
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()
-        markdown = _sanitize_public_markdown(markdown, state.config.storage.data_dir)
+        markdown = _sanitize_public_markdown(
+            markdown,
+            state.config.storage.data_dir,
+            internal_hosts=internal_hosts,
+        )
     return {
         "run_id": snapshot.run_id,
         "version": snapshot.version,

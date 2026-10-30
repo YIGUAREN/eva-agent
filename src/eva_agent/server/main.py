@@ -8,9 +8,7 @@ import os
 from pathlib import Path
 
 import uvicorn
-from alembic.config import Config as AlembicConfig
 
-from alembic import command as alembic_command
 from eva_agent.config.settings import load_config
 from eva_agent.server.app import create_app
 from eva_agent.server.ratelimit import LoginRateLimiter
@@ -18,17 +16,12 @@ from eva_agent.server.state import AppState
 from eva_agent.storage.audit import AuditRepository
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.db import create_engine, create_session_factory
+from eva_agent.storage.migrate import run_migrations
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
 from eva_agent.storage.sessions import AdminSessionRepository
 
 DEFAULT_INDEX = Path("web/dist/index.html")
-
-
-def _migrate(database_url: str) -> None:
-    config = AlembicConfig("alembic.ini")
-    config.set_main_option("sqlalchemy.url", database_url)
-    alembic_command.upgrade(config, "head")
 
 
 async def serve(config_path: Path, host: str, port: int) -> None:
@@ -37,7 +30,7 @@ async def serve(config_path: Path, host: str, port: int) -> None:
     if not password_hash:
         raise SystemExit("ADMIN_PASSWORD_HASH is not set; run python scripts/hash_password.py")
 
-    await asyncio.to_thread(_migrate, config.storage.url)
+    await asyncio.to_thread(run_migrations, config.storage.url)
 
     engine = create_engine(config.storage.url)
     factory = create_session_factory(engine)
