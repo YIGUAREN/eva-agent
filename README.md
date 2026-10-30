@@ -90,8 +90,8 @@ demo_target/     # 本地 OpenAI 兼容演示目标
 ## Web UI（阶段 4）
 
 ```bash
-# 1. 生成管理员密码哈希，写入 .env（不要提交）
-python scripts/hash_password.py
+# 1. 生成管理员密码哈希，并导出为环境变量（不要提交）
+uv run python scripts/hash_password.py
 export ADMIN_PASSWORD_HASH='$argon2id$...'
 
 # 2. 构建前端
