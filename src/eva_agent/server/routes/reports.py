@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Annotated
@@ -24,24 +26,52 @@ router = APIRouter(prefix="/api", tags=["reports"])
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}")
 
+# Windows drive-letter absolute paths, matched anywhere so paths quoted inside
+# markdown are caught as well. Stops at whitespace or common markdown delimiters;
+# the lookbehind keeps the "p:/" tail of URLs such as https:// from matching.
+_WINDOWS_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s`\"'<>|]*")
+
+# POSIX absolute path tokens that begin at a token boundary.
+_POSIX_ABSOLUTE_PATH = re.compile(r"(?<!\S)/(?=[^\s/])[^\s`\"'<>|]*")
+
+_BUDGET_LINE_PREFIX = "- 预算："
+
 
 def _redact_data_dir(text: str, data_dir: str) -> str:
     resolved = str(Path(data_dir).resolve())
     return text.replace(resolved, "<data>").replace(str(data_dir), "<data>")
 
 
+def _sanitize_public_markdown(markdown: str, data_dir: str) -> str:
+    """Sanitize report markdown for the public route only.
+
+    Admin responses return the stored markdown unchanged. Public reports must
+    never reveal absolute filesystem paths or budget figures.
+    """
+    text = _redact_data_dir(markdown, data_dir)
+    text = _WINDOWS_ABSOLUTE_PATH.sub("<path>", text)
+    text = _POSIX_ABSOLUTE_PATH.sub("<path>", text)
+    return "\n".join(line for line in text.split("\n") if not line.startswith(_BUDGET_LINE_PREFIX))
+
+
 async def _report(state, run_id: str, *, public: bool = False) -> dict[str, object]:
     snapshot = await state.reports.get(run_id)
     if snapshot is None:
         raise ApiError(404, "report_not_ready", "report is not ready")
-    payload = sanitize_public_payload(snapshot.payload) if public else snapshot.payload
+    payload = snapshot.payload
+    digest = snapshot.sha256
     markdown = snapshot.markdown
     if public:
-        markdown = _redact_data_dir(markdown, state.config.storage.data_dir)
+        payload = sanitize_public_payload(snapshot.payload)
+        # The stored digest covers the unsanitized payload, so recompute it with
+        # the same canonicalization used by ReportRepository.upsert.
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256(encoded).hexdigest()
+        markdown = _sanitize_public_markdown(markdown, state.config.storage.data_dir)
     return {
         "run_id": snapshot.run_id,
         "version": snapshot.version,
-        "sha256": snapshot.sha256,
+        "sha256": digest,
         "markdown": markdown,
         "report": payload,
     }

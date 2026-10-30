@@ -19,9 +19,7 @@ async def test_create_requires_csrf(client: AsyncClient) -> None:
     assert response.status_code == 403
 
 
-async def test_create_persists_a_queued_run_and_a_start_command(
-    client: AsyncClient, state: AppState
-) -> None:
+async def test_create_persists_a_queued_run_and_a_start_command(client: AsyncClient, state: AppState) -> None:
     csrf = await login(client)
 
     response = await client.post("/api/runs", json=PASTE_PAYLOAD, headers=csrf_headers(csrf))
@@ -36,9 +34,7 @@ async def test_create_persists_a_queued_run_and_a_start_command(
     assert [(command.kind, command.status) for command in commands] == [("start", "pending")]
 
 
-async def test_idempotency_key_returns_the_original_run(
-    client: AsyncClient, state: AppState
-) -> None:
+async def test_idempotency_key_returns_the_original_run(client: AsyncClient, state: AppState) -> None:
     csrf = await login(client)
     payload = {**PASTE_PAYLOAD, "idempotency_key": "0123456789abcdef"}
 

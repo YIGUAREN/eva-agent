@@ -15,7 +15,18 @@ from eva_agent.domain.run import RunInput
 from eva_agent.server.errors import ApiError
 from eva_agent.storage.models import RunRow, ensure_utc
 
-_SENSITIVE_KEYS = frozenset({"markdown_path", "json_path", "path", "output_path", "report_json_path", "input_json"})
+_SENSITIVE_KEYS = frozenset(
+    {
+        "markdown_path",
+        "json_path",
+        "path",
+        "output_path",
+        "report_json_path",
+        "input_json",
+        "budget",
+        "plan",
+    }
+)
 
 
 class CreateRunRequest(BaseModel):
@@ -74,9 +85,14 @@ def public_run_detail(row: RunRow) -> dict[str, Any]:
     return run_summary(row)
 
 
+def _is_sensitive_key(key: str) -> bool:
+    """Return True when a payload key must never reach the public API."""
+    return key in _SENSITIVE_KEYS or key.endswith("_path")
+
+
 def sanitize_public_payload(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: sanitize_public_payload(item) for key, item in value.items() if key not in _SENSITIVE_KEYS}
+        return {key: sanitize_public_payload(item) for key, item in value.items() if not _is_sensitive_key(key)}
     if isinstance(value, list):
         return [sanitize_public_payload(item) for item in value]
     return value

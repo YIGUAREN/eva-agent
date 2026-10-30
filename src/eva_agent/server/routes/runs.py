@@ -48,6 +48,19 @@ async def _load_public_run(state: AppState, run_id: str) -> RunRow:
     return row
 
 
+async def _audit_rejection(state: AppState, row: RunRow, action: str) -> None:
+    """Record a rejected privileged action before its error response is raised."""
+    await state.audit.record(
+        AuditEvent(
+            run_id=row.id,
+            actor="admin",
+            action=action,
+            outcome="rejected",
+            authorization_ref=row.authorization_ref,
+        )
+    )
+
+
 def _target_names(state: AppState) -> Mapping[str, object]:
     try:
         return load_targets(Path(state.config.target.targets_path))
@@ -164,7 +177,9 @@ async def approve_run(
 ) -> dict[str, str]:
     state = get_state(request)
     row = await _load_run(state, run_id)
+    action = "run.approve" if payload.approved else "run.reject"
     if row.status != RunStatus.WAITING_APPROVAL.value:
+        await _audit_rejection(state, row, action)
         raise ApiError(409, "invalid_state", "run is not waiting for approval")
     try:
         await state.commands.enqueue(
@@ -173,12 +188,13 @@ async def approve_run(
             {"approved": payload.approved, "plan": payload.plan},
         )
     except ActiveCommandExists:
+        await _audit_rejection(state, row, action)
         raise ApiError(409, "command_pending", "another command is already pending") from None
     await state.audit.record(
         AuditEvent(
             run_id=run_id,
             actor="admin",
-            action="run.approve" if payload.approved else "run.reject",
+            action=action,
             outcome="accepted",
             authorization_ref=row.authorization_ref,
         )
@@ -195,10 +211,12 @@ async def cancel_run(
     state = get_state(request)
     row = await _load_run(state, run_id)
     if row.status not in {RunStatus.QUEUED.value, RunStatus.WAITING_APPROVAL.value}:
+        await _audit_rejection(state, row, "run.cancel")
         raise ApiError(409, "invalid_state", "run cannot be cancelled in its current state")
     try:
         await state.commands.enqueue(run_id, "cancel")
     except ActiveCommandExists:
+        await _audit_rejection(state, row, "run.cancel")
         raise ApiError(409, "command_pending", "another command is already pending") from None
     await state.audit.record(
         AuditEvent(

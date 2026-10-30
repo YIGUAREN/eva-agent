@@ -32,7 +32,8 @@ async def test_start_then_approve_completes_the_run(tmp_path) -> None:
 
     snapshot = await worker.reports.get(run_id)
     assert snapshot is not None and snapshot.payload["run_id"] == run_id
-    assert await worker.artifacts.get(run_id, "report.json") is not None
+    report_artifact = await worker.artifacts.get(run_id, "report.json")
+    assert report_artifact is not None and report_artifact.visibility == "admin"
     assert await worker.artifacts.get(run_id, "plan.approved.yaml") is not None
     await manager.close()
 

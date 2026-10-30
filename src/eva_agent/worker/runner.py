@@ -60,8 +60,8 @@ def _report_version(payload: dict, run_id: str) -> int:
 
 def _artifact_specs(paths: RunPaths) -> list[tuple[str, Path, str, str]]:
     return [
-        ("report.json", paths.report_json, "public", "application/json"),
-        ("report.md", paths.report_markdown, "public", "text/markdown; charset=utf-8"),
+        ("report.json", paths.report_json, "admin", "application/json"),
+        ("report.md", paths.report_markdown, "admin", "text/markdown; charset=utf-8"),
         ("plan.approved.yaml", paths.plan_approved, "admin", "application/yaml"),
         ("target_probe.jsonl", paths.target_probe, "admin", "application/x-ndjson"),
     ]

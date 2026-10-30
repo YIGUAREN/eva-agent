@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 
 from httpx import AsyncClient
@@ -20,6 +22,14 @@ async def _finish_pending(state: AppState, run_id: str) -> None:
             await state.commands.finish(command.id, "done")
 
 
+def _keys(value: object) -> list[str]:
+    if isinstance(value, dict):
+        return [key for key, item in value.items() for key in (key, *_keys(item))]
+    if isinstance(value, list):
+        return [key for item in value for key in _keys(item)]
+    return []
+
+
 async def test_approve_requires_waiting_approval(client: AsyncClient, state: AppState) -> None:
     run_id = await _create(client, state)
     csrf = await login(client)
@@ -32,6 +42,8 @@ async def test_approve_requires_waiting_approval(client: AsyncClient, state: App
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "invalid_state"
+    events = await state.audit.list_for_run(run_id)
+    assert [(event.action, event.outcome) for event in events] == [("run.approve", "rejected")]
 
 
 async def test_approve_enqueues_a_command_and_audits(client: AsyncClient, state: AppState) -> None:
@@ -53,6 +65,24 @@ async def test_approve_enqueues_a_command_and_audits(client: AsyncClient, state:
     assert [event.action for event in await state.audit.list_for_run(run_id)] == ["run.approve"]
 
 
+async def test_approve_with_a_pending_command_is_audited_as_rejected(client: AsyncClient, state: AppState) -> None:
+    run_id = await _create(client, state)
+    # The start command enqueued at creation is still pending.
+    await state.runs.set_status(run_id, RunStatus.WAITING_APPROVAL)
+    csrf = await login(client)
+
+    response = await client.post(
+        f"/api/runs/{run_id}/approve",
+        json={"approved": True},
+        headers=csrf_headers(csrf),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "command_pending"
+    events = await state.audit.list_for_run(run_id)
+    assert [(event.action, event.outcome) for event in events] == [("run.approve", "rejected")]
+
+
 async def test_cancel_enqueues_a_command(client: AsyncClient, state: AppState) -> None:
     run_id = await _create(client, state)
     csrf = await login(client)
@@ -72,11 +102,11 @@ async def test_cancel_of_a_completed_run_is_rejected(client: AsyncClient, state:
     response = await client.post(f"/api/runs/{run_id}/cancel", headers=csrf_headers(csrf))
 
     assert response.status_code == 409
+    events = await state.audit.list_for_run(run_id)
+    assert [(event.action, event.outcome) for event in events] == [("run.cancel", "rejected")]
 
 
-async def test_report_is_404_until_the_worker_snapshots_it(
-    client: AsyncClient, state: AppState
-) -> None:
+async def test_report_is_404_until_the_worker_snapshots_it(client: AsyncClient, state: AppState) -> None:
     run_id = await _create(client, state)
     csrf = await login(client)
 
@@ -102,9 +132,43 @@ async def test_public_report_requires_publishing(client: AsyncClient, state: App
     assert (await client.get(f"/api/public/runs/{run_id}/report")).status_code == 200
 
 
-async def test_artifact_download_respects_visibility(
-    client: AsyncClient, state: AppState, tmp_path: Path
-) -> None:
+async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, state: AppState) -> None:
+    run_id = await _create(client, state)
+    payload = {
+        "run_id": run_id,
+        "version": 5,
+        "budget": {"max_cost_usd": 3.0},
+        "nested": {"raw_result_path": "/tmp/raw.json", "keep": "value"},
+        "probe": {"path": "C:/probe/target.jsonl", "total": 3},
+    }
+    markdown = (
+        f"# report {run_id}\n"
+        "- 预算：cost ≤ 3.0 美元\n"
+        "- 记录文件：`C:/secret/report.md`\n"
+        "- 生成时间：2026-01-01T00:00:00+00:00\n"
+        "- 参考：https://example.com/eval\n"
+    )
+    await state.reports.upsert(run_id, 5, payload, markdown)
+    await state.runs.set_status(run_id, RunStatus.COMPLETED)
+    await state.runs.set_public(run_id, True, now=state.now())
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    body = response.json()
+    report = body["report"]
+    assert "budget" not in report
+    assert all(not key.endswith("_path") for key in _keys(report))
+    assert report["nested"]["keep"] == "value"
+    assert "预算" not in body["markdown"]
+    assert "C:/secret" not in body["markdown"]
+    assert "2026-01-01T00:00:00+00:00" in body["markdown"]
+    assert "https://example.com/eval" in body["markdown"]
+    expected = hashlib.sha256(json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    assert body["sha256"] == expected
+
+
+async def test_artifact_download_respects_visibility(client: AsyncClient, state: AppState, tmp_path: Path) -> None:
     run_id = await _create(client, state)
     await state.runs.set_status(run_id, RunStatus.COMPLETED)
     await state.runs.set_public(run_id, True, now=state.now())
@@ -119,7 +183,7 @@ async def test_artifact_download_respects_visibility(
         sha256="0" * 64,
         size_bytes=8,
         content_type="text/markdown",
-        visibility="public",
+        visibility="admin",
     )
     await state.artifacts.add(
         artifact_id="art_admin",
@@ -132,11 +196,13 @@ async def test_artifact_download_respects_visibility(
     )
     csrf = await login(client)
 
-    assert (await client.get(f"/api/public/runs/{run_id}/artifacts/report.md")).status_code == 200
+    assert (await client.get(f"/api/public/runs/{run_id}/artifacts/report.md")).status_code == 404
     assert (await client.get(f"/api/public/runs/{run_id}/artifacts/plan.approved.yaml")).status_code == 404
-    admin = await client.get(f"/api/runs/{run_id}/artifacts/plan.approved.yaml", headers=csrf_headers(csrf))
+    admin = await client.get(f"/api/runs/{run_id}/artifacts/report.md", headers=csrf_headers(csrf))
     assert admin.status_code == 200
-    assert "secret" in admin.text
+    admin_plan = await client.get(f"/api/runs/{run_id}/artifacts/plan.approved.yaml", headers=csrf_headers(csrf))
+    assert admin_plan.status_code == 200
+    assert "secret" in admin_plan.text
 
 
 async def test_graders_and_demo_targets_are_public(client: AsyncClient) -> None:
