@@ -71,11 +71,13 @@ def create_app(state: AppState) -> FastAPI:
 
     from eva_agent.server.routes.auth import router as auth_router
     from eva_agent.server.routes.health import router as health_router
+    from eva_agent.server.routes.reports import router as reports_router
     from eva_agent.server.routes.runs import router as runs_router
 
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(runs_router)
+    app.include_router(reports_router)
     _mount_spa(app, state.index_html)
     return app
 

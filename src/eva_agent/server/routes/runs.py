@@ -18,6 +18,7 @@ from eva_agent.server.app import get_state
 from eva_agent.server.auth import csrf_protected, current_session
 from eva_agent.server.errors import ApiError
 from eva_agent.server.schemas import (
+    ApproveRequest,
     CreateRunRequest,
     PublishRequest,
     decode_cursor,
@@ -27,6 +28,7 @@ from eva_agent.server.schemas import (
     run_summary,
 )
 from eva_agent.server.state import AppState
+from eva_agent.storage.commands import ActiveCommandExists
 from eva_agent.storage.models import AdminSessionRow, RunRow
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -151,3 +153,60 @@ async def list_public_runs(
 @router.get("/public/runs/{run_id}")
 async def get_public_run(run_id: str, request: Request) -> dict[str, object]:
     return public_run_detail(await _load_public_run(get_state(request), run_id))
+
+
+@router.post("/runs/{run_id}/approve", status_code=202)
+async def approve_run(
+    run_id: str,
+    payload: ApproveRequest,
+    request: Request,
+    session: Annotated[AdminSessionRow, Depends(csrf_protected)],
+) -> dict[str, str]:
+    state = get_state(request)
+    row = await _load_run(state, run_id)
+    if row.status != RunStatus.WAITING_APPROVAL.value:
+        raise ApiError(409, "invalid_state", "run is not waiting for approval")
+    try:
+        await state.commands.enqueue(
+            run_id,
+            "approve",
+            {"approved": payload.approved, "plan": payload.plan},
+        )
+    except ActiveCommandExists:
+        raise ApiError(409, "command_pending", "another command is already pending") from None
+    await state.audit.record(
+        AuditEvent(
+            run_id=run_id,
+            actor="admin",
+            action="run.approve" if payload.approved else "run.reject",
+            outcome="accepted",
+            authorization_ref=row.authorization_ref,
+        )
+    )
+    return {"run_id": run_id, "status": row.status, "queued": "approve"}
+
+
+@router.post("/runs/{run_id}/cancel", status_code=202)
+async def cancel_run(
+    run_id: str,
+    request: Request,
+    session: Annotated[AdminSessionRow, Depends(csrf_protected)],
+) -> dict[str, str]:
+    state = get_state(request)
+    row = await _load_run(state, run_id)
+    if row.status not in {RunStatus.QUEUED.value, RunStatus.WAITING_APPROVAL.value}:
+        raise ApiError(409, "invalid_state", "run cannot be cancelled in its current state")
+    try:
+        await state.commands.enqueue(run_id, "cancel")
+    except ActiveCommandExists:
+        raise ApiError(409, "command_pending", "another command is already pending") from None
+    await state.audit.record(
+        AuditEvent(
+            run_id=run_id,
+            actor="admin",
+            action="run.cancel",
+            outcome="accepted",
+            authorization_ref=row.authorization_ref,
+        )
+    )
+    return {"run_id": run_id, "status": row.status, "queued": "cancel"}
