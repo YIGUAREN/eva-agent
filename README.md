@@ -86,3 +86,22 @@ demo_target/     # 本地 OpenAI 兼容演示目标
 ## 规格与计划
 
 设计规格见本地文件 `docs/superpowers/specs/2026-10-27-eva-agent-design.md`，阶段 1 设计见 `docs/superpowers/specs/2026-10-27-phase-1-design.md`，阶段 2 设计见 `docs/superpowers/specs/2026-10-28-phase-2-target-eval-design.md`，阶段 1 计划见 `docs/superpowers/plans/2026-10-27-phase-1-dataset-e2e.md`，阶段 2 计划见 `docs/superpowers/plans/2026-10-28-phase-2-target-eval.md`。
+
+## Web UI（阶段 4）
+
+```bash
+# 1. 生成管理员密码哈希，写入 .env（不要提交）
+python scripts/hash_password.py
+export ADMIN_PASSWORD_HASH='$argon2id$...'
+
+# 2. 构建前端
+cd web && pnpm install && pnpm build && cd ..
+
+# 3. 启动 API（自动执行 alembic upgrade head）
+uv run eva-web --config config/config.yaml --port 8000
+
+# 4. 另一个终端启动 worker（唯一执行 run 的进程）
+uv run eva-worker --config config/config.yaml
+```
+
+公开页：`http://127.0.0.1:8000/share/<run_id>`（需先发布）。开发前端时用 `cd web && pnpm dev`，Vite 会把 `/api` 代理到 `127.0.0.1:8000`。
