@@ -1,20 +1,38 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
+import { Layout } from "./components/Layout";
 import { useSession } from "./hooks/useSession";
+import { LoginPage } from "./pages/LoginPage";
+import { NewRunPage } from "./pages/NewRunPage";
+import { PublicRunPage } from "./pages/PublicRunPage";
+import { RunDetailPage } from "./pages/RunDetailPage";
+import { RunsPage } from "./pages/RunsPage";
 
 export function App() {
-  const { session, loading } = useSession();
+  const { session, loading, refresh } = useSession();
 
   if (loading) {
     return <main className="grid min-h-screen place-items-center text-slate-400">加载中…</main>;
   }
+
   if (!session) {
-    return <main className="p-10">请先登录（Task 14 添加登录页）。</main>;
+    return (
+      <Routes>
+        <Route path="/share/:runId" element={<PublicRunPage />} />
+        <Route path="*" element={<LoginPage onLogin={refresh} />} />
+      </Routes>
+    );
   }
+
   return (
     <Routes>
-      <Route path="/" element={<main className="p-10">Eva Agent</main>} />
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route element={<Layout />}>
+        <Route path="/" element={<RunsPage />} />
+        <Route path="/new" element={<NewRunPage />} />
+        <Route path="/runs/:runId" element={<RunDetailPage />} />
+        <Route path="/share/:runId" element={<PublicRunPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
     </Routes>
   );
 }
