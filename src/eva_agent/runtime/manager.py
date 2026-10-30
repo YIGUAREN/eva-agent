@@ -16,6 +16,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.domain.budget import Budget
@@ -96,6 +97,7 @@ class RunManager:
         self._checkpoint_conn: aiosqlite.Connection | None = None
         self._engine: Any = None
         self._repo: RunRepository | None = None
+        self._session_factory: async_sessionmaker[AsyncSession] | None = None
         self._audit: AuditRepository | None = None
         self._graph: Any = None
         self._dependencies: GraphDependencies | None = None
@@ -121,6 +123,7 @@ class RunManager:
         await init_db(engine)
         self._engine = engine
         session_factory = create_session_factory(engine)
+        self._session_factory = session_factory
         self._repo = RunRepository(session_factory)
         audit = AuditRepository(session_factory)
         self._audit = audit
@@ -148,6 +151,12 @@ class RunManager:
         if self._engine is not None:
             await self._engine.dispose()
             self._engine = None
+
+    @property
+    def session_factory(self) -> async_sessionmaker[AsyncSession]:
+        if self._session_factory is None:
+            raise RuntimeError("RunManager.setup() must run before session access")
+        return self._session_factory
 
     async def _event_sink(
         self,
@@ -209,23 +218,9 @@ class RunManager:
         status = values.get("status", RunStatus.RUNNING)
         await repo.set_status(run_id, status if isinstance(status, RunStatus) else RunStatus(status))
 
-    async def start(
-        self,
-        run_input: RunInput,
-        budget: Budget,
-        *,
-        run_id: str | None = None,
-    ) -> str:
-        repo = self._require_repo()
-        graph = self._require_graph()
-        dependencies = self._require_dependencies()
-        if run_input.kind is InputKind.TARGET and run_input.target_ref not in dependencies.targets:
-            raise ValueError(f"unknown target '{run_input.target_ref}'")
-        run_id = validate_run_id(run_id or f"run_{uuid4().hex[:12]}")
-        await repo.create(run_id, run_input, budget)
-        await self._event_sink(run_id, "run.created", {"kind": run_input.kind.value})
-
-        state = {
+    @staticmethod
+    def _initial_state(run_id: str, run_input: RunInput, budget: Budget) -> dict[str, Any]:
+        return {
             "run_id": run_id,
             "input": run_input,
             "budget": budget,
@@ -239,14 +234,105 @@ class RunManager:
             "merged": None,
             "report": None,
         }
+
+    async def create_run(
+        self,
+        run_input: RunInput,
+        budget: Budget,
+        *,
+        run_id: str | None = None,
+        idempotency_key: str | None = None,
+        authorization_ref: str | None = None,
+        created_by: str | None = None,
+    ) -> str:
+        repo = self._require_repo()
+        dependencies = self._require_dependencies()
+        if run_input.kind is InputKind.TARGET and run_input.target_ref not in dependencies.targets:
+            raise ValueError(f"unknown target '{run_input.target_ref}'")
+        run_id = validate_run_id(run_id or f"run_{uuid4().hex}")
+        await repo.create(
+            run_id,
+            run_input,
+            budget,
+            idempotency_key=idempotency_key,
+            authorization_ref=authorization_ref,
+            created_by=created_by,
+        )
+        await self._event_sink(run_id, "run.created", {"kind": run_input.kind.value})
+        return run_id
+
+    async def _invoke_initial(self, run_id: str, run_input: RunInput, budget: Budget) -> None:
+        repo = self._require_repo()
+        graph = self._require_graph()
         try:
-            values = await graph.ainvoke(state, self._thread(run_id))
+            values = await graph.ainvoke(
+                self._initial_state(run_id, run_input, budget),
+                self._thread(run_id),
+            )
         except Exception as exc:
             await repo.set_status(run_id, RunStatus.FAILED)
             await self._event_sink(run_id, "run.failed", {"error": str(exc)})
             raise
         await self._sync(run_id, values)
-        return run_id
+
+    async def start(
+        self,
+        run_input: RunInput,
+        budget: Budget,
+        *,
+        run_id: str | None = None,
+    ) -> str:
+        created = await self.create_run(run_input, budget, run_id=run_id)
+        await self._invoke_initial(created, run_input, budget)
+        return created
+
+    async def start_existing(self, run_id: str) -> RunStatusView:
+        repo = self._require_repo()
+        graph = self._require_graph()
+        row = await repo.get(run_id)
+        if row is None:
+            raise KeyError(run_id)
+        snapshot = await graph.aget_state(self._thread(run_id))
+        if snapshot.values:
+            raise RunStateError(f"run '{run_id}' already has a checkpoint")
+        await self._invoke_initial(
+            run_id,
+            RunInput.model_validate(row.input_json),
+            Budget.model_validate(row.budget_json),
+        )
+        return await self.status(run_id)
+
+    async def resume(self, run_id: str) -> RunStatusView:
+        repo = self._require_repo()
+        graph = self._require_graph()
+        row = await repo.get(run_id)
+        if row is None:
+            raise KeyError(run_id)
+        snapshot = await graph.aget_state(self._thread(run_id))
+        if not snapshot.values:
+            raise RunStateError(f"run '{run_id}' has no checkpoint to resume")
+        try:
+            values = await graph.ainvoke(None, self._thread(run_id))
+        except Exception as exc:
+            await repo.set_status(run_id, RunStatus.FAILED)
+            await self._event_sink(run_id, "run.failed", {"error": str(exc)})
+            raise
+        await self._sync(run_id, values)
+        return await self.status(run_id)
+
+    async def cancel(self, run_id: str) -> RunStatusView:
+        repo = self._require_repo()
+        row = await repo.get(run_id)
+        if row is None:
+            raise KeyError(run_id)
+        status = RunStatus(row.status)
+        if status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
+            return await self.status(run_id)
+        if status is RunStatus.RUNNING:
+            raise RunStateError(f"run '{run_id}' is executing")
+        await repo.set_status(run_id, RunStatus.CANCELLED)
+        await self._event_sink(run_id, "run.cancelled", {})
+        return await self.status(run_id)
 
     async def approve(
         self,
