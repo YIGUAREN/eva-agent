@@ -1,8 +1,9 @@
 """Repository for run state and events."""
 
 from datetime import datetime
+from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.domain.budget import Budget
@@ -56,6 +57,29 @@ class RunRepository:
                 raise KeyError(run_id)
             row.status = status.value
             await session.commit()
+
+    async def claim(
+        self,
+        run_id: str,
+        *,
+        from_statuses: tuple[RunStatus, ...],
+        to_status: RunStatus,
+    ) -> bool:
+        """Atomically move a run between statuses; report whether the row changed."""
+        async with self._session_factory() as session:
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(RunRow)
+                    .where(
+                        RunRow.id == run_id,
+                        RunRow.status.in_([status.value for status in from_statuses]),
+                    )
+                    .values(status=to_status.value)
+                ),
+            )
+            await session.commit()
+            return bool(result.rowcount)
 
     async def set_error(self, run_id: str, error: str) -> None:
         async with self._session_factory() as session:

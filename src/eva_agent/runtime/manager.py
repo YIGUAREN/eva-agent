@@ -207,7 +207,7 @@ class RunManager:
             input_kind=input_kind,
         )
 
-    async def _sync(self, run_id: str, values: dict[str, Any]) -> None:
+    async def _sync(self, run_id: str, values: dict[str, Any]) -> bool:
         repo = self._require_repo()
         plan = values.get("plan")
         if plan is not None:
@@ -216,7 +216,15 @@ class RunManager:
         if budget is not None:
             await repo.set_budget(run_id, budget)
         status = values.get("status", RunStatus.RUNNING)
-        await repo.set_status(run_id, status if isinstance(status, RunStatus) else RunStatus(status))
+        new_status = status if isinstance(status, RunStatus) else RunStatus(status)
+        return await repo.claim(run_id, from_statuses=(RunStatus.RUNNING,), to_status=new_status)
+
+    async def _current_status(self, run_id: str) -> RunStatus:
+        repo = self._require_repo()
+        row = await repo.get(run_id)
+        if row is None:
+            raise RunStateError(f"run '{run_id}' no longer exists")
+        return RunStatus(row.status)
 
     @staticmethod
     def _initial_state(run_id: str, run_input: RunInput, budget: Budget) -> dict[str, Any]:
@@ -264,14 +272,23 @@ class RunManager:
     async def _invoke_initial(self, run_id: str, run_input: RunInput, budget: Budget) -> None:
         repo = self._require_repo()
         graph = self._require_graph()
+        if not await repo.claim(run_id, from_statuses=(RunStatus.QUEUED,), to_status=RunStatus.RUNNING):
+            status = await self._current_status(run_id)
+            if status is RunStatus.CANCELLED:
+                raise RunStateError(f"run '{run_id}' was cancelled")
+            if status is RunStatus.RUNNING:
+                raise RunStateError(f"run '{run_id}' is already executing")
+            if status in (RunStatus.COMPLETED, RunStatus.FAILED):
+                raise RunStateError(f"run '{run_id}' is already terminal with status '{status.value}'")
+            raise RunStateError(f"run '{run_id}' is not queued (status '{status.value}')")
         try:
             values = await graph.ainvoke(
                 self._initial_state(run_id, run_input, budget),
                 self._thread(run_id),
             )
         except Exception as exc:
-            await repo.set_status(run_id, RunStatus.FAILED)
-            await self._event_sink(run_id, "run.failed", {"error": str(exc)})
+            if await repo.claim(run_id, from_statuses=(RunStatus.RUNNING,), to_status=RunStatus.FAILED):
+                await self._event_sink(run_id, "run.failed", {"error": str(exc)})
             raise
         await self._sync(run_id, values)
 
@@ -311,11 +328,16 @@ class RunManager:
         snapshot = await graph.aget_state(self._thread(run_id))
         if not snapshot.values:
             raise RunStateError(f"run '{run_id}' has no checkpoint to resume")
+        if not await repo.claim(run_id, from_statuses=(RunStatus.RUNNING,), to_status=RunStatus.RUNNING):
+            status = await self._current_status(run_id)
+            if status is RunStatus.CANCELLED:
+                raise RunStateError(f"run '{run_id}' was cancelled")
+            raise RunStateError(f"run '{run_id}' cannot be resumed from status '{status.value}'")
         try:
             values = await graph.ainvoke(None, self._thread(run_id))
         except Exception as exc:
-            await repo.set_status(run_id, RunStatus.FAILED)
-            await self._event_sink(run_id, "run.failed", {"error": str(exc)})
+            if await repo.claim(run_id, from_statuses=(RunStatus.RUNNING,), to_status=RunStatus.FAILED):
+                await self._event_sink(run_id, "run.failed", {"error": str(exc)})
             raise
         await self._sync(run_id, values)
         return await self.status(run_id)
@@ -328,10 +350,18 @@ class RunManager:
         status = RunStatus(row.status)
         if status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
             return await self.status(run_id)
-        if status is RunStatus.RUNNING:
-            raise RunStateError(f"run '{run_id}' is executing")
-        await repo.set_status(run_id, RunStatus.CANCELLED)
-        await self._event_sink(run_id, "run.cancelled", {})
+        cancelled = await repo.claim(
+            run_id,
+            from_statuses=(
+                RunStatus.QUEUED,
+                RunStatus.RUNNING,
+                RunStatus.WAITING_APPROVAL,
+                RunStatus.WAITING_BUDGET,
+            ),
+            to_status=RunStatus.CANCELLED,
+        )
+        if cancelled:
+            await self._event_sink(run_id, "run.cancelled", {})
         return await self.status(run_id)
 
     async def approve(
@@ -363,16 +393,25 @@ class RunManager:
                 input_kind=run_input.kind,
             )
             decision["plan"] = plan
+        if not await repo.claim(
+            run_id,
+            from_statuses=(RunStatus.WAITING_APPROVAL,),
+            to_status=RunStatus.RUNNING,
+        ):
+            status = await self._current_status(run_id)
+            if status is RunStatus.CANCELLED:
+                raise RunStateError(f"run '{run_id}' was cancelled")
+            raise RunStateError(f"run '{run_id}' is not waiting for approval (status '{status.value}')")
         try:
             values = await graph.ainvoke(Command(resume=decision), self._thread(run_id))
         except Exception as exc:
-            await repo.set_status(run_id, RunStatus.FAILED)
-            await self._event_sink(run_id, "run.failed", {"error": str(exc)})
+            if await repo.claim(run_id, from_statuses=(RunStatus.RUNNING,), to_status=RunStatus.FAILED):
+                await self._event_sink(run_id, "run.failed", {"error": str(exc)})
             raise
-        await self._sync(run_id, values)
-        if values.get("status") is RunStatus.FAILED:
+        synced = await self._sync(run_id, values)
+        if synced and values.get("status") is RunStatus.FAILED:
             await self._event_sink(run_id, "run.failed", {"errors": list(values.get("errors") or [])})
-        else:
+        elif synced:
             await self._event_sink(
                 run_id,
                 "run.approved" if approved else "run.rejected",
