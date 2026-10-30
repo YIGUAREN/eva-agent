@@ -19,20 +19,12 @@ from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
 from eva_agent.server.errors import ApiError
 from eva_agent.server.routes.runs import _load_public_run, _load_run
-from eva_agent.server.schemas import sanitize_public_payload
+from eva_agent.server.schemas import redact_absolute_paths, sanitize_public_payload
 from eva_agent.storage.models import AdminSessionRow
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}")
-
-# Windows drive-letter absolute paths, matched anywhere so paths quoted inside
-# markdown are caught as well. Stops at whitespace or common markdown delimiters;
-# the lookbehind keeps the "p:/" tail of URLs such as https:// from matching.
-_WINDOWS_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s`\"'<>|]*")
-
-# POSIX absolute path tokens that begin at a token boundary.
-_POSIX_ABSOLUTE_PATH = re.compile(r"(?<!\S)/(?=[^\s/])[^\s`\"'<>|]*")
 
 _BUDGET_LINE_PREFIX = "- 预算："
 
@@ -48,9 +40,7 @@ def _sanitize_public_markdown(markdown: str, data_dir: str) -> str:
     Admin responses return the stored markdown unchanged. Public reports must
     never reveal absolute filesystem paths or budget figures.
     """
-    text = _redact_data_dir(markdown, data_dir)
-    text = _WINDOWS_ABSOLUTE_PATH.sub("<path>", text)
-    text = _POSIX_ABSOLUTE_PATH.sub("<path>", text)
+    text = redact_absolute_paths(_redact_data_dir(markdown, data_dir))
     return "\n".join(line for line in text.split("\n") if not line.startswith(_BUDGET_LINE_PREFIX))
 
 

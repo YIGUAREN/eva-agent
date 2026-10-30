@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,30 @@ def public_run_detail(row: RunRow) -> dict[str, Any]:
     return run_summary(row)
 
 
+# Characters that end an absolute-path token. The CJK punctuation set keeps
+# paths quoted inside Chinese prose intact; ``#`` and ``?`` stay outside the
+# token so line references (``#3``) and query strings survive redaction.
+_PATH_TERMINATORS = "\\s`\"'<>，。；：、（）【】#?"
+
+# Windows drive-letter paths. The lookbehind blocks the "p:/" tail of URLs such
+# as http:// and keeps the drive letter at a token boundary.
+_WINDOWS_ABSOLUTE_PATH = re.compile(rf"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^{_PATH_TERMINATORS}]*")
+
+# POSIX absolute paths starting at a token boundary. The lookbehind rejects
+# word characters, ASCII colons (http://) and slashes (//host), while still
+# allowing a backtick or full-width colon right before the leading slash.
+_POSIX_ABSOLUTE_PATH = re.compile(rf"(?<![\w:/])/[^{_PATH_TERMINATORS}/][^{_PATH_TERMINATORS}]*")
+
+
+def redact_absolute_paths(text: str) -> str:
+    """Replace absolute filesystem path tokens with ``<path>``.
+
+    Line references such as ``D:\\data\\ds.jsonl#3`` become ``<path>#3``.
+    """
+    text = _WINDOWS_ABSOLUTE_PATH.sub("<path>", text)
+    return _POSIX_ABSOLUTE_PATH.sub("<path>", text)
+
+
 def _is_sensitive_key(key: str) -> bool:
     """Return True when a payload key must never reach the public API."""
     return key in _SENSITIVE_KEYS or key.endswith("_path")
@@ -95,6 +120,8 @@ def sanitize_public_payload(value: Any) -> Any:
         return {key: sanitize_public_payload(item) for key, item in value.items() if not _is_sensitive_key(key)}
     if isinstance(value, list):
         return [sanitize_public_payload(item) for item in value]
+    if isinstance(value, str):
+        return redact_absolute_paths(value)
     return value
 
 

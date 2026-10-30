@@ -140,13 +140,22 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
         "budget": {"max_cost_usd": 3.0},
         "nested": {"raw_result_path": "/tmp/raw.json", "keep": "value"},
         "probe": {"path": "C:/probe/target.jsonl", "total": 3},
+        "dimensions": [
+            {"name": "correctness", "evidence": [{"locator": "D:\\data\\ds.jsonl#3"}]},
+        ],
+        "findings": [
+            {"title": "absolute path leak", "evidence": [{"locator": "/data/ds.jsonl#3"}]},
+        ],
     }
     markdown = (
         f"# report {run_id}\n"
         "- 预算：cost ≤ 3.0 美元\n"
         "- 记录文件：`C:/secret/report.md`\n"
+        "- 详情：`/tmp/secret/report.md`\n"
+        "- 通过率：2/3\n"
         "- 生成时间：2026-01-01T00:00:00+00:00\n"
         "- 参考：https://example.com/eval\n"
+        "- 另一参考：http://example.com/x\n"
     )
     await state.reports.upsert(run_id, 5, payload, markdown)
     await state.runs.set_status(run_id, RunStatus.COMPLETED)
@@ -160,10 +169,19 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
     assert "budget" not in report
     assert all(not key.endswith("_path") for key in _keys(report))
     assert report["nested"]["keep"] == "value"
+    assert report["dimensions"][0]["evidence"][0]["locator"] == "<path>#3"
+    assert report["findings"][0]["evidence"][0]["locator"] == "<path>#3"
+    assert "D:\\data" not in response.text
+    assert "D:\\\\data" not in response.text
+    assert "/data/ds.jsonl" not in response.text
+    assert "#3" in response.text
     assert "预算" not in body["markdown"]
     assert "C:/secret" not in body["markdown"]
+    assert "/tmp/secret" not in body["markdown"]
+    assert "2/3" in body["markdown"]
     assert "2026-01-01T00:00:00+00:00" in body["markdown"]
     assert "https://example.com/eval" in body["markdown"]
+    assert "http://example.com/x" in body["markdown"]
     expected = hashlib.sha256(json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     assert body["sha256"] == expected
 
