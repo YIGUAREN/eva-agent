@@ -35,7 +35,7 @@ def hash_session_id(session_id: str) -> str:
 def verify_csrf(token: str, expected: str) -> bool:
     if not token or not expected:
         return False
-    return secrets.compare_digest(token, expected)
+    return secrets.compare_digest(token.encode("utf-8"), expected.encode("utf-8"))
 
 
 async def issue_session(state: AppState) -> IssuedSession:
@@ -56,16 +56,18 @@ async def current_session(request: Request) -> AdminSessionRow:
     raw = request.cookies.get(SESSION_COOKIE)
     if not raw:
         raise ApiError(401, "unauthenticated", "login required")
-    session = await state.sessions.get(hash_session_id(raw))
+    now = state.now()
+    session = await state.sessions.get(hash_session_id(raw), now=now)
     if session is None:
         raise ApiError(401, "unauthenticated", "session expired")
-    now = state.now()
     if (now - ensure_utc(session.last_seen_at)).total_seconds() >= SLIDING_TOUCH_S:
         expires = min(
             now + timedelta(seconds=state.config.web.session_ttl_s),
             ensure_utc(session.absolute_expires_at),
         )
         await state.sessions.touch(session.id_hash, expires_at=expires, now=now)
+        session.last_seen_at = now
+        session.expires_at = expires
     return session
 
 
