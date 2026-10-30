@@ -95,10 +95,31 @@ _PATH_TERMINATORS = "\\s`\"'<>，。；：、（）【】#?"
 # as http:// and keeps the drive letter at a token boundary.
 _WINDOWS_ABSOLUTE_PATH = re.compile(rf"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^{_PATH_TERMINATORS}]*")
 
+# Windows UNC paths (``\\server\share\file``). Backslashes are not path
+# terminators, so the whole share token is consumed.
+_WINDOWS_UNC_PATH = re.compile(rf"(?<![A-Za-z0-9])\\\\[^{_PATH_TERMINATORS}]+")
+
+# POSIX UNC paths (``//server/share/file``). The lookbehind keeps the ``//`` in
+# ``http://`` and ``https://`` from being mistaken for a network share.
+_POSIX_UNC_PATH = re.compile(rf"(?<![:/])//[^{_PATH_TERMINATORS}]+")
+
 # POSIX absolute paths starting at a token boundary. The lookbehind rejects
-# word characters, ASCII colons (http://) and slashes (//host), while still
-# allowing a backtick or full-width colon right before the leading slash.
-_POSIX_ABSOLUTE_PATH = re.compile(rf"(?<![\w:/])/[^{_PATH_TERMINATORS}/][^{_PATH_TERMINATORS}]*")
+# ASCII word characters, a colon (http://), a slash (//host) and a hyphen (so
+# GitLab URLs such as ``-/jobs/1`` survive), while still allowing a backtick,
+# a quote, whitespace or CJK punctuation right before the leading slash.
+_POSIX_ABSOLUTE_PATH = re.compile(rf"(?<![A-Za-z0-9_:/\\-])/[^{_PATH_TERMINATORS}/][^{_PATH_TERMINATORS}]*")
+
+_ABSOLUTE_PATH_PATTERNS = (
+    _WINDOWS_ABSOLUTE_PATH,
+    _WINDOWS_UNC_PATH,
+    _POSIX_UNC_PATH,
+    _POSIX_ABSOLUTE_PATH,
+)
+
+
+def _has_absolute_path(text: str) -> bool:
+    """Return True when *text* contains any recognized absolute path token."""
+    return any(pattern.search(text) is not None for pattern in _ABSOLUTE_PATH_PATTERNS)
 
 
 def redact_absolute_paths(text: str) -> str:
@@ -106,8 +127,9 @@ def redact_absolute_paths(text: str) -> str:
 
     Line references such as ``D:\\data\\ds.jsonl#3`` become ``<path>#3``.
     """
-    text = _WINDOWS_ABSOLUTE_PATH.sub("<path>", text)
-    return _POSIX_ABSOLUTE_PATH.sub("<path>", text)
+    for pattern in _ABSOLUTE_PATH_PATTERNS:
+        text = pattern.sub("<path>", text)
+    return text
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -116,12 +138,20 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def sanitize_public_payload(value: Any) -> Any:
+    """Recursively sanitize a payload before it reaches the public API.
+
+    Sensitive keys are dropped. A string value that contains any absolute path
+    token (a Windows drive path, a Windows or POSIX UNC share, or a POSIX
+    absolute path) is replaced entirely with ``<path>``; whole-value replacement
+    prevents paths containing spaces or UNC shares from leaking their tail.
+    Other strings are returned unchanged.
+    """
     if isinstance(value, dict):
         return {key: sanitize_public_payload(item) for key, item in value.items() if not _is_sensitive_key(key)}
     if isinstance(value, list):
         return [sanitize_public_payload(item) for item in value]
     if isinstance(value, str):
-        return redact_absolute_paths(value)
+        return "<path>" if _has_absolute_path(value) else value
     return value
 
 

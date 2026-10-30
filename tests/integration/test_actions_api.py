@@ -146,12 +146,19 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
         "findings": [
             {"title": "absolute path leak", "evidence": [{"locator": "/data/ds.jsonl#3"}]},
         ],
+        "unc": {
+            "windows": "\\\\server\\share\\f.jsonl#3",
+            "posix": "//server/share/f.jsonl#3",
+            "spaced": "C:\\Users\\John Doe\\ds.jsonl",
+        },
+        "references": [{"url": "https://gitlab.com/g/a/-/jobs/1"}],
     }
     markdown = (
         f"# report {run_id}\n"
         "- 预算：cost ≤ 3.0 美元\n"
         "- 记录文件：`C:/secret/report.md`\n"
         "- 详情：`/tmp/secret/report.md`\n"
+        "- 定位：`/data/ds.jsonl#3`\n"
         "- 通过率：2/3\n"
         "- 生成时间：2026-01-01T00:00:00+00:00\n"
         "- 参考：https://example.com/eval\n"
@@ -169,21 +176,41 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
     assert "budget" not in report
     assert all(not key.endswith("_path") for key in _keys(report))
     assert report["nested"]["keep"] == "value"
-    assert report["dimensions"][0]["evidence"][0]["locator"] == "<path>#3"
-    assert report["findings"][0]["evidence"][0]["locator"] == "<path>#3"
+    assert report["dimensions"][0]["evidence"][0]["locator"] == "<path>"
+    assert report["findings"][0]["evidence"][0]["locator"] == "<path>"
+    assert report["unc"]["windows"] == "<path>"
+    assert report["unc"]["posix"] == "<path>"
+    assert report["unc"]["spaced"] == "<path>"
+    assert report["references"][0]["url"] == "https://gitlab.com/g/a/-/jobs/1"
     assert "D:\\data" not in response.text
     assert "D:\\\\data" not in response.text
     assert "/data/ds.jsonl" not in response.text
-    assert "#3" in response.text
+    assert "server" not in response.text
+    assert "share" not in response.text
+    assert "John Doe" not in response.text
+    assert "ds.jsonl" not in response.text
     assert "预算" not in body["markdown"]
     assert "C:/secret" not in body["markdown"]
     assert "/tmp/secret" not in body["markdown"]
+    assert "/data/ds.jsonl" not in body["markdown"]
+    assert "<path>#3" in body["markdown"]
     assert "2/3" in body["markdown"]
     assert "2026-01-01T00:00:00+00:00" in body["markdown"]
     assert "https://example.com/eval" in body["markdown"]
     assert "http://example.com/x" in body["markdown"]
     expected = hashlib.sha256(json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     assert body["sha256"] == expected
+
+    # Admin reads are unsanitized and must keep the raw locator values.
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/report", headers=csrf_headers(csrf))
+    assert admin.status_code == 200
+    admin_report = admin.json()["report"]
+    assert admin_report["dimensions"][0]["evidence"][0]["locator"] == "D:\\data\\ds.jsonl#3"
+    assert admin_report["findings"][0]["evidence"][0]["locator"] == "/data/ds.jsonl#3"
+    assert admin_report["unc"]["windows"] == "\\\\server\\share\\f.jsonl#3"
+    assert admin_report["unc"]["posix"] == "//server/share/f.jsonl#3"
+    assert admin_report["unc"]["spaced"] == "C:\\Users\\John Doe\\ds.jsonl"
 
 
 async def test_artifact_download_respects_visibility(client: AsyncClient, state: AppState, tmp_path: Path) -> None:
