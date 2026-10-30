@@ -165,6 +165,9 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
         "- 定位：`/data/ds.jsonl#3`\n"
         "- 间隔路径：`C:\\Users\\John Doe\\ds.jsonl#3`\n"
         "- 间隔路径：`/Users/John Doe/ds.jsonl#3`\n"
+        "- 空格结尾：`C:\\Users\\John\\My File.jsonl`\n"
+        "- 空格结尾：`/home/john/My Documents`\n"
+        "- 空格结尾：`\\\\server\\share\\My File.jsonl`\n"
         "- 通过率：2/3\n"
         "- 生成时间：2026-01-01T00:00:00+00:00\n"
         "- 参考：https://example.com/eval\n"
@@ -207,6 +210,9 @@ async def test_public_report_sanitizes_budget_and_paths(client: AsyncClient, sta
     assert "John Doe" not in body["markdown"]
     assert "Doe\\ds.jsonl" not in body["markdown"]
     assert "Doe/ds.jsonl" not in body["markdown"]
+    assert "My File" not in body["markdown"]
+    assert "File.jsonl" not in body["markdown"]
+    assert "Documents" not in body["markdown"]
     assert body["markdown"].count("<path>#3") == 3
     assert "2/3" in body["markdown"]
     assert "2026-01-01T00:00:00+00:00" in body["markdown"]
@@ -252,9 +258,35 @@ async def test_public_run_objective_is_sanitized(client: AsyncClient, state: App
         for raw in ("John Doe", "ds.jsonl", "10.0.0.5", "sk-abcdefgh123"):
             assert raw not in encoded
     public_objective = detail.json()["objective"]
-    assert "<path>" in public_objective
-    assert "<internal>" in public_objective
-    assert "<secret>" in public_objective
+    assert public_objective == "<path>"
+    assert listing.json()["items"][0]["objective"] == "<path>"
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}", headers=csrf_headers(csrf))
+    assert admin.status_code == 200
+    assert admin.json()["objective"] == objective
+
+
+async def test_public_run_objective_with_a_plain_path_becomes_path(
+    client: AsyncClient, state: AppState
+) -> None:
+    objective = "C:\\Users\\John Doe"
+    payload = {
+        **PASTE_PAYLOAD,
+        "input": {**PASTE_PAYLOAD["input"], "objective": objective},
+    }
+    csrf = await login(client)
+    created = await client.post("/api/runs", json=payload, headers=csrf_headers(csrf))
+    assert created.status_code == 201
+    run_id = created.json()["run_id"]
+    await state.runs.set_status(run_id, RunStatus.COMPLETED)
+    await state.runs.set_public(run_id, True, now=state.now())
+
+    detail = await client.get(f"/api/public/runs/{run_id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["objective"] == "<path>"
+    assert "John Doe" not in detail.text
 
     csrf = await login(client)
     admin = await client.get(f"/api/runs/{run_id}", headers=csrf_headers(csrf))

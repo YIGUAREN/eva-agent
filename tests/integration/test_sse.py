@@ -1,10 +1,14 @@
 import json
+from pathlib import Path
 
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
+from eva_agent.config.settings import AigSettings
 from eva_agent.domain.run import RunStatus
 from eva_agent.server.state import AppState
 from tests.support.api import PASTE_PAYLOAD, csrf_headers, login
+from tests.support.runtime import fake_config
+from tests.support.server import build_test_app
 
 
 async def _completed_run(client: AsyncClient, state: AppState) -> str:
@@ -66,6 +70,31 @@ async def test_public_sse_strips_paths_and_requires_publishing(
 
     await state.runs.set_public(run_id, False, now=state.now())
     assert (await client.get(f"/api/public/runs/{run_id}/events")).status_code == 404
+
+
+async def test_public_sse_redacts_the_configured_internal_host(tmp_path: Path) -> None:
+    config = fake_config(tmp_path).model_copy(
+        update={"aig": AigSettings(base_url="http://aig.internal:8100")}
+    )
+    app, state = await build_test_app(tmp_path, config=config)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
+            run_id = await _completed_run(client, state)
+            await state.runs.append_event(
+                run_id,
+                "command.failed",
+                {"error": "cannot reach http://aig.internal:8100/v1 with sk-secret12345"},
+            )
+
+            response = await client.get(f"/api/public/runs/{run_id}/events")
+
+        assert response.status_code == 200
+        assert "aig.internal" not in response.text
+        assert "sk-secret12345" not in response.text
+        assert "<internal>" in response.text
+        assert "<secret>" in response.text
+    finally:
+        await state.engine.dispose()
 
 
 async def test_sse_requires_authentication_for_admin_routes(client: AsyncClient, state: AppState) -> None:

@@ -86,7 +86,15 @@ def public_run_detail(row: RunRow, *, internal_hosts: tuple[str, ...] = ()) -> d
     summary = run_summary(row)
     objective = summary.get("objective")
     if isinstance(objective, str):
-        summary["objective"] = sanitize_public_text(objective, internal_hosts=internal_hosts)
+        # An objective that carries any absolute path is replaced wholesale: a
+        # token-level regex cannot distinguish the tail of a spaced path or a
+        # UNC share from surrounding prose.
+        if _has_absolute_path(objective):
+            summary["objective"] = "<path>"
+        else:
+            summary["objective"] = redact_internal_addresses_and_secrets(
+                objective, internal_hosts=internal_hosts
+            )
     return summary
 
 
@@ -143,6 +151,28 @@ def redact_absolute_paths(text: str) -> str:
     for pattern in _ABSOLUTE_PATH_PATTERNS:
         text = pattern.sub("<path>", text)
     return text
+
+
+def redact_markdown_paths(text: str) -> str:
+    """Redact path-bearing markdown lines as a whole.
+
+    The token regex stops at a space unless a later separator proves the space
+    belongs to the path, so a line ending in a spaced component or a UNC share
+    would leak its tail (``<path> File.jsonl``). Per line, this keeps the text
+    before the first path and the ``#<digits>`` line reference, then drops the
+    remainder. Over-redacting the rest of the line is intentional.
+    """
+    redacted: list[str] = []
+    for line in text.split("\n"):
+        matches = [match for pattern in _ABSOLUTE_PATH_PATTERNS if (match := pattern.search(line))]
+        if not matches:
+            redacted.append(line)
+            continue
+        first = min(matches, key=lambda match: match.start())
+        reference = re.match(r"#\d+", line[first.end() :])
+        suffix = reference.group(0) if reference else ""
+        redacted.append(f"{line[:first.start()]}<path>{suffix}")
+    return "\n".join(redacted)
 
 
 # Loopback and RFC1918 addresses, with an optional port. The lookarounds keep

@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from eva_agent.domain.run import RunStatus
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
-from eva_agent.server.routes.runs import _load_public_run, _load_run
+from eva_agent.server.routes.runs import _internal_hosts, _load_public_run, _load_run
 from eva_agent.server.schemas import sanitize_public_payload
 from eva_agent.server.state import AppState
 from eva_agent.storage.models import AdminSessionRow
@@ -44,13 +44,24 @@ def _format(seq: int, event_type: str, payload: object) -> str:
     return f"id: {seq}\ndata: {body}\n\n"
 
 
-async def _stream(state: AppState, run_id: str, cursor: int, *, public: bool) -> AsyncIterator[str]:
+async def _stream(
+    state: AppState,
+    run_id: str,
+    cursor: int,
+    *,
+    public: bool,
+    internal_hosts: tuple[str, ...] = (),
+) -> AsyncIterator[str]:
     elapsed = 0.0
     while True:
         events = await state.runs.list_events(run_id, after_seq=cursor)
         for event in events:
             cursor = event.seq
-            payload = sanitize_public_payload(event.payload_json) if public else event.payload_json
+            payload = (
+                sanitize_public_payload(event.payload_json, internal_hosts=internal_hosts)
+                if public
+                else event.payload_json
+            )
             yield _format(event.seq, event.type, payload)
         if events:
             elapsed = 0.0
@@ -91,7 +102,13 @@ async def public_events(
     state = get_state(request)
     await _load_public_run(state, run_id)
     return StreamingResponse(
-        _stream(state, run_id, _cursor(last_event_id), public=True),
+        _stream(
+            state,
+            run_id,
+            _cursor(last_event_id),
+            public=True,
+            internal_hosts=_internal_hosts(state),
+        ),
         media_type="text/event-stream",
         headers=_HEADERS,
     )

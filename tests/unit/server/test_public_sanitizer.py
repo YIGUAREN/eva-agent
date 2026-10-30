@@ -1,10 +1,12 @@
 """Unit tests for public sanitization of free text, payloads, and objectives."""
 
+import json
 from datetime import UTC, datetime
 
 from eva_agent.server.schemas import (
     public_run_detail,
     redact_internal_addresses_and_secrets,
+    redact_markdown_paths,
     sanitize_public_payload,
     sanitize_public_text,
 )
@@ -98,7 +100,45 @@ def test_payload_redacts_addresses_and_secrets_but_keeps_harmless_text() -> None
     assert cleaned["keep"] == "value"
 
 
-def test_public_run_detail_sanitizes_the_objective() -> None:
+def test_markdown_path_lines_drop_the_space_tail() -> None:
+    text = "\n".join(
+        [
+            "C:\\Users\\John\\My File.jsonl",
+            "/home/john/My Documents",
+            "\\\\server\\share\\My File.jsonl",
+        ]
+    )
+
+    cleaned = redact_markdown_paths(text)
+
+    assert cleaned.split("\n") == ["<path>", "<path>", "<path>"]
+    for raw in ("My File", "File.jsonl", "Documents"):
+        assert raw not in cleaned
+
+
+def test_markdown_path_line_keeps_a_line_reference() -> None:
+    assert redact_markdown_paths("/data/ds.jsonl#3") == "<path>#3"
+    assert redact_markdown_paths("before /data/ds.jsonl#3 after") == "before <path>#3"
+
+
+def test_markdown_lines_without_paths_survive() -> None:
+    text = (
+        "- 通过率：2/3\n"
+        "- 生成时间：2026-01-01T00:00:00+00:00\n"
+        "- 参考：https://example.com/eval\n"
+        "- 另一参考：http://example.com/x"
+    )
+
+    assert redact_markdown_paths(text) == text
+
+
+def test_public_run_detail_replaces_an_objective_containing_a_path() -> None:
+    detail = public_run_detail(_row(objective="C:\\Users\\John Doe"))
+
+    assert detail["objective"] == "<path>"
+
+
+def test_public_run_detail_replaces_a_path_and_prose_objective_wholesale() -> None:
     objective = (
         "inspect C:\\Users\\John Doe\\ds.jsonl at http://10.0.0.5:8088/x with sk-abcdefgh123"
     )
@@ -106,10 +146,20 @@ def test_public_run_detail_sanitizes_the_objective() -> None:
     detail = public_run_detail(_row(objective=objective))
 
     cleaned = detail["objective"]
-    assert "<path>" in cleaned
+    assert cleaned == "<path>"
+    for raw in ("John Doe", "ds.jsonl", "10.0.0.5", "sk-abcdefgh123"):
+        assert raw not in json.dumps(detail)
+
+
+def test_public_run_detail_sanitizes_an_objective_without_paths() -> None:
+    detail = public_run_detail(
+        _row(objective="call http://10.0.0.5:8088/x with sk-abcdefgh123 now")
+    )
+
+    cleaned = detail["objective"]
     assert "<internal>" in cleaned
     assert "<secret>" in cleaned
-    for raw in ("John Doe", "ds.jsonl", "10.0.0.5", "sk-abcdefgh123"):
+    for raw in ("10.0.0.5", "sk-abcdefgh123"):
         assert raw not in cleaned
 
 

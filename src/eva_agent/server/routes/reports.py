@@ -19,7 +19,11 @@ from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
 from eva_agent.server.errors import ApiError
 from eva_agent.server.routes.runs import _internal_hosts, _load_public_run, _load_run
-from eva_agent.server.schemas import sanitize_public_payload, sanitize_public_text
+from eva_agent.server.schemas import (
+    redact_internal_addresses_and_secrets,
+    redact_markdown_paths,
+    sanitize_public_payload,
+)
 from eva_agent.storage.models import AdminSessionRow
 
 router = APIRouter(prefix="/api", tags=["reports"])
@@ -41,7 +45,11 @@ def _sanitize_public_markdown(markdown: str, data_dir: str, *, internal_hosts: t
     never reveal absolute filesystem paths, internal addresses, secrets, or
     budget figures.
     """
-    text = sanitize_public_text(_redact_data_dir(markdown, data_dir), internal_hosts=internal_hosts)
+    # Line-level path redaction drops the remainder of any path-bearing line, so
+    # spaced path components and UNC share tails cannot survive. Internal
+    # addresses and secrets are still scrubbed token by token.
+    text = redact_markdown_paths(_redact_data_dir(markdown, data_dir))
+    text = redact_internal_addresses_and_secrets(text, internal_hosts=internal_hosts)
     return "\n".join(line for line in text.split("\n") if not line.startswith(_BUDGET_LINE_PREFIX))
 
 

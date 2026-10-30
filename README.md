@@ -106,4 +106,6 @@ uv run eva-worker --config config/config.yaml
 
 公开页：`http://127.0.0.1:8000/share/<run_id>`（需先发布）。开发前端时用 `cd web && pnpm dev`，Vite 会把 `/api` 代理到 `127.0.0.1:8000`。
 
+> `public_base_url` 必须与浏览器访问站点时使用的 Origin 完全一致（按本文档流程即 `http://127.0.0.1:8000`）。登录端点会校验 `Origin`/`Referer`，不一致会返回 403。Vite 开发服务器会把代理请求的 `Origin` 改写为 `http://127.0.0.1:8000`，因此 `pnpm dev` 下登录可以正常工作。
+
 > 本地用 `http://127.0.0.1:8000` 做明文 HTTP 验收时，请先在 `config/config.yaml` 中把 `web.cookie_secure` 设为 `false`，否则浏览器不会保存登录 Cookie。生产环境必须保持 `true`（需要 TLS）。
