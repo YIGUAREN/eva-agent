@@ -87,7 +87,7 @@ def _mount_spa(app: FastAPI, index_html: Path) -> None:
 
     @app.get("/{path:path}", include_in_schema=False, response_model=None)
     async def spa(path: str) -> FileResponse | JSONResponse:
-        if path.startswith("api/"):
+        if path == "api" or path.startswith("api/"):
             raise ApiError(404, "not_found", "not found")
         root = index_html.parent.resolve()
         candidate = (root / path).resolve()
