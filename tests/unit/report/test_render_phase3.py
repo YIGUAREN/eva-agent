@@ -121,3 +121,16 @@ def test_markdown_shows_refusal_reason() -> None:
     )
     markdown = render_markdown(data)
     assert "拒绝原因：`not_admin`" in markdown
+
+
+def test_markdown_does_not_fabricate_security_metrics_when_empty() -> None:
+    data = payload()
+    security = data["dimensions"][1]
+    security["metrics"] = {}
+    security["status"] = "failed"
+    security["score"] = None
+    security["error"] = "no usable security score"
+    markdown = render_markdown(data)
+    assert "| None | - | 0 | n/a | 0 / 0 | - |" not in markdown
+    assert "安全检查未完成：没有可用指标。" in markdown
+    assert "- 错误：no usable security score" in markdown

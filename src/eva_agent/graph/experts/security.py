@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from eva_agent.adapters.aig.errors import AigError, AigTimeout
 from eva_agent.domain.audit import AuditEvent
@@ -16,11 +17,40 @@ from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.experts.rows import prepare_rows_with_indexes
 from eva_agent.security.active import ActiveSummary, summarize_active
 from eva_agent.security.passive import passive_specs, summarize_passive
-from eva_agent.tools.aig import AigScanInput
+from eva_agent.tools.aig import AUDIT_RECORDED_ATTR, AigScanInput
 from eva_agent.tools.graders import RunGradersInput
 
 ActiveStatus = Literal["not_applicable", "refused", "unavailable", "failed", "completed"]
 SCAN_KIND = "model_redteam_report"
+
+
+def _audit_url(url: str | None) -> str | None:
+    """Return only scheme://host[:port], never path/query/fragment or credentials."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = parsed.hostname
+    if not parsed.scheme or not host:
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{parsed.scheme}://{host}:{port}" if port is not None else f"{parsed.scheme}://{host}"
+
+
+def _audit_already_recorded(exc: BaseException) -> bool:
+    """Walk the cause chain looking for a tool-level terminal audit marker."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, AUDIT_RECORDED_ATTR, False):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class SecurityExpert:
@@ -145,7 +175,7 @@ class SecurityExpert:
                     "reason": decision.reason,
                     "probe_count": probe_count,
                     "scan_requests": decision.scan_requests,
-                    "scan_base_url": decision.scan_base_url,
+                    "scan_base_url": _audit_url(decision.scan_base_url),
                 },
             )
         )
@@ -185,6 +215,20 @@ class SecurityExpert:
             )
             return "failed", None, self._active_metrics("failed", None), audit_error
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and not _audit_already_recorded(exc):
+                failed_audit = await self._audit(
+                    AuditEvent(
+                        run_id=run_id,
+                        actor="cli:admin",
+                        action="active_scan.failed",
+                        outcome="failed",
+                        target=target.name,
+                        authorization_ref=decision.authorization_ref,
+                        scan_kind=SCAN_KIND,
+                        detail={"error_type": "TimeoutError"},
+                    )
+                )
+                audit_error = audit_error or failed_audit
             await self._event(
                 run_id,
                 "security.active.failed",

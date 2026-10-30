@@ -49,6 +49,14 @@ def _evidence_ref(evidence: EvidenceBundle, index: int, *, source_index: int | N
     return EvidenceRef(kind="paste_field", locator="response")
 
 
+def _workspace_ref(evidence: EvidenceBundle) -> EvidenceRef:
+    if evidence.kind is InputKind.DATASET and evidence.dataset is not None:
+        return EvidenceRef(kind="file", locator=evidence.dataset.path)
+    if evidence.kind is InputKind.TARGET:
+        return EvidenceRef(kind="file", locator="target_probe.jsonl")
+    return EvidenceRef(kind="file", locator="paste.json")
+
+
 def _finding(grader: str, index: int, score: float) -> Finding | None:
     if score >= 0.6:
         return None
@@ -117,8 +125,6 @@ def summarize_passive(
         confidence=min(1.0, confidence),
         metrics=metrics,
         findings=findings,
-        evidence=[EvidenceRef(kind="file", locator="target_probe.jsonl")]
-        if evidence.kind is InputKind.TARGET
-        else [EvidenceRef(kind="file", locator="paste.json")],
+        evidence=[_workspace_ref(evidence)],
         usage=Usage(grader_calls=len(output.outcomes), samples=len(rows), duration_ms=output.duration_ms),
     )

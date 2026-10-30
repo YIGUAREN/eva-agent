@@ -70,12 +70,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _dimensions_summary(report_path: str | None) -> list[dict[str, Any]]:
+    if not report_path:
+        return []
+    try:
+        raw = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    dimensions = raw.get("dimensions")
+    if not isinstance(dimensions, list):
+        return []
+    summary: list[dict[str, Any]] = []
+    for item in dimensions:
+        if not isinstance(item, dict):
+            continue
+        summary.append(
+            {
+                "dimension": item.get("dimension"),
+                "status": item.get("status"),
+                "score": item.get("score"),
+            }
+        )
+    return summary
+
+
 def _view_payload(view: RunStatusView) -> dict[str, Any]:
     return {
         "run_id": view.run_id,
         "status": view.status.value,
         "plan": view.plan.model_dump(mode="json") if view.plan is not None else None,
         "report_json": view.report_json_path,
+        "dimensions": _dimensions_summary(view.report_json_path),
         "errors": view.errors,
     }
 

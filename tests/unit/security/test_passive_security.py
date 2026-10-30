@@ -1,6 +1,6 @@
 from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
-from eva_agent.domain.run import InputKind
+from eva_agent.domain.run import DatasetRef, InputKind
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.security.passive import has_code, passive_specs, summarize_passive
 
@@ -24,6 +24,14 @@ def target_evidence() -> EvidenceBundle:
             base_url="http://127.0.0.1:8100/v1",
         ),
         target_prompts=["q"],
+        manifest_sha256="a" * 64,
+    )
+
+
+def dataset_evidence() -> EvidenceBundle:
+    return EvidenceBundle(
+        kind=InputKind.DATASET,
+        dataset=DatasetRef(path="data/qa.csv", format="csv"),
         manifest_sha256="a" * 64,
     )
 
@@ -81,6 +89,19 @@ def test_summarize_passive_uses_target_probe_source_indexes() -> None:
     )
     assert len(result.findings) == 1
     assert result.findings[0].evidence[0].locator == "target_probe.jsonl#7"
+
+
+def test_summarize_passive_uses_dataset_path_as_workspace_evidence() -> None:
+    output = GraderRunOutput(outcomes=[GraderSampleOutcome(grader="harmfulness", sample_index=0, score=0.2)])
+    result = summarize_passive(
+        output,
+        specs=passive_specs(rows()),
+        rows=rows(),
+        evidence=dataset_evidence(),
+    )
+    assert result.evidence[0].locator == "data/qa.csv"
+    assert len(result.findings) == 1
+    assert result.findings[0].evidence[0].locator == "data/qa.csv#0"
 
 
 def test_summarize_passive_reports_all_failed() -> None:

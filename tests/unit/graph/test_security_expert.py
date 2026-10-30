@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -44,17 +45,22 @@ class FakeEvents:
         self.events.append((event_type, payload or {}))
 
 
-def target() -> TargetSpec:
+def target(*, base_url: str = "http://127.0.0.1:8100/v1") -> TargetSpec:
     return TargetSpec(
         name="demo",
         kind=TargetKind.OPENAI_COMPATIBLE,
         provider="demo",
         model="m",
-        base_url="http://127.0.0.1:8100/v1",
+        base_url=base_url,
     )
 
 
-def evidence(tmp_path: Path, kind: InputKind = InputKind.TARGET) -> EvidenceBundle:
+def evidence(
+    tmp_path: Path,
+    kind: InputKind = InputKind.TARGET,
+    *,
+    base_url: str = "http://127.0.0.1:8100/v1",
+) -> EvidenceBundle:
     if kind is InputKind.PASTE:
         return write_paste_workspace(
             "run-1", PastedInput(query="q", response="def f():\n    return 1"), tmp_path / "data"
@@ -62,7 +68,7 @@ def evidence(tmp_path: Path, kind: InputKind = InputKind.TARGET) -> EvidenceBund
     return EvidenceBundle(
         kind=kind,
         root=str(run_paths(tmp_path / "data", "run-1").evidence),
-        target=target(),
+        target=target(base_url=base_url),
         target_prompts=["q"],
         manifest_sha256="a" * 64,
     )
@@ -100,6 +106,7 @@ def build_deps(
     aig_enabled: bool = True,
     scan_error: Exception | None = None,
     events: FakeEvents | None = None,
+    target_base_url: str = "http://127.0.0.1:8100/v1",
 ) -> GraphDependencies:
     tools = ToolRegistry()
     tools.register(build_read_evidence_tool(1_000_000))
@@ -185,7 +192,7 @@ def build_deps(
         max_input_bytes=1_000_000,
         max_dataset_rows=100,
         default_sample_size=5,
-        targets={"demo": target()},
+        targets={"demo": target(base_url=target_base_url)},
         scan_policy=scan_policy,
         audit=audit,
         aig_configured=True,
@@ -270,3 +277,57 @@ async def test_active_failure_is_degraded_and_partial(tmp_path: Path) -> None:
     assert result.score == 0.8
     assert result.metrics["active"]["status"] == "failed"
     assert result.metrics["active"]["degraded"] is True
+
+
+async def test_scan_base_url_query_is_not_audited(tmp_path: Path) -> None:
+    write_probe(tmp_path)
+    audit = FakeAudit()
+    secret_url = "http://127.0.0.1:8100/v1?key=SECRET"
+    deps = build_deps(tmp_path, audit, target_base_url=secret_url)
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path, base_url=secret_url),
+        probe=ProbeSummary(path="p", total=1, succeeded=1, failed=0),
+        budget=security_budget(),
+    )
+    assert result.metrics["active"]["status"] == "completed"
+    requested = audit.events[0]
+    assert requested.action == "active_scan.requested"
+    assert "SECRET" not in json.dumps(requested.detail)
+    assert requested.detail["scan_base_url"] == "http://127.0.0.1:8100"
+
+
+async def test_registry_timeout_writes_terminal_audit(tmp_path: Path) -> None:
+    write_probe(tmp_path)
+    audit = FakeAudit()
+    deps = build_deps(tmp_path, audit, scan_error=TimeoutError("tool 'run_aig_scan' timed out"))
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path),
+        probe=ProbeSummary(path="p", total=1, succeeded=1, failed=0),
+        budget=security_budget(),
+    )
+    assert result.metrics["active"]["status"] == "failed"
+    assert [event.action for event in audit.events] == ["active_scan.requested", "active_scan.failed"]
+    assert audit.events[-1].detail["error_type"] == "TimeoutError"
+
+
+class RecordedTimeoutError(TimeoutError):
+    audit_recorded = True
+
+
+async def test_tool_recorded_timeout_does_not_duplicate_audit(tmp_path: Path) -> None:
+    write_probe(tmp_path)
+    audit = FakeAudit()
+    deps = build_deps(tmp_path, audit, scan_error=RecordedTimeoutError("tool 'run_aig_scan' timed out"))
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path),
+        probe=ProbeSummary(path="p", total=1, succeeded=1, failed=0),
+        budget=security_budget(),
+    )
+    assert result.metrics["active"]["status"] == "failed"
+    assert [event.action for event in audit.events] == ["active_scan.requested"]

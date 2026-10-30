@@ -115,6 +115,8 @@ def _quality_lines(metrics: dict[str, Any]) -> list[str]:
 
 
 def _security_lines(metrics: dict[str, Any]) -> list[str]:
+    if not metrics or ("passive" not in metrics and "active" not in metrics):
+        return ["- 安全检查未完成：没有可用指标。", ""]
     passive = metrics.get("passive") or {}
     active = metrics.get("active") or {}
     lines = [

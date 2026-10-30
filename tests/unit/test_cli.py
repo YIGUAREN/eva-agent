@@ -1,6 +1,9 @@
+import json
+from pathlib import Path
+
 import pytest
 
-from eva_agent.cli import _exit_code, build_parser, parse_column_map
+from eva_agent.cli import _exit_code, _view_payload, build_parser, parse_column_map
 from eva_agent.domain.run import RunStatus
 from eva_agent.runtime.manager import RunStatusView
 
@@ -91,3 +94,57 @@ def _view(status: RunStatus) -> RunStatusView:
 def test_exit_code_reports_failed_runs() -> None:
     assert _exit_code(_view(RunStatus.COMPLETED)) == 0
     assert _exit_code(_view(RunStatus.FAILED)) == 1
+
+
+def test_view_payload_includes_dimension_summary(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "dimensions": [
+                    {"dimension": "quality", "status": "ok", "score": 0.8, "summary": "ignored"},
+                    {"dimension": "security", "status": "partial", "score": 0.5},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    view = RunStatusView(
+        run_id="run-1",
+        status=RunStatus.COMPLETED,
+        plan=None,
+        report_json_path=str(report),
+        errors=[],
+    )
+    payload = _view_payload(view)
+    assert payload["dimensions"] == [
+        {"dimension": "quality", "status": "ok", "score": 0.8},
+        {"dimension": "security", "status": "partial", "score": 0.5},
+    ]
+    assert payload["run_id"] == "run-1"
+    assert payload["status"] == "completed"
+    assert payload["report_json"] == str(report)
+
+
+def test_view_payload_has_empty_dimensions_without_usable_report(tmp_path: Path) -> None:
+    assert _view_payload(_view(RunStatus.COMPLETED))["dimensions"] == []
+
+    missing = RunStatusView(
+        run_id="run-1",
+        status=RunStatus.COMPLETED,
+        plan=None,
+        report_json_path=str(tmp_path / "missing.json"),
+        errors=[],
+    )
+    assert _view_payload(missing)["dimensions"] == []
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("not json", encoding="utf-8")
+    unreadable = RunStatusView(
+        run_id="run-1",
+        status=RunStatus.COMPLETED,
+        plan=None,
+        report_json_path=str(broken),
+        errors=[],
+    )
+    assert _view_payload(unreadable)["dimensions"] == []
