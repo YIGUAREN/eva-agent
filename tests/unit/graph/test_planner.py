@@ -263,6 +263,16 @@ async def test_paste_prompt_allows_quality_and_security() -> None:
     assert "If the evidence has no response, both quality and security must be skipped" in prompt
 
 
+async def test_paste_prompt_omits_declarative_fields_for_non_declarative_graders() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+
+    await planner.plan(evidence(), budget)
+
+    assert "builtin and llm_rubric graders must omit `input_map`, `checks`, and `score`" in structured.prompts[0]
+
+
 async def test_prompt_documents_the_full_planner_schema() -> None:
     structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
     planner = LlmPlanner(None, build_registry(), structured_runner=structured)

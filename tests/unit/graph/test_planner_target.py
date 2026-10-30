@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
@@ -250,3 +251,60 @@ async def test_target_prompt_states_unused_dimensions_need_skip_reason(tmp_path:
     await planner.plan(target_evidence(tmp_path), budget())
 
     assert "Every dimension you do not enable MUST appear in skipped" in structured.prompts[0]
+
+
+async def test_target_prompt_omits_declarative_fields_for_non_declarative_graders(tmp_path: Path):
+    structured = FakeStructured(target_output())
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+
+    await planner.plan(target_evidence(tmp_path), budget())
+
+    assert "builtin and llm_rubric graders must omit `input_map`, `checks`, and `score`" in structured.prompts[0]
+
+
+def _llm_rubric_payload(**grader_overrides: object) -> dict:
+    grader: dict[str, object] = {
+        "level": "llm_rubric",
+        "name": "helpfulness",
+        "mode": "pointwise",
+        "input_map": {"response": "$.response"},
+        "checks": [],
+        "score": {"aggregation": "weighted_mean", "weights": {}},
+    }
+    grader.update(grader_overrides)
+    return {
+        "objective": "评估回答质量",
+        "evidence_summary": "target demo, 2 prompts",
+        "dimensions": [
+            {
+                "dimension": "quality",
+                "enabled": True,
+                "sample_size": 2,
+                "graders": [grader],
+            }
+        ],
+        "skipped": [],
+    }
+
+
+def test_planner_output_drops_empty_declarative_fields_from_llm_rubric() -> None:
+    output = PlannerOutput.model_validate(_llm_rubric_payload())
+
+    grader = output.dimensions[0].graders[0]
+    assert grader.level == "llm_rubric"
+    assert grader.checks is None
+    assert grader.score is None
+
+
+def test_planner_output_rejects_non_empty_checks_from_llm_rubric() -> None:
+    payload = _llm_rubric_payload(checks=[{"type": "json_parse", "field": "response"}])
+
+    with pytest.raises(ValidationError, match="checks are only valid for declarative graders"):
+        PlannerOutput.model_validate(payload)
+
+
+def test_planner_output_rejects_non_empty_weights_from_llm_rubric() -> None:
+    payload = _llm_rubric_payload(score={"aggregation": "weighted_mean", "weights": {"json_parse": 1.0}})
+
+    with pytest.raises(ValidationError, match="score is only valid for declarative graders"):
+        PlannerOutput.model_validate(payload)
