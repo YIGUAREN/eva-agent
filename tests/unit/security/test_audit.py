@@ -23,6 +23,5 @@ def test_sanitize_redacts_secrets_truncates_strings_and_limits_collections() -> 
 
 
 async def test_noop_sink_accepts_any_event() -> None:
-    await NoopAuditSink().record(
-        AuditEvent(run_id="run-1", actor="cli:admin", action="x", outcome="allowed")
-    )
+    event = AuditEvent(run_id="run-1", actor="cli:admin", action="x", outcome="allowed")
+    assert await NoopAuditSink().record(event) is None

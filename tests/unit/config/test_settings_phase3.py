@@ -16,7 +16,9 @@ def test_aig_defaults_are_local_and_bounded() -> None:
 
 def test_aig_rejects_empty_scan_and_inverted_windows() -> None:
     with pytest.raises(ValidationError):
-        AigSettings(scan={"datasets": [], "num_prompts": 1, "random_seed": 1})
+        AigSettings.model_validate(
+            {"scan": {"datasets": [], "num_prompts": 1, "random_seed": 1}}
+        )
     with pytest.raises(ValidationError):
         AigSettings(poll_initial_s=5, poll_max_s=2)
     with pytest.raises(ValidationError):
