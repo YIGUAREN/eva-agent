@@ -85,8 +85,7 @@ class RunRepository:
         if cursor is not None:
             created_at, run_id = cursor
             query = query.where(
-                (RunRow.created_at < created_at)
-                | ((RunRow.created_at == created_at) & (RunRow.id < run_id))
+                (RunRow.created_at < created_at) | ((RunRow.created_at == created_at) & (RunRow.id < run_id))
             )
         query = query.order_by(RunRow.created_at.desc(), RunRow.id.desc()).limit(limit)
         async with self._session_factory() as session:

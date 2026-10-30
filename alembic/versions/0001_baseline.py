@@ -19,7 +19,7 @@ def upgrade() -> None:
         sa.Column("input_json", sa.JSON(), nullable=False),
         sa.Column("budget_json", sa.JSON(), nullable=False),
         sa.Column("plan_json", sa.JSON(), nullable=True),
-        sa.Column("is_public", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_public", sa.Boolean(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )

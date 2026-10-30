@@ -29,9 +29,7 @@ class ReportRepository:
         async with self._session_factory() as session:
             row = await session.get(ReportRow, run_id)
             if row is None:
-                session.add(
-                    ReportRow(run_id=run_id, version=version, json=payload, markdown=markdown, sha256=digest)
-                )
+                session.add(ReportRow(run_id=run_id, version=version, json=payload, markdown=markdown, sha256=digest))
             else:
                 row.version = version
                 row.json = payload

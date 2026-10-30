@@ -57,8 +57,6 @@ class AdminSessionRepository:
     async def revoke(self, id_hash: str) -> None:
         async with self._session_factory() as session:
             await session.execute(
-                update(AdminSessionRow)
-                .where(AdminSessionRow.id_hash == id_hash)
-                .values(revoked_at=utcnow())
+                update(AdminSessionRow).where(AdminSessionRow.id_hash == id_hash).values(revoked_at=utcnow())
             )
             await session.commit()

@@ -23,7 +23,7 @@ class RunRow(Base):
     budget_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     plan_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_public: Mapped[bool] = mapped_column(default=False, nullable=False)
-    idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     authorization_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -32,6 +32,8 @@ class RunRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
+
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_runs_idempotency_key"),)
 
 
 class RunEventCounterRow(Base):
