@@ -96,6 +96,37 @@ class SecuritySettings(BaseModel):
     policy_path: str = Field(default="config/security_policy.yaml", min_length=1)
 
 
+class AigScanSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    datasets: list[str] = Field(
+        default_factory=lambda: ["JailbreakPrompts-Tiny"],
+        min_length=1,
+    )
+    num_prompts: int = Field(default=20, gt=0)
+    random_seed: int = 42
+
+
+class AigSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    base_url: str = Field(default="http://127.0.0.1:8088", min_length=1)
+    timeout_s: float = Field(default=30.0, gt=0)
+    poll_initial_s: float = Field(default=2.0, gt=0)
+    poll_max_s: float = Field(default=10.0, gt=0)
+    max_wait_s: float = Field(default=600.0, gt=0)
+    min_wait_s: float = Field(default=30.0, gt=0)
+    scan: AigScanSettings = Field(default_factory=AigScanSettings)
+
+    @model_validator(mode="after")
+    def _validate_windows(self) -> AigSettings:
+        if self.poll_max_s < self.poll_initial_s:
+            raise ValueError("poll_max_s must be >= poll_initial_s")
+        if self.min_wait_s > self.max_wait_s:
+            raise ValueError("min_wait_s must be <= max_wait_s")
+        return self
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -109,6 +140,7 @@ class AppConfig(BaseModel):
     target: TargetSettings = Field(default_factory=TargetSettings)
     pricing: PricingSettings = Field(default_factory=PricingSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    aig: AigSettings | None = None
 
 
 def load_config(path: Path) -> AppConfig:

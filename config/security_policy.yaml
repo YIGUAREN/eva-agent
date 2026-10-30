@@ -1,5 +1,8 @@
-active_scan_enabled: false
+active_scan_enabled: true
+requester_is_admin: true
+authorization_ref: "demo"
 demo_targets:
   - name: demo
     origin: "http://127.0.0.1:8100"
+    aig_base_url: "http://demo-target:8100/v1"
 allowlist: []

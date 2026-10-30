@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from eva_agent.config.settings import ConfigError
 from eva_agent.domain.target import TargetKind, TargetSpec
@@ -56,23 +56,45 @@ class SecurityPolicyError(ValueError):
 
 
 class DemoTarget(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     name: str = Field(min_length=1)
     origin: str = Field(min_length=1)
+    aig_base_url: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_urls(self) -> DemoTarget:
+        parse_origin(self.origin)
+        if self.aig_base_url is not None:
+            parse_base_url(self.aig_base_url)
+        return self
 
 
 class SecurityPolicy(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     active_scan_enabled: bool = False
+    requester_is_admin: bool = False
+    authorization_ref: str | None = Field(default=None, min_length=1)
     demo_targets: list[DemoTarget] = Field(default_factory=list)
     allowlist: list[str] = Field(default_factory=list)
 
+    @field_validator("allowlist", mode="after")
+    @classmethod
+    def _validate_allowlist(cls, allowlist: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for origin in allowlist:
+            parse_origin(origin)
+            if origin not in deduped:
+                deduped.append(origin)
+        return deduped
+
     @model_validator(mode="after")
-    def _validate_origins(self) -> SecurityPolicy:
+    def _validate_urls(self) -> SecurityPolicy:
         for item in self.demo_targets:
             parse_origin(item.origin)
+            if item.aig_base_url is not None:
+                parse_base_url(item.aig_base_url)
         return self
 
 
@@ -89,17 +111,32 @@ class ValidatedTarget:
 def parse_origin(origin: str) -> tuple[str, str, int]:
     parsed = urlparse(origin)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("demo target origin must include scheme, host, and port")
+        raise ValueError("origin must include scheme, host, and port")
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError("demo target origin must not include credentials")
+        raise ValueError("origin must not include credentials")
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
-        raise ValueError("demo target origin must be scheme://host:port only")
+        raise ValueError("origin must be scheme://host:port only")
     try:
         port = parsed.port
     except ValueError:
         port = None
     if port is None:
-        raise ValueError("demo target origin must include scheme, host, and port")
+        raise ValueError("origin must include scheme, host, and port")
+    return parsed.scheme, parsed.hostname.lower(), port
+
+
+def parse_base_url(url: str) -> tuple[str, str, int | None]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("base URL must include scheme and host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("base URL must not include credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("base URL must not include query or fragment")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("base URL has an invalid port") from None
     return parsed.scheme, parsed.hostname.lower(), port
 
 

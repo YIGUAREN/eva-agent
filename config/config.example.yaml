@@ -47,3 +47,15 @@ pricing:
 
 security:
   policy_path: "config/security_policy.yaml"
+
+aig:
+  base_url: "http://127.0.0.1:8088"
+  timeout_s: 30
+  poll_initial_s: 2
+  poll_max_s: 10
+  max_wait_s: 600
+  min_wait_s: 30
+  scan:
+    datasets: ["JailbreakPrompts-Tiny"]
+    num_prompts: 20
+    random_seed: 42
