@@ -26,7 +26,9 @@ from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.plan_validation import parse_plan_edit
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.dependencies import build_runtime_dependencies
+from eva_agent.storage.audit import AuditRepository
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
+from eva_agent.storage.models import AuditEventRow
 from eva_agent.storage.repository import RunRepository
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,7 @@ class RunManager:
         self._checkpoint_conn: aiosqlite.Connection | None = None
         self._engine: Any = None
         self._repo: RunRepository | None = None
+        self._audit: AuditRepository | None = None
         self._graph: Any = None
         self._dependencies: GraphDependencies | None = None
 
@@ -117,7 +120,10 @@ class RunManager:
         engine = create_engine(self._config.storage.url)
         await init_db(engine)
         self._engine = engine
-        self._repo = RunRepository(create_session_factory(engine))
+        session_factory = create_session_factory(engine)
+        self._repo = RunRepository(session_factory)
+        audit = AuditRepository(session_factory)
+        self._audit = audit
 
         if self._checkpointer is None:
             path = Path(self._config.storage.checkpoint_path)
@@ -131,7 +137,7 @@ class RunManager:
             self._checkpointer = saver
             self._checkpoint_conn = conn
 
-        base = self._base_dependencies or build_runtime_dependencies(self._config)
+        base = self._base_dependencies or build_runtime_dependencies(self._config, audit=audit)
         self._dependencies = base
         self._graph = build_graph(replace(base, event_sink=self._event_sink), self._checkpointer)
 
@@ -320,3 +326,8 @@ class RunManager:
         if not path.is_file():
             raise RunStateError(f"report for run '{run_id}' is not ready")
         return json.loads(path.read_text(encoding="utf-8"))
+
+    async def audit_events(self, run_id: str) -> list[AuditEventRow]:
+        if self._audit is None:
+            raise RuntimeError("RunManager.setup() must run before audit access")
+        return await self._audit.list_for_run(run_id)

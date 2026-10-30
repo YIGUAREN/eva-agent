@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from eva_agent.adapters.aig.client import AigClient, AigScanClient
 from eva_agent.adapters.openjudge.catalog import load_catalog
 from eva_agent.adapters.openjudge.models import build_openjudge_model
 from eva_agent.adapters.openjudge.rubric import OpenJudgeRubricGenerator
@@ -17,6 +18,8 @@ from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.planner import LlmPlanner
 from eva_agent.llm.factory import build_agent_chat_model, structured_output_method
 from eva_agent.pricing import PricingTable
+from eva_agent.security.audit import AuditSink, noop_audit_sink
+from eva_agent.security.scan_policy import ScanPolicy
 from eva_agent.security.target_policy import TargetPolicy, load_security_policy
 from eva_agent.tools.bundle import ToolDependencies, build_tool_registry
 
@@ -27,11 +30,25 @@ def build_runtime_dependencies(
     config: AppConfig,
     *,
     env: Mapping[str, str] | None = None,
+    audit: AuditSink = noop_audit_sink,
+    aig_client: AigScanClient | None = None,
 ) -> GraphDependencies:
     environment = os.environ if env is None else env
     targets = load_targets(Path(config.target.targets_path))
-    policy = TargetPolicy(load_security_policy(Path(config.security.policy_path)))
+    security_policy = load_security_policy(Path(config.security.policy_path))
+    policy = TargetPolicy(security_policy)
     pricing = PricingTable.load(Path(config.pricing.path))
+
+    aig_configured = config.aig is not None
+    client: AigScanClient | None = None
+    scan_policy: ScanPolicy | None = None
+    if config.aig is not None:
+        client = aig_client or AigClient(config.aig)
+        scan_policy = ScanPolicy(
+            security_policy,
+            aig=config.aig,
+            eval_model_available=bool(environment.get(config.models.attack.api_key_env)),
+        )
 
     catalog = load_catalog(Path(config.openjudge.catalog_path))
     judge_model = build_openjudge_model(config.models.judge, environment)
@@ -56,6 +73,11 @@ def build_runtime_dependencies(
             token_encoding=config.target.token_encoding,
             target_timeout_s=config.target.timeout_s,
             max_response_bytes=config.target.max_response_bytes,
+            aig_client=client,
+            aig_settings=config.aig,
+            eval_model=config.models.attack if config.aig is not None else None,
+            audit=audit,
+            data_dir=config.storage.data_dir,
         )
     )
     planner = LlmPlanner(
@@ -78,4 +100,7 @@ def build_runtime_dependencies(
         target_timeout_s=config.target.timeout_s,
         max_response_bytes=config.target.max_response_bytes,
         token_encoding=config.target.token_encoding,
+        scan_policy=scan_policy,
+        audit=audit,
+        aig_configured=aig_configured,
     )

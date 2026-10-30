@@ -3,10 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from eva_agent.adapters.aig.client import AigScanClient
 from eva_agent.adapters.openjudge.catalog import GraderEntry
 from eva_agent.adapters.target.base import TargetTransport
+from eva_agent.config.settings import AigSettings, ModelConfig
 from eva_agent.pricing import PricingTable
+from eva_agent.security.audit import AuditSink, noop_audit_sink
 from eva_agent.security.target_policy import TargetPolicy
+from eva_agent.tools.aig import build_run_aig_scan_tool
 from eva_agent.tools.dataset import build_sample_dataset_tool
 from eva_agent.tools.declarative import build_run_declarative_checks_tool
 from eva_agent.tools.evidence import build_read_evidence_tool
@@ -32,6 +36,11 @@ class ToolDependencies:
     token_encoding: str = "cl100k_base"
     target_timeout_s: float = 30.0
     max_response_bytes: int = 1_048_576
+    aig_client: AigScanClient | None = None
+    aig_settings: AigSettings | None = None
+    eval_model: ModelConfig | None = None
+    audit: AuditSink = field(default=noop_audit_sink)
+    data_dir: str = "./data"
 
 
 def build_tool_registry(dependencies: ToolDependencies) -> ToolRegistry:
@@ -56,4 +65,19 @@ def build_tool_registry(dependencies: ToolDependencies) -> ToolRegistry:
         )
     if dependencies.pricing is not None:
         registry.register(build_get_pricing_tool(dependencies.pricing))
+    if (
+        dependencies.aig_client is not None
+        and dependencies.aig_settings is not None
+        and dependencies.eval_model is not None
+    ):
+        registry.register(
+            build_run_aig_scan_tool(
+                client=dependencies.aig_client,
+                settings=dependencies.aig_settings,
+                eval_model=dependencies.eval_model,
+                env=dependencies.env,
+                audit=dependencies.audit,
+                data_dir=dependencies.data_dir,
+            )
+        )
     return registry
