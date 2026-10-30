@@ -260,6 +260,7 @@ async def test_paste_prompt_allows_quality_and_security() -> None:
     assert "quality and security are available for paste/dataset input" in prompt
     assert "latency and cost MUST appear in skipped with a non-empty reason" in prompt
     assert 'security MUST set `"graders": []`' in prompt
+    assert "If the evidence has no response, both quality and security must be skipped" in prompt
 
 
 async def test_prompt_documents_the_full_planner_schema() -> None:

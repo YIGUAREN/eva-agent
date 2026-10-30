@@ -322,7 +322,7 @@ max_target_requests={budget.max_target_requests}
 The JSON must have exactly this shape:
 {{"objective": str,
  "evidence_summary": str,
- "dimensions": [{{"dimension": "quality",
+ "dimensions": [{{"dimension": "quality"|"security",
                  "enabled": true,
                  "sample_size": int|null,
                  "graders": [{{"level": "builtin"|"llm_rubric",
