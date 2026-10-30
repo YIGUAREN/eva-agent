@@ -20,7 +20,7 @@ from eva_agent.domain.result import (
     Usage,
 )
 from eva_agent.domain.run import InputKind
-from eva_agent.graph.experts.rows import prepare_rows
+from eva_agent.graph.experts.rows import prepare_rows_with_indexes
 from eva_agent.tools.graders import RunGradersInput
 from eva_agent.tools.registry import ToolRegistry
 
@@ -32,13 +32,20 @@ class QualityState(TypedDict):
     plan: DimensionPlan
     evidence: EvidenceBundle
     rows: list[dict[str, str]]
+    source_indexes: list[int | None]
     specs: list[GraderSpec]
     outputs: list[GraderRunOutput]
     normalized: NormalizedQuality | None
     result: DimensionResult | None
 
 
-def _sample_ref(evidence: EvidenceBundle, row: dict[str, str], index: int) -> EvidenceRef:
+def _sample_ref(
+    evidence: EvidenceBundle,
+    row: dict[str, str],
+    index: int,
+    *,
+    source_index: int | None = None,
+) -> EvidenceRef:
     excerpt = (row.get("response") or "")[:160] or None
     if evidence.kind is InputKind.DATASET and evidence.dataset is not None:
         return EvidenceRef(
@@ -47,7 +54,8 @@ def _sample_ref(evidence: EvidenceBundle, row: dict[str, str], index: int) -> Ev
             excerpt=excerpt,
         )
     if evidence.kind is InputKind.TARGET:
-        return EvidenceRef(kind="target_request", locator=f"target_probe.jsonl#{index}", excerpt=excerpt)
+        locator_index = source_index if source_index is not None else index
+        return EvidenceRef(kind="target_request", locator=f"target_probe.jsonl#{locator_index}", excerpt=excerpt)
     return EvidenceRef(kind="paste_field", locator="response", excerpt=excerpt)
 
 
@@ -65,6 +73,7 @@ def aggregate_outcomes(
     specs: list[GraderSpec],
     rows: list[dict[str, str]],
     evidence: EvidenceBundle,
+    source_indexes: list[int | None] | None = None,
 ) -> NormalizedQuality:
     by_sample: dict[int, list[float]] = defaultdict(list)
     by_grader: dict[str, list[float]] = defaultdict(list)
@@ -89,6 +98,7 @@ def aggregate_outcomes(
     for index, score in sample_scores.items():
         if score >= LOW_SCORE_THRESHOLD or index >= len(rows):
             continue
+        source_index = source_indexes[index] if source_indexes is not None and index < len(source_indexes) else None
         findings.append(
             Finding(
                 id=f"quality-low-{index + 1}",
@@ -96,7 +106,7 @@ def aggregate_outcomes(
                 category="quality",
                 title=f"样本 {index + 1} 质量得分偏低",
                 description=(f"样本 {index + 1} 的平均质量得分为 {score:.3f}，低于阈值 {LOW_SCORE_THRESHOLD}。"),
-                evidence=[_sample_ref(evidence, rows[index], index)],
+                evidence=[_sample_ref(evidence, rows[index], index, source_index=source_index)],
                 remediation=("检查该样本的提问与回答内容，确认是否存在答非所问、信息缺失或事实错误。"),
             )
         )
@@ -162,7 +172,7 @@ def summarize_quality(
 def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) -> Any:
     async def prepare(state: QualityState) -> dict[str, Any]:
         limit = state["plan"].sample_size or default_sample_size
-        rows = await prepare_rows(
+        rows, source_indexes = await prepare_rows_with_indexes(
             tools,
             state["evidence"],
             run_id=state["run_id"],
@@ -170,7 +180,7 @@ def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) ->
         )
         if not rows:
             raise ValueError("no rows with a non-empty query and response")
-        return {"rows": rows}
+        return {"rows": rows, "source_indexes": source_indexes}
 
     async def resolve_graders(state: QualityState) -> dict[str, Any]:
         if state["plan"].dimension is not Dimension.QUALITY:
@@ -204,6 +214,7 @@ def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) ->
                 specs=state["specs"],
                 rows=state["rows"],
                 evidence=state["evidence"],
+                source_indexes=state["source_indexes"],
             )
         }
 
@@ -251,6 +262,7 @@ class QualityExpert:
                 "plan": plan,
                 "evidence": evidence,
                 "rows": [],
+                "source_indexes": [],
                 "specs": [],
                 "outputs": [],
                 "normalized": None,

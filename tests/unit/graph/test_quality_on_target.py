@@ -49,6 +49,53 @@ def write_probe(tmp_path: Path) -> None:
     )
 
 
+async def test_quality_expert_cites_source_probe_index(tmp_path: Path) -> None:
+    paths = run_paths(tmp_path / "data", "run-1")
+    paths.root.mkdir(parents=True, exist_ok=True)
+    store = ProbeStore(paths.target_probe)
+    store.reset()
+    store.append(
+        ProbeRecord(
+            index=0, prompt="q1", started_at=datetime.now(UTC), status_code=None,
+            latency_ms=10, response_text="", error="timeout",
+        )
+    )
+    store.append(
+        ProbeRecord(
+            index=1, prompt="q2", started_at=datetime.now(UTC), status_code=200,
+            latency_ms=10, response_text="a2",
+        )
+    )
+
+    async def handler(payload: RunGradersInput) -> GraderRunOutput:
+        return GraderRunOutput(
+            outcomes=[
+                GraderSampleOutcome(grader="relevance", sample_index=index, score=0.2)
+                for index in range(len(payload.rows))
+            ]
+        )
+
+    tools = ToolRegistry()
+    tools.register(build_read_target_probe_tool())
+    tools.register(
+        ToolSpec(
+            name="run_graders", description="fake", input_model=RunGradersInput,
+            output_model=GraderRunOutput, permission="internal", timeout_s=10,
+            side_effects=False, idempotent=False, handler=handler,
+        )
+    )
+    plan = DimensionPlan(
+        dimension=Dimension.QUALITY, enabled=True, sample_size=2,
+        graders=[GraderSpec(level="builtin", name="relevance", builtin_id="relevance")],
+    )
+    result = await QualityExpert(tools, default_sample_size=5).run(
+        run_id="run-1", plan=plan, evidence=evidence(tmp_path)
+    )
+
+    assert len(result.findings) == 1
+    assert result.findings[0].evidence[0].locator == "target_probe.jsonl#1"
+
+
 async def test_quality_expert_grades_successful_target_rows(tmp_path: Path) -> None:
     write_probe(tmp_path)
     seen: list[RunGradersInput] = []

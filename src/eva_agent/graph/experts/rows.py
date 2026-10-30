@@ -24,13 +24,14 @@ def _paste_row(payload: dict) -> dict[str, str]:
     }
 
 
-async def prepare_rows(
+async def _prepare_with_indexes(
     tools: ToolRegistry,
     evidence: EvidenceBundle,
     *,
     run_id: str,
     limit: int,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], list[int | None]]:
+    indexes: list[int | None]
     if evidence.kind is InputKind.DATASET:
         if evidence.dataset is None or evidence.root is None:
             raise ValueError("dataset evidence is incomplete")
@@ -45,6 +46,7 @@ async def prepare_rows(
             ),
         )
         rows = [dict(row) for row in sample.rows]
+        indexes = [None] * len(rows)
     elif evidence.kind is InputKind.PASTE:
         if evidence.root is None:
             raise ValueError("paste evidence has no workspace")
@@ -58,12 +60,20 @@ async def prepare_rows(
             ),
         )
         rows = [_paste_row(json.loads(raw))]
+        indexes = [None]
     elif evidence.kind is InputKind.TARGET:
         if evidence.root is None:
             raise ValueError("target evidence has no workspace")
         # target_probe.jsonl lives under the run root, next to the evidence directory.
         run_root = Path(evidence.root).parent
         probe = await tools.call("read_target_probe", ReadTargetProbeInput(root=str(run_root), run_id=run_id))
+        records = [
+            record
+            for record in probe.records
+            if record.status_code is not None
+            and 200 <= record.status_code < 300
+            and record.response_text
+        ]
         rows = [
             {
                 "query": record.prompt,
@@ -71,13 +81,36 @@ async def prepare_rows(
                 "context": "",
                 "reference": "",
             }
-            for record in probe.records
-            if record.status_code is not None
-            and 200 <= record.status_code < 300
-            and record.response_text
+            for record in records
         ]
+        indexes = [record.index for record in records]
     else:
         raise ValueError(f"unsupported input kind '{evidence.kind.value}'")
 
-    usable = [row for row in rows if row.get("query") and row.get("response")]
-    return usable[:limit]
+    usable = [
+        (row, source_index)
+        for row, source_index in zip(rows, indexes, strict=True)
+        if row.get("query") and row.get("response")
+    ][:limit]
+    return [row for row, _ in usable], [source_index for _, source_index in usable]
+
+
+async def prepare_rows(
+    tools: ToolRegistry,
+    evidence: EvidenceBundle,
+    *,
+    run_id: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    rows, _ = await _prepare_with_indexes(tools, evidence, run_id=run_id, limit=limit)
+    return rows
+
+
+async def prepare_rows_with_indexes(
+    tools: ToolRegistry,
+    evidence: EvidenceBundle,
+    *,
+    run_id: str,
+    limit: int,
+) -> tuple[list[dict[str, str]], list[int | None]]:
+    return await _prepare_with_indexes(tools, evidence, run_id=run_id, limit=limit)
