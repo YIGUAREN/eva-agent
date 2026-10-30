@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from eva_agent.domain.target import TargetSpec
 from eva_agent.graph.events import EventSink, noop_event_sink
 from eva_agent.graph.planner import Planner
+from eva_agent.security.audit import AuditSink, noop_audit_sink
+from eva_agent.security.scan_policy import ScanPolicy
 from eva_agent.security.target_policy import TargetPolicy
 from eva_agent.tools.registry import ToolRegistry
 
@@ -28,3 +30,6 @@ class GraphDependencies:
     target_timeout_s: float = 30.0
     max_response_bytes: int = 1_048_576
     token_encoding: str = "cl100k_base"
+    scan_policy: ScanPolicy | None = None
+    audit: AuditSink = field(default=noop_audit_sink)
+    aig_configured: bool = False

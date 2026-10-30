@@ -20,9 +20,12 @@ from eva_agent.graph.nodes.plan import plan_node
 from eva_agent.graph.nodes.probe import probe_node
 from eva_agent.graph.nodes.quality import quality_node
 from eva_agent.graph.nodes.report import report_node
+from eva_agent.graph.nodes.security import security_node
 from eva_agent.graph.state import EvalState
 
-SUPPORTED_DIMENSIONS = frozenset({Dimension.QUALITY, Dimension.LATENCY, Dimension.COST})
+SUPPORTED_DIMENSIONS = frozenset(
+    {Dimension.QUALITY, Dimension.LATENCY, Dimension.COST, Dimension.SECURITY}
+)
 
 
 def _route_after_intake(state: EvalState) -> str:
@@ -68,6 +71,7 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
     graph.add_node("quality", partial(quality_node, deps=dependencies))
     graph.add_node("latency", partial(latency_node, deps=dependencies))
     graph.add_node("cost", partial(cost_node, deps=dependencies))
+    graph.add_node("security", partial(security_node, deps=dependencies))
     graph.add_node("merge", partial(merge_node, deps=dependencies))
     graph.add_node("analyze", partial(analyze_node, deps=dependencies))
     graph.add_node("report", partial(report_node, deps=dependencies))
@@ -84,11 +88,12 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
     graph.add_conditional_edges(
         "dispatch",
         route_experts,
-        {"quality": "quality", "latency": "latency", "cost": "cost", END: END},
+        {"quality": "quality", "latency": "latency", "cost": "cost", "security": "security", END: END},
     )
     graph.add_edge("quality", "merge")
     graph.add_edge("latency", "merge")
     graph.add_edge("cost", "merge")
+    graph.add_edge("security", "merge")
     graph.add_edge("merge", "analyze")
     graph.add_edge("analyze", "report")
     graph.add_edge("report", END)
