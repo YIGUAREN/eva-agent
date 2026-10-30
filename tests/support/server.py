@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.server.app import create_app
+from eva_agent.server.passwords import hash_password
 from eva_agent.server.ratelimit import LoginRateLimiter
 from eva_agent.server.state import AppState
 from eva_agent.storage.audit import AuditRepository
@@ -43,7 +44,7 @@ async def build_test_app(
         reports=ReportRepository(factory),
         artifacts=ArtifactRepository(factory),
         audit=AuditRepository(factory),
-        admin_password_hash="not-configured-in-task-4",
+        admin_password_hash=hash_password(password),
         login_limiter=LoginRateLimiter(),
         index_html=index_html,
     )
