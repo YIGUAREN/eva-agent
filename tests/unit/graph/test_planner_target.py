@@ -162,6 +162,7 @@ async def test_target_planner_builds_latency_and_cost(tmp_path: Path):
     assert "max_target_requests=5" in prompt
     assert '"dimension": "quality"|"latency"|"cost"|"security"' in prompt
     assert 'security MUST set `"graders": []`' in prompt
+    assert "`score.weights` keys must equal the check `name`, or the check `type` when it has no name." in prompt
 
 
 async def test_target_planner_reads_target_json_not_manifest(tmp_path: Path):
@@ -308,3 +309,56 @@ def test_planner_output_rejects_non_empty_weights_from_llm_rubric() -> None:
 
     with pytest.raises(ValidationError, match="score is only valid for declarative graders"):
         PlannerOutput.model_validate(payload)
+
+
+def _target_declarative_payload(weights: dict[str, float]) -> dict:
+    return {
+        "objective": "评估目标延迟",
+        "evidence_summary": "target demo, 2 prompts",
+        "dimensions": [
+            {
+                "dimension": "latency",
+                "enabled": True,
+                "sample_size": 2,
+                "graders": [
+                    {
+                        "level": "declarative",
+                        "name": "latency_budget",
+                        "mode": "pointwise",
+                        "input_map": {"latency_ms": "$.latency_ms"},
+                        "checks": [
+                            {
+                                "name": "latency_under_10s",
+                                "type": "numeric_threshold",
+                                "field": "latency_ms",
+                                "op": "<",
+                                "value": 10000,
+                            }
+                        ],
+                        "score": {"aggregation": "weighted_mean", "weights": weights},
+                    }
+                ],
+            }
+        ],
+        "skipped": [
+            {"dimension": "cost", "reason": "不在目标范围"},
+            {"dimension": "quality", "reason": "不在目标范围"},
+            {"dimension": "security", "reason": "不在目标范围"},
+        ],
+    }
+
+
+def test_planner_output_rewrites_weight_type_key_to_the_check_name() -> None:
+    output = PlannerOutput.model_validate(_target_declarative_payload({"numeric_threshold": 1.0}))
+
+    grader = output.dimensions[0].graders[0]
+    assert grader.score is not None
+    assert grader.score.weights == {"latency_under_10s": 1.0}
+
+
+async def test_target_planner_rejects_weight_key_that_matches_no_check_type(tmp_path: Path):
+    output = PlannerOutput.model_validate(_target_declarative_payload({"json_parse": 1.0}))
+    planner = LlmPlanner(None, build_registry(), structured_runner=FakeStructured(output))
+
+    with pytest.raises(PlanValidationError, match="unknown weight key: json_parse"):
+        await planner.plan(target_evidence(tmp_path), budget())

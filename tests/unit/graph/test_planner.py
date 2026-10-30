@@ -261,6 +261,7 @@ async def test_paste_prompt_allows_quality_and_security() -> None:
     assert "latency and cost MUST appear in skipped with a non-empty reason" in prompt
     assert 'security MUST set `"graders": []`' in prompt
     assert "If the evidence has no response, both quality and security must be skipped" in prompt
+    assert "`score.weights` keys must equal the check `name`, or the check `type` when it has no name." in prompt
 
 
 async def test_paste_prompt_omits_declarative_fields_for_non_declarative_graders() -> None:
