@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from statistics import mean
 from typing import Any, TypedDict
@@ -21,13 +20,11 @@ from eva_agent.domain.result import (
     Usage,
 )
 from eva_agent.domain.run import InputKind
-from eva_agent.tools.dataset import SampleDatasetInput
-from eva_agent.tools.evidence import ReadEvidenceInput
+from eva_agent.graph.experts.rows import prepare_rows
 from eva_agent.tools.graders import RunGradersInput
 from eva_agent.tools.registry import ToolRegistry
 
 LOW_SCORE_THRESHOLD = 0.5
-PASTE_READ_LIMIT = 1_000_000
 
 
 class QualityState(TypedDict):
@@ -49,12 +46,16 @@ def _sample_ref(evidence: EvidenceBundle, row: dict[str, str], index: int) -> Ev
             locator=f"{evidence.dataset.path}#{index}",
             excerpt=excerpt,
         )
+    if evidence.kind is InputKind.TARGET:
+        return EvidenceRef(kind="target_request", locator=f"target_probe.jsonl#{index}", excerpt=excerpt)
     return EvidenceRef(kind="paste_field", locator="response", excerpt=excerpt)
 
 
 def _workspace_ref(evidence: EvidenceBundle) -> EvidenceRef:
     if evidence.kind is InputKind.DATASET and evidence.dataset is not None:
         return EvidenceRef(kind="file", locator=evidence.dataset.path)
+    if evidence.kind is InputKind.TARGET:
+        return EvidenceRef(kind="file", locator="target_probe.jsonl")
     return EvidenceRef(kind="file", locator="paste.json")
 
 
@@ -158,55 +159,18 @@ def summarize_quality(
     )
 
 
-def _paste_row(payload: dict[str, Any]) -> dict[str, str]:
-    return {
-        "query": str(payload.get("query", "")),
-        "response": str(payload.get("response") or payload.get("transcript") or ""),
-        "context": str(payload.get("context") or ""),
-        "reference": "",
-    }
-
-
 def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) -> Any:
-    async def prepare_rows(state: QualityState) -> dict[str, Any]:
-        plan = state["plan"]
-        evidence = state["evidence"]
-        limit = plan.sample_size or default_sample_size
-
-        if evidence.kind is InputKind.DATASET:
-            if evidence.dataset is None or evidence.root is None:
-                raise ValueError("dataset evidence is incomplete")
-            sample = await tools.call(
-                "sample_dataset",
-                SampleDatasetInput(
-                    root=evidence.root,
-                    path=evidence.dataset.path,
-                    limit=limit,
-                    column_map=dict(evidence.dataset.column_map),
-                    run_id=state["run_id"],
-                ),
-            )
-            rows = [dict(row) for row in sample.rows]
-        elif evidence.kind is InputKind.PASTE:
-            if evidence.root is None:
-                raise ValueError("paste evidence has no workspace")
-            raw = await tools.call(
-                "read_evidence",
-                ReadEvidenceInput(
-                    root=evidence.root,
-                    path="paste.json",
-                    max_bytes=PASTE_READ_LIMIT,
-                    run_id=state["run_id"],
-                ),
-            )
-            rows = [_paste_row(json.loads(raw))]
-        else:
-            raise ValueError(f"quality expert does not support input kind '{evidence.kind.value}'")
-
-        usable = [row for row in rows if row.get("query") and row.get("response")][:limit]
-        if not usable:
+    async def prepare(state: QualityState) -> dict[str, Any]:
+        limit = state["plan"].sample_size or default_sample_size
+        rows = await prepare_rows(
+            tools,
+            state["evidence"],
+            run_id=state["run_id"],
+            limit=limit,
+        )
+        if not rows:
             raise ValueError("no rows with a non-empty query and response")
-        return {"rows": usable}
+        return {"rows": rows}
 
     async def resolve_graders(state: QualityState) -> dict[str, Any]:
         if state["plan"].dimension is not Dimension.QUALITY:
@@ -256,7 +220,7 @@ def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) ->
         }
 
     graph = StateGraph(QualityState)
-    graph.add_node("prepare_rows", prepare_rows)
+    graph.add_node("prepare_rows", prepare)
     graph.add_node("resolve_graders", resolve_graders)
     graph.add_node("run_graders", run_graders)
     graph.add_node("normalize", normalize)
