@@ -29,6 +29,13 @@ from eva_agent.tools.target import build_read_target_probe_tool
 from tests.support.runtime import FakePlanner
 
 
+def _tool_error_type(error: BaseException) -> str:
+    """Mirror the labels the real tool writes into active_scan.failed."""
+    if isinstance(error, MissingSecretError):
+        return "missing_target_key"
+    return type(error).__name__
+
+
 class FakeAudit:
     def __init__(self) -> None:
         self.events: list[AuditEvent] = []
@@ -150,7 +157,7 @@ def build_deps(
                         target="demo",
                         authorization_ref="demo",
                         scan_kind="model_redteam_report",
-                        detail={"error_type": type(scan_error).__name__},
+                        detail={"error_type": _tool_error_type(scan_error)},
                     )
                 )
             raise scan_error
@@ -370,4 +377,4 @@ async def test_tool_recorded_missing_target_key_does_not_duplicate_audit(tmp_pat
     assert result.metrics["active"]["status"] == "failed"
     assert result.metrics["active"]["degraded"] is True
     assert [event.action for event in audit.events] == ["active_scan.requested", "active_scan.failed"]
-    assert audit.events[-1].detail["error_type"] == "MissingSecretError"
+    assert audit.events[-1].detail["error_type"] == "missing_target_key"
