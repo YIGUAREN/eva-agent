@@ -74,3 +74,10 @@ class RunCommandRepository:
     async def get(self, command_id: int) -> RunCommandRow | None:
         async with self._session_factory() as session:
             return await session.get(RunCommandRow, command_id)
+
+    async def list_for_run(self, run_id: str) -> list[RunCommandRow]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(RunCommandRow).where(RunCommandRow.run_id == run_id).order_by(RunCommandRow.id)
+            )
+            return list(rows)
