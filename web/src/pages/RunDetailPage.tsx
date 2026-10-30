@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
 import { EventTimeline } from "../components/EventTimeline";
@@ -20,7 +20,8 @@ export function RunDetailPage() {
   const report = useQuery({
     queryKey: ["report", runId],
     queryFn: () => api.report(runId),
-    retry: false,
+    retry: 3,
+    retryDelay: 1000,
     enabled: run?.status === "completed",
   });
   const approve = useMutation({
@@ -36,6 +37,16 @@ export function RunDetailPage() {
     mutationFn: (published: boolean) => api.publish(runId, published),
     onSuccess: () => detail.refetch(),
   });
+
+  const actionError = approve.error ?? reject.error ?? cancel.error ?? publish.error;
+
+  function runAction(action: () => void) {
+    approve.reset();
+    reject.reset();
+    cancel.reset();
+    publish.reset();
+    action();
+  }
 
   if (detail.isLoading) {
     return <p className="text-slate-400">加载中…</p>;
@@ -66,23 +77,31 @@ export function RunDetailPage() {
           <p className="mt-2 text-sm text-slate-400">创建于 {formatDate(run.created_at)}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {!isTerminal(run.status) && (
-            <button onClick={() => cancel.mutate()} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300">
+          {["queued", "waiting_approval"].includes(run.status) && (
+            <button onClick={() => runAction(() => cancel.mutate())} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300">
               取消
             </button>
           )}
           {run.status === "completed" && (
             <>
-              <button onClick={() => publish.mutate(!run.is_public)} className="rounded-lg border border-emerald-500/40 px-3 py-2 text-sm text-emerald-300">
+              <button onClick={() => runAction(() => publish.mutate(!run.is_public))} className="rounded-lg border border-emerald-500/40 px-3 py-2 text-sm text-emerald-300">
                 {run.is_public ? "取消发布" : "发布"}
               </button>
-              <a href={`/share/${run.run_id}`} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300">
-                公开页
-              </a>
+              {run.is_public && (
+                <Link to={`/share/${run.run_id}`} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300">
+                  公开页
+                </Link>
+              )}
             </>
           )}
         </div>
       </header>
+
+      {actionError && (
+        <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-300">
+          {actionError.message}
+        </p>
+      )}
 
       {run.error && <p className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-300">{run.error}</p>}
 
@@ -90,8 +109,8 @@ export function RunDetailPage() {
         <PlanEditor
           plan={run.plan}
           busy={approve.isPending || reject.isPending}
-          onApprove={(plan) => approve.mutate(plan)}
-          onReject={() => reject.mutate()}
+          onApprove={(plan) => runAction(() => approve.mutate(plan))}
+          onReject={() => runAction(() => reject.mutate())}
         />
       )}
 

@@ -77,15 +77,15 @@ export function NewRunPage() {
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
           <label className="block text-sm text-slate-300">
             成本上限（USD）
-            <input type="number" min="0.01" step="0.01" value={cost} onChange={(event) => setCost(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" />
+            <input type="number" required min="0.01" step="0.01" value={cost} onChange={(event) => setCost(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" />
           </label>
           <label className="block text-sm text-slate-300">
             时长上限（秒）
-            <input type="number" min="1" step="1" value={seconds} onChange={(event) => setSeconds(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" />
+            <input type="number" required min="1" step="1" value={seconds} onChange={(event) => setSeconds(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" />
           </label>
           <label className="block text-sm text-slate-300">
             目标请求上限
-            <input type="number" min="1" step="1" value={requests} onChange={(event) => setRequests(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" />
+            <input type="number" required min="1" step="1" value={requests} onChange={(event) => setRequests(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" />
           </label>
         </div>
 
