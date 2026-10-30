@@ -803,6 +803,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "asyncpg" },
     { name = "httpcore" },
+    { name = "httpx" },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
@@ -822,7 +823,6 @@ demo = [
     { name = "uvicorn" },
 ]
 dev = [
-    { name = "httpx" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -835,6 +835,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "httpcore", specifier = ">=1.0,<2" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "langchain-anthropic", specifier = ">=0.3" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "langchain-openai", specifier = ">=0.3" },
@@ -854,7 +855,6 @@ demo = [
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 dev = [
-    { name = "httpx", specifier = ">=0.28" },
     { name = "pyright", specifier = ">=1.1.390" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
