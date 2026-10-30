@@ -75,6 +75,42 @@ async def test_failed_task_is_rejected() -> None:
         await make_client(handler).wait("s1", max_wait_s=0.05)
 
 
+@pytest.mark.parametrize("status", ["pending", "running", "doing"])
+async def test_wait_polls_through_in_progress_statuses(status: str) -> None:
+    states = iter([status, "done"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "data": {"status": next(states)}})
+
+    assert await make_client(handler).wait("s1", max_wait_s=0.05) == "done"
+
+
+@pytest.mark.parametrize("status", ["completed", "done"])
+async def test_success_status_returns(status: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "data": {"status": status}})
+
+    assert await make_client(handler).wait("s1", max_wait_s=0.05) == status
+
+
+@pytest.mark.parametrize("status", ["failed", "error"])
+async def test_failure_status_is_rejected_without_message_echo(status: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "data": {"status": status, "message": "secret sk-123"}})
+
+    with pytest.raises(AigRejected, match="failed") as exc:
+        await make_client(handler).wait("s1", max_wait_s=0.05)
+    assert "sk-123" not in str(exc.value)
+
+
+async def test_unknown_status_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "data": {"status": "weird"}})
+
+    with pytest.raises(AigRejected, match="unknown scan status"):
+        await make_client(handler).wait("s1", max_wait_s=0.05)
+
+
 async def test_wait_times_out() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"status": 0, "data": {"status": "running"}})

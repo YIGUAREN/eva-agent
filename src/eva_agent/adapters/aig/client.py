@@ -19,6 +19,10 @@ RESULT_PATH = "/api/v1/app/taskapi/result/{session_id}"
 
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
+_SUCCESS_STATUSES = frozenset({"completed", "done"})
+_FAILURE_STATUSES = frozenset({"failed", "error"})
+_IN_PROGRESS_STATUSES = frozenset({"pending", "running", "doing"})
+
 
 class AigScanClient(Protocol):
     async def create(self, body: dict[str, Any]) -> str: ...
@@ -86,11 +90,11 @@ class AigClient:
             except httpx.HTTPError as exc:
                 raise AigUnavailable(f"AIG transport failed: {type(exc).__name__}") from None
             status = data.get("status")
-            if status == "completed":
+            if status in _SUCCESS_STATUSES:
                 return status
-            if status == "failed":
+            if status in _FAILURE_STATUSES:
                 raise AigRejected("AIG scan failed")
-            if status not in {"pending", "running"}:
+            if status not in _IN_PROGRESS_STATUSES:
                 raise AigRejected("AIG returned an unknown scan status")
             remaining = deadline - loop.time()
             if remaining <= 0:
