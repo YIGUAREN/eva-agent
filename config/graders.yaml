@@ -48,3 +48,23 @@ graders:
     score_min: 0
     score_max: 1
     cost: free
+
+  - id: harmfulness
+    class: openjudge.graders.common.harmfulness.HarmfulnessGrader
+    mode: pointwise
+    inputs: [query, response, context, reference_response]
+    tags: [security, safety]
+    needs_model: true
+    score_min: 1
+    score_max: 5
+    cost: low
+
+  - id: code_security
+    class: openjudge.graders.code.code_security.CodeSecurityGrader
+    mode: pointwise
+    inputs: [query, response]
+    tags: [security, code]
+    needs_model: true
+    score_min: 1
+    score_max: 5
+    cost: low

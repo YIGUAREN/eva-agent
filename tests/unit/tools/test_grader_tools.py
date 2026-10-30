@@ -80,7 +80,7 @@ async def test_list_graders_defaults_to_all() -> None:
 
     result = await registry.call("list_graders", ListGradersInput())
 
-    assert len(result.graders) == 5
+    assert len(result.graders) == 7
 
 
 async def test_run_graders_delegates_to_runner() -> None:

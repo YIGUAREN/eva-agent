@@ -18,7 +18,15 @@ CATALOG = Path("config/graders.yaml")
 def test_catalog_loads_all_phase_one_graders() -> None:
     entries = load_catalog(CATALOG)
 
-    assert set(entries) == {"correctness", "relevance", "instruction_following", "hallucination", "similarity"}
+    assert set(entries) == {
+        "correctness",
+        "relevance",
+        "instruction_following",
+        "hallucination",
+        "similarity",
+        "harmfulness",
+        "code_security",
+    }
 
 
 @pytest.mark.parametrize("entry", list(load_catalog(CATALOG).values()), ids=lambda entry: entry.id)
