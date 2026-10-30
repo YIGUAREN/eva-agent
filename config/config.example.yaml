@@ -48,6 +48,13 @@ pricing:
 security:
   policy_path: "config/security_policy.yaml"
 
+web:
+  session_ttl_s: 43200
+  session_absolute_ttl_s: 604800
+  cookie_secure: true
+  max_concurrent_runs: 2
+  poll_interval_s: 0.5
+
 aig:
   base_url: "http://127.0.0.1:8088"
   timeout_s: 30

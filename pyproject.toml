@@ -19,10 +19,17 @@ dependencies = [
     "tiktoken>=0.8",
     "httpcore>=1.0,<2",
     "httpx>=0.28",
+    "alembic>=1.13",
+    "argon2-cffi>=23.1",
+    "fastapi>=0.115",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]
 eva = "eva_agent.cli:main"
+eva-web = "eva_agent.server.main:main"
+eva-worker = "eva_agent.worker.main:main"
 
 [dependency-groups]
 dev = [

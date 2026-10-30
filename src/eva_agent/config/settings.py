@@ -127,6 +127,18 @@ class AigSettings(BaseModel):
         return self
 
 
+class WebSettings(BaseModel):
+    """HTTP server and worker-loop settings."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_ttl_s: int = Field(default=43_200, gt=0)
+    session_absolute_ttl_s: int = Field(default=604_800, gt=0)
+    cookie_secure: bool = True
+    max_concurrent_runs: int = Field(default=2, gt=0)
+    poll_interval_s: float = Field(default=0.5, gt=0)
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -140,6 +152,7 @@ class AppConfig(BaseModel):
     target: TargetSettings = Field(default_factory=TargetSettings)
     pricing: PricingSettings = Field(default_factory=PricingSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    web: WebSettings = Field(default_factory=WebSettings)
     aig: AigSettings | None = None
 
 
