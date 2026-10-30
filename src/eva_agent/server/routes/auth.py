@@ -46,6 +46,7 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         secure=state.config.web.cookie_secure,
         path="/",
     )
+    response.headers["Cache-Control"] = "no-store"
     return {"csrf_token": issued.csrf_token, "expires_at": issued.expires_at.isoformat()}
 
 
@@ -55,12 +56,23 @@ async def logout(
     response: Response,
     session: Annotated[AdminSessionRow, Depends(csrf_protected)],
 ) -> None:
-    await get_state(request).sessions.revoke(session.id_hash)
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    state = get_state(request)
+    await state.sessions.revoke(session.id_hash)
+    response.delete_cookie(
+        SESSION_COOKIE,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=state.config.web.cookie_secure,
+    )
 
 
 @router.get("/me")
-async def me(session: Annotated[AdminSessionRow, Depends(current_session)]) -> dict[str, str]:
+async def me(
+    session: Annotated[AdminSessionRow, Depends(current_session)],
+    response: Response,
+) -> dict[str, str]:
+    response.headers["Cache-Control"] = "no-store"
     return {
         "csrf_token": session.csrf_token,
         "expires_at": ensure_utc(session.expires_at).isoformat(),

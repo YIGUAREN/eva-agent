@@ -24,6 +24,7 @@ async def test_login_cookie_flags_are_secure(client: AsyncClient) -> None:
     set_cookie = response.headers["set-cookie"]
     assert "HttpOnly" in set_cookie
     assert "SameSite=lax" in set_cookie
+    assert "Secure" in set_cookie
     assert "Path=/" in set_cookie
 
 
@@ -70,6 +71,7 @@ async def test_logout_requires_csrf_and_revokes_the_session(client: AsyncClient)
 
     accepted = await client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
     assert accepted.status_code == 204
+    assert "Path=/" in accepted.headers["set-cookie"]
     assert (await client.get("/api/auth/me")).status_code == 401
 
 
