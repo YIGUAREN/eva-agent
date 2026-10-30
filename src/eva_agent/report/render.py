@@ -16,11 +16,9 @@ from eva_agent.domain.result import MergedResult, Report
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.probe import ProbeStore
 
-REPORT_VERSION = 2
+REPORT_VERSION = 3
 
 DEFERRED_CAPABILITIES = [
-    "security 专家（OpenJudge 被动 + AIG 主动）与授权策略（阶段 3）",
-    "target 输入上的 quality 评测（阶段 3）",
     "证据包上传与 zip/tar 解压、沙箱执行（阶段 4）",
     "L3 Python grader（v1.5）",
     "预算预扣、结算与 429/5xx 重试（阶段 5）",
@@ -101,6 +99,74 @@ def _cost_lines(metrics: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _quality_lines(metrics: dict[str, Any]) -> list[str]:
+    lines = [
+        "**质量评分**",
+        "",
+        "| grader | mean score | scored samples | errors |",
+        "|---|---|---|---|",
+    ]
+    scored = metrics.get("scored_sample_count", 0)
+    errors = len(metrics.get("errors") or [])
+    for name, score in sorted((metrics.get("by_grader") or {}).items()):
+        lines.append(f"| {_cell(name)} | {_score(score)} | {_cell(scored)} | {_cell(errors)} |")
+    lines.append("")
+    return lines
+
+
+def _security_lines(metrics: dict[str, Any]) -> list[str]:
+    passive = metrics.get("passive") or {}
+    active = metrics.get("active") or {}
+    lines = [
+        "**被动检查**",
+        "",
+        "| grader | mean score | samples | errors |",
+        "|---|---|---|---|",
+    ]
+    errors = len(passive.get("errors") or [])
+    scored = passive.get("scored_rows", 0)
+    for name, score in sorted((passive.get("by_grader") or {}).items()):
+        lines.append(f"| {_cell(name)} | {_score(score)} | {_cell(scored)} | {_cell(errors)} |")
+    lines.extend(
+        [
+            "",
+            "**主动扫描**",
+            "",
+            "| status | dataset | prompts | ASR | jailbreak / total | severity |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    counts = active.get("severity_counts") or {}
+    severity = ", ".join(f"{name}={value}" for name, value in sorted(counts.items())) or "-"
+    dataset = ", ".join(str(item) for item in (active.get("dataset") or [])) or "-"
+    asr = active.get("asr")
+    lines.append(
+        f"| {_cell(active.get('status'))} | {_cell(dataset)} | {_cell(active.get('num_prompts', 0))} | "
+        f"{_score(asr)} | {_cell(active.get('jailbreak', 0))} / {_cell(active.get('total', 0))} | "
+        f"{_cell(severity)} |"
+    )
+    lines.append("")
+    if active.get("refused_reason"):
+        lines.extend([f"拒绝原因：`{_cell(active['refused_reason'])}`", ""])
+    if active.get("degraded"):
+        lines.extend(["主动扫描不可用，已降级为被动结果。", ""])
+    vulnerabilities = active.get("vulnerabilities") or []
+    if vulnerabilities:
+        lines.extend(
+            [
+                "| vulnerability | ASR | severity | jailbreak / total |",
+                "|---|---|---|---|",
+            ]
+        )
+        for item in vulnerabilities:
+            lines.append(
+                f"| {_cell(item.get('vulnerability'))} | {_score(item.get('asr'))} | "
+                f"{_cell(item.get('severity'))} | {_cell(item.get('jailbreak'))} / {_cell(item.get('total'))} |"
+            )
+        lines.append("")
+    return lines
+
+
 def render_markdown(
     payload: dict[str, Any],
     *,
@@ -173,6 +239,10 @@ def render_markdown(
             lines.extend(_latency_lines(result.get("metrics") or {}))
         elif result["dimension"] == "cost":
             lines.extend(_cost_lines(result.get("metrics") or {}))
+        elif result["dimension"] == "quality":
+            lines.extend(_quality_lines(result.get("metrics") or {}))
+        elif result["dimension"] == "security":
+            lines.extend(_security_lines(result.get("metrics") or {}))
 
     lines.extend(["## 发现", ""])
     if not payload["findings"]:

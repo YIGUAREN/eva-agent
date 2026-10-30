@@ -83,12 +83,10 @@ def test_payload_is_version_two_and_includes_probe() -> None:
         generated_at=datetime(2026, 10, 28, 12, 0, tzinfo=UTC),
     )
 
-    assert payload["version"] == 2
+    assert payload["version"] == 3
     assert payload["probe"]["total"] == 2
     assert payload["probe"]["succeeded"] == 2
     assert payload["deferred"] == [
-        "security 专家（OpenJudge 被动 + AIG 主动）与授权策略（阶段 3）",
-        "target 输入上的 quality 评测（阶段 3）",
         "证据包上传与 zip/tar 解压、沙箱执行（阶段 4）",
         "L3 Python grader（v1.5）",
         "预算预扣、结算与 429/5xx 重试（阶段 5）",
