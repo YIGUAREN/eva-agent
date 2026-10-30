@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
@@ -15,6 +16,8 @@ from eva_agent.config.settings import AigSettings
 TASKS_PATH = "/api/v1/app/taskapi/tasks"
 STATUS_PATH = "/api/v1/app/taskapi/status/{session_id}"
 RESULT_PATH = "/api/v1/app/taskapi/result/{session_id}"
+
+_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class AigScanClient(Protocol):
@@ -66,8 +69,8 @@ class AigClient:
         except httpx.HTTPError as exc:
             raise AigUnavailable(f"AIG transport failed: {type(exc).__name__}") from None
         session_id = data.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise AigUnavailable("AIG response has no session_id")
+        if not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id):
+            raise AigUnavailable("AIG response has an invalid session_id")
         return session_id
 
     async def wait(self, session_id: str, *, max_wait_s: float) -> str:

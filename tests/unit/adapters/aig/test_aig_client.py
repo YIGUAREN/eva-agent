@@ -107,3 +107,12 @@ async def test_transport_error_is_unavailable() -> None:
 
     with pytest.raises(AigUnavailable):
         await make_client(handler).create({"type": "model_redteam_report", "content": {}})
+
+
+async def test_invalid_session_id_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "data": {"session_id": "../escape"}})
+
+    with pytest.raises(AigUnavailable) as exc:
+        await make_client(handler).create({"type": "model_redteam_report", "content": {}})
+    assert "../escape" not in str(exc.value)
