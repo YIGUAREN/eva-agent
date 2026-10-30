@@ -362,3 +362,18 @@ async def test_target_planner_rejects_weight_key_that_matches_no_check_type(tmp_
 
     with pytest.raises(PlanValidationError, match="unknown weight key: json_parse"):
         await planner.plan(target_evidence(tmp_path), budget())
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        {"numeric_threshold": 1.0, "latency_under_10s": 0.5},
+        {"latency_under_10s": 0.5, "numeric_threshold": 1.0},
+    ],
+)
+async def test_target_planner_fails_closed_when_weight_keys_collide(tmp_path: Path, weights: dict[str, float]):
+    output = PlannerOutput.model_validate(_target_declarative_payload(weights))
+    planner = LlmPlanner(None, build_registry(), structured_runner=FakeStructured(output))
+
+    with pytest.raises(PlanValidationError, match="unknown weight key: numeric_threshold"):
+        await planner.plan(target_evidence(tmp_path), budget())

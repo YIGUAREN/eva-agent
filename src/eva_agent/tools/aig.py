@@ -63,7 +63,6 @@ def build_run_aig_scan_tool(
     data_dir: str,
 ) -> ToolSpec:
     async def handler(payload: AigScanInput) -> AigScanOutput:
-        paths = run_paths(data_dir, payload.run_id)
         audit_error = False
         terminal_audit_written = False
         session_id: str | None = None
@@ -98,6 +97,7 @@ def build_run_aig_scan_tool(
             )
 
         try:
+            paths = run_paths(data_dir, payload.run_id)
             paths.aig_dir.mkdir(parents=True, exist_ok=True)
             try:
                 eval_token = resolve_api_key(eval_model, env)

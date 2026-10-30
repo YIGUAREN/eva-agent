@@ -107,7 +107,13 @@ def _normalize_declarative_weight_keys(grader: Any) -> Any:
         if len(matches) == 1:
             target = matches[0].get("name") or matches[0].get("type")
             if isinstance(target, str) and target != key:
-                rewritten[target] = value
+                if target in weights:
+                    # The LLM emitted both the type key and the check name.
+                    # Keep the type key so the declarative validator rejects it
+                    # instead of letting insertion order pick the winner.
+                    rewritten[key] = value
+                else:
+                    rewritten[target] = value
                 changed = True
                 continue
         rewritten[key] = value

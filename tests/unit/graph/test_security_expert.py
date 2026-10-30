@@ -5,7 +5,7 @@ from pathlib import Path
 from eva_agent.adapters.aig.errors import AigTimeout
 from eva_agent.adapters.aig.models import AigReport
 from eva_agent.adapters.inputs.paste import write_paste_workspace
-from eva_agent.config.settings import AigScanSettings, AigSettings
+from eva_agent.config.settings import AigScanSettings, AigSettings, MissingSecretError
 from eva_agent.domain.audit import AuditEvent
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
@@ -105,6 +105,7 @@ def build_deps(
     *,
     aig_enabled: bool = True,
     scan_error: Exception | None = None,
+    scan_error_audits: bool = False,
     events: FakeEvents | None = None,
     target_base_url: str = "http://127.0.0.1:8100/v1",
 ) -> GraphDependencies:
@@ -137,6 +138,21 @@ def build_deps(
 
     async def scan(payload) -> AigScanOutput:
         if scan_error is not None:
+            if scan_error_audits:
+                # Mimic the real tool: write its terminal row, then re-raise a
+                # marked exception so the expert must not duplicate it.
+                await audit.record(
+                    AuditEvent(
+                        run_id="run-1",
+                        actor="cli:admin",
+                        action="active_scan.failed",
+                        outcome="failed",
+                        target="demo",
+                        authorization_ref="demo",
+                        scan_kind="model_redteam_report",
+                        detail={"error_type": type(scan_error).__name__},
+                    )
+                )
             raise scan_error
         return AigScanOutput(
             session_id="s1",
@@ -331,3 +347,27 @@ async def test_tool_recorded_timeout_does_not_duplicate_audit(tmp_path: Path) ->
     )
     assert result.metrics["active"]["status"] == "failed"
     assert [event.action for event in audit.events] == ["active_scan.requested"]
+
+
+async def test_tool_recorded_missing_target_key_does_not_duplicate_audit(tmp_path: Path) -> None:
+    write_probe(tmp_path)
+    audit = FakeAudit()
+    scan_error = MissingSecretError("environment variable DEMO_KEY is not set")
+    scan_error.audit_recorded = True  # type: ignore[attr-defined]
+    deps = build_deps(
+        tmp_path,
+        audit,
+        scan_error=scan_error,
+        scan_error_audits=True,
+    )
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path),
+        probe=ProbeSummary(path="p", total=1, succeeded=1, failed=0),
+        budget=security_budget(),
+    )
+    assert result.metrics["active"]["status"] == "failed"
+    assert result.metrics["active"]["degraded"] is True
+    assert [event.action for event in audit.events] == ["active_scan.requested", "active_scan.failed"]
+    assert audit.events[-1].detail["error_type"] == "MissingSecretError"

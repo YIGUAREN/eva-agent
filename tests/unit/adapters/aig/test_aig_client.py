@@ -75,7 +75,7 @@ async def test_failed_task_is_rejected() -> None:
         await make_client(handler).wait("s1", max_wait_s=0.05)
 
 
-@pytest.mark.parametrize("status", ["pending", "running", "doing"])
+@pytest.mark.parametrize("status", ["pending", "running", "todo", "doing"])
 async def test_wait_polls_through_in_progress_statuses(status: str) -> None:
     states = iter([status, "done"])
 
@@ -93,7 +93,7 @@ async def test_success_status_returns(status: str) -> None:
     assert await make_client(handler).wait("s1", max_wait_s=0.05) == status
 
 
-@pytest.mark.parametrize("status", ["failed", "error"])
+@pytest.mark.parametrize("status", ["failed", "error", "terminated"])
 async def test_failure_status_is_rejected_without_message_echo(status: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"status": 0, "data": {"status": status, "message": "secret sk-123"}})

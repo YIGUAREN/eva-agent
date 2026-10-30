@@ -20,8 +20,8 @@ RESULT_PATH = "/api/v1/app/taskapi/result/{session_id}"
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 _SUCCESS_STATUSES = frozenset({"completed", "done"})
-_FAILURE_STATUSES = frozenset({"failed", "error"})
-_IN_PROGRESS_STATUSES = frozenset({"pending", "running", "doing"})
+_FAILURE_STATUSES = frozenset({"failed", "error", "terminated"})
+_IN_PROGRESS_STATUSES = frozenset({"pending", "running", "todo", "doing"})
 
 
 class AigScanClient(Protocol):

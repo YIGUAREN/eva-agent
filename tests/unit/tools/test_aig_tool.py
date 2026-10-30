@@ -253,6 +253,30 @@ async def test_aig_dir_mkdir_oserror_audits_terminal(tmp_path: Path, monkeypatch
     assert failed[0].detail["error_type"] == "OSError"
 
 
+async def test_invalid_run_id_audits_terminal(tmp_path: Path) -> None:
+    audit = FakeAudit()
+    tool = build_run_aig_scan_tool(
+        client=FakeClient(),
+        settings=settings(),
+        eval_model=eval_model(),
+        env={"DEMO_KEY": "t", "JUDGE_KEY": "j"},
+        audit=audit,
+        data_dir=str(tmp_path / "data"),
+    )
+    with pytest.raises(ValueError, match="invalid run_id"):
+        await tool.handler(
+            AigScanInput(
+                run_id="..\\escape",
+                target=target(),
+                scan_base_url="http://demo-target:8100/v1",
+                authorization_ref="demo",
+                max_wait_s=10,
+            )
+        )
+    assert [event.action for event in audit.events] == ["active_scan.failed"]
+    assert audit.events[0].detail["error_type"] == "ValueError"
+
+
 async def test_timeout_writes_cancelled_audit_and_reraises(tmp_path: Path) -> None:
     audit = FakeAudit()
     tool = build_run_aig_scan_tool(
