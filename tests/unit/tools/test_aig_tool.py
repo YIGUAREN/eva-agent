@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from eva_agent.adapters.aig.errors import AigTimeout
-from eva_agent.config.settings import AigScanSettings, AigSettings, ModelConfig
+from eva_agent.config.settings import AigScanSettings, AigSettings, MissingSecretError, ModelConfig
 from eva_agent.domain.audit import AuditEvent
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.runtime.artifacts import run_paths
@@ -44,14 +44,14 @@ class FakeAudit:
         self.events.append(event)
 
 
-def target() -> TargetSpec:
+def target(*, api_key_env: str | None = "DEMO_KEY") -> TargetSpec:
     return TargetSpec(
         name="demo",
         kind=TargetKind.OPENAI_COMPATIBLE,
         provider="demo",
         model="demo-echo",
         base_url="http://127.0.0.1:8100/v1",
-        api_key_env="DEMO_KEY",
+        api_key_env=api_key_env,
     )
 
 
@@ -83,7 +83,7 @@ def test_tool_timeout_covers_configurable_max_wait(tmp_path: Path) -> None:
         data_dir=str(tmp_path / "data"),
     )
     assert tool.timeout_s > aig.max_wait_s
-    assert tool.timeout_s == aig.max_wait_s + 2 * aig.timeout_s + 30.0
+    assert tool.timeout_s == aig.max_wait_s + 3 * aig.timeout_s + 30.0
 
 
 async def test_raw_result_write_oserror_audits_terminal(tmp_path: Path) -> None:
@@ -145,6 +145,112 @@ async def test_scan_writes_raw_result_and_audits_lifecycle(tmp_path: Path) -> No
     assert [event.action for event in audit.events] == ["active_scan.started", "active_scan.completed"]
     assert audit.events[0].detail["session_id"] == "session-1"
     assert "target-secret" not in json.dumps([event.detail for event in audit.events])
+
+
+async def test_anonymous_target_sends_placeholder_token(tmp_path: Path) -> None:
+    audit = FakeAudit()
+    client = FakeClient()
+    tool = build_run_aig_scan_tool(
+        client=client,
+        settings=settings(),
+        eval_model=eval_model(),
+        env={"JUDGE_KEY": "judge-secret"},
+        audit=audit,
+        data_dir=str(tmp_path / "data"),
+    )
+    await tool.handler(
+        AigScanInput(
+            run_id="run-1",
+            target=target(api_key_env=None),
+            scan_base_url="http://demo-target:8100/v1",
+            authorization_ref="demo",
+            max_wait_s=10,
+        )
+    )
+    assert client.body is not None
+    assert client.body["content"]["model"][0]["token"] == "not-required"
+    assert [event.action for event in audit.events] == ["active_scan.started", "active_scan.completed"]
+
+
+async def test_target_token_from_env_is_not_audited(tmp_path: Path) -> None:
+    audit = FakeAudit()
+    client = FakeClient()
+    tool = build_run_aig_scan_tool(
+        client=client,
+        settings=settings(),
+        eval_model=eval_model(),
+        env={"DEMO_KEY": "abc", "JUDGE_KEY": "judge-secret"},
+        audit=audit,
+        data_dir=str(tmp_path / "data"),
+    )
+    await tool.handler(
+        AigScanInput(
+            run_id="run-1",
+            target=target(),
+            scan_base_url="http://demo-target:8100/v1",
+            authorization_ref="demo",
+            max_wait_s=10,
+        )
+    )
+    assert client.body is not None
+    assert client.body["content"]["model"][0]["token"] == "abc"
+    assert "abc" not in json.dumps([event.detail for event in audit.events])
+
+
+async def test_missing_target_key_audits_and_skips_create(tmp_path: Path) -> None:
+    audit = FakeAudit()
+    client = FakeClient()
+    tool = build_run_aig_scan_tool(
+        client=client,
+        settings=settings(),
+        eval_model=eval_model(),
+        env={"JUDGE_KEY": "judge-secret"},
+        audit=audit,
+        data_dir=str(tmp_path / "data"),
+    )
+    with pytest.raises(MissingSecretError):
+        await tool.handler(
+            AigScanInput(
+                run_id="run-1",
+                target=target(),
+                scan_base_url="http://demo-target:8100/v1",
+                authorization_ref="demo",
+                max_wait_s=10,
+            )
+        )
+    assert client.body is None
+    failed = [event for event in audit.events if event.action == "active_scan.failed"]
+    assert len(failed) == 1
+    assert failed[0].detail["error_type"] == "missing_target_key"
+
+
+async def test_aig_dir_mkdir_oserror_audits_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError("mkdir failed")
+
+    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+    audit = FakeAudit()
+    tool = build_run_aig_scan_tool(
+        client=FakeClient(),
+        settings=settings(),
+        eval_model=eval_model(),
+        env={"DEMO_KEY": "t", "JUDGE_KEY": "j"},
+        audit=audit,
+        data_dir=str(tmp_path / "data"),
+    )
+    with pytest.raises(OSError):
+        await tool.handler(
+            AigScanInput(
+                run_id="run-1",
+                target=target(),
+                scan_base_url="http://demo-target:8100/v1",
+                authorization_ref="demo",
+                max_wait_s=10,
+            )
+        )
+    failed = [event for event in audit.events if event.action == "active_scan.failed"]
+    assert len(failed) == 1
+    assert failed[0].detail["error_type"] == "OSError"
 
 
 async def test_timeout_writes_cancelled_audit_and_reraises(tmp_path: Path) -> None:

@@ -20,9 +20,13 @@ from eva_agent.security.audit import AuditSink
 from eva_agent.tools.registry import ToolSpec
 
 SCAN_KIND = "model_redteam_report"
-# Extra wall-clock room on top of two HTTP timeouts (create plus result) so the
-# registry deadline never undercuts the configured scan wait window.
+# Extra wall-clock room on top of three HTTP timeouts (create, wait, result) so
+# the registry deadline never undercuts the configured scan wait window.
 AIG_TOOL_TIMEOUT_MARGIN_S = 30.0
+# AIG's CLI refuses an empty model token. A target without api_key_env accepts
+# anonymous access (our probe sends no Authorization header for it, see
+# adapters/target/secrets.py), so send this placeholder instead of "".
+ANONYMOUS_TARGET_TOKEN = "not-required"
 # Marker attached to a re-raised exception once a terminal audit row exists, so
 # callers (the security expert) do not write a duplicate active_scan.failed row.
 AUDIT_RECORDED_ATTR = "audit_recorded"
@@ -60,7 +64,6 @@ def build_run_aig_scan_tool(
 ) -> ToolSpec:
     async def handler(payload: AigScanInput) -> AigScanOutput:
         paths = run_paths(data_dir, payload.run_id)
-        paths.aig_dir.mkdir(parents=True, exist_ok=True)
         audit_error = False
         terminal_audit_written = False
         session_id: str | None = None
@@ -95,12 +98,19 @@ def build_run_aig_scan_tool(
             )
 
         try:
+            paths.aig_dir.mkdir(parents=True, exist_ok=True)
             try:
                 eval_token = resolve_api_key(eval_model, env)
             except MissingSecretError:
                 await record_failed("missing_eval_model_key")
                 raise
-            target_token = env.get(payload.target.api_key_env or "", "")
+            if payload.target.api_key_env:
+                target_token = env.get(payload.target.api_key_env)
+                if not target_token:
+                    await record_failed("missing_target_key")
+                    raise MissingSecretError(f"environment variable {payload.target.api_key_env} is not set")
+            else:
+                target_token = ANONYMOUS_TARGET_TOKEN
 
             try:
                 session_id = await client.create(
@@ -205,6 +215,12 @@ def build_run_aig_scan_tool(
             await record_failed("TimeoutError")
             _mark_audit_recorded(exc)
             raise
+        except Exception as exc:
+            # Any other failure (for example the pre-scan mkdir) still leaves a
+            # terminal audit row; record_failed dedups against earlier branches.
+            await record_failed(type(exc).__name__)
+            _mark_audit_recorded(exc)
+            raise
 
     return ToolSpec(
         name="run_aig_scan",
@@ -212,7 +228,7 @@ def build_run_aig_scan_tool(
         input_model=AigScanInput,
         output_model=AigScanOutput,
         permission="admin",
-        timeout_s=settings.max_wait_s + 2 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S,
+        timeout_s=settings.max_wait_s + 3 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S,
         side_effects=True,
         idempotent=False,
         handler=handler,
