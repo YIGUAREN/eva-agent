@@ -36,7 +36,10 @@ def policy(
 
 def demo() -> TargetSpec:
     return TargetSpec(
-        name="demo", kind=TargetKind.OPENAI_COMPATIBLE, provider="demo", model="m",
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="m",
         base_url="http://127.0.0.1:8100/v1",
     )
 
@@ -46,7 +49,10 @@ _DEFAULT_TARGET = demo()
 
 def public() -> TargetSpec:
     return TargetSpec(
-        name="public", kind=TargetKind.OPENAI_COMPATIBLE, provider="p", model="m",
+        name="public",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="p",
+        model="m",
         base_url="https://api.example.com/v1",
     )
 
@@ -95,8 +101,12 @@ def test_demo_scan_is_allowed_and_uses_container_url() -> None:
 )
 def test_matrix(policy_value, target, kind, probe, eval_available, budget_value, reason) -> None:
     decision = decide(
-        policy_value, target, input_kind=kind, probe_count=probe,
-        eval_available=eval_available, budget_value=budget_value,
+        policy_value,
+        target,
+        input_kind=kind,
+        probe_count=probe,
+        eval_available=eval_available,
+        budget_value=budget_value,
     )
     assert decision.allowed is False
     assert decision.reason == reason
@@ -105,7 +115,8 @@ def test_matrix(policy_value, target, kind, probe, eval_available, budget_value,
 def test_allowlisted_public_origin_is_allowed() -> None:
     decision = decide(
         policy(demo_targets=[], allowlist=["https://api.example.com:443"]),
-        public(), probe_count=0,
+        public(),
+        probe_count=0,
     )
     assert decision.allowed is True
     assert decision.scan_base_url == "https://api.example.com/v1"
@@ -120,8 +131,13 @@ def test_demo_name_with_a_different_origin_is_not_the_demo_target() -> None:
 
 def test_http_json_is_rejected() -> None:
     target = TargetSpec(
-        name="json", kind=TargetKind.HTTP_JSON, provider="p", model="m",
-        url="https://api.example.com/x", method="POST",
-        request_template={"p": "{{prompt}}"}, response_path="$.text",
+        name="json",
+        kind=TargetKind.HTTP_JSON,
+        provider="p",
+        model="m",
+        url="https://api.example.com/x",
+        method="POST",
+        request_template={"p": "{{prompt}}"},
+        response_path="$.text",
     )
     assert decide(policy(), target).reason == "unsupported_target_kind"

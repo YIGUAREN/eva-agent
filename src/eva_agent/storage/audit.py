@@ -31,8 +31,6 @@ class AuditRepository:
     async def list_for_run(self, run_id: str) -> list[AuditEventRow]:
         async with self._session_factory() as session:
             result = await session.scalars(
-                select(AuditEventRow)
-                .where(AuditEventRow.run_id == run_id)
-                .order_by(AuditEventRow.id)
+                select(AuditEventRow).where(AuditEventRow.run_id == run_id).order_by(AuditEventRow.id)
             )
             return list(result)

@@ -25,32 +25,53 @@ def payload() -> dict:
         status=RunStatus.COMPLETED,
         results=[
             DimensionResult(
-                dimension=Dimension.QUALITY, status="ok", score=0.8, confidence=1.0,
+                dimension=Dimension.QUALITY,
+                status="ok",
+                score=0.8,
+                confidence=1.0,
                 summary="quality ok",
                 metrics={
-                    "sample_count": 2, "scored_sample_count": 2,
-                    "by_grader": {"relevance": 0.8}, "errors": [],
+                    "sample_count": 2,
+                    "scored_sample_count": 2,
+                    "by_grader": {"relevance": 0.8},
+                    "errors": [],
                 },
                 usage=Usage(samples=2),
             ),
             DimensionResult(
-                dimension=Dimension.SECURITY, status="partial", score=0.5, confidence=1.0,
+                dimension=Dimension.SECURITY,
+                status="partial",
+                score=0.5,
+                confidence=1.0,
                 summary="security partial",
                 metrics={
                     "passive": {
                         "by_grader": {"harmfulness": 0.8, "code_security": 0.6},
-                        "scored_outcomes": 4, "expected_outcomes": 4,
-                        "scored_rows": 2, "total_rows": 2, "errors": [],
+                        "scored_outcomes": 4,
+                        "expected_outcomes": 4,
+                        "scored_rows": 2,
+                        "total_rows": 2,
+                        "errors": [],
                     },
                     "active": {
-                        "status": "completed", "dataset": ["d"], "num_prompts": 2,
-                        "asr": 0.5, "jailbreak": 1, "total": 2,
+                        "status": "completed",
+                        "dataset": ["d"],
+                        "num_prompts": 2,
+                        "asr": 0.5,
+                        "jailbreak": 1,
+                        "total": 2,
                         "severity_counts": {"high": 1},
                         "vulnerabilities": [
-                            {"vulnerability": "Harmful Content", "asr": 0.5, "severity": "high",
-                             "jailbreak": 1, "total": 2}
+                            {
+                                "vulnerability": "Harmful Content",
+                                "asr": 0.5,
+                                "severity": "high",
+                                "jailbreak": 1,
+                                "total": 2,
+                            }
                         ],
-                        "degraded": False, "refused_reason": None,
+                        "degraded": False,
+                        "refused_reason": None,
                     },
                     "score_cap": 0.5,
                 },
@@ -60,7 +81,9 @@ def payload() -> dict:
         metrics={"overall_score": 0.65},
     )
     return build_report_payload(
-        run_id="run-1", plan=plan, merged=merged,
+        run_id="run-1",
+        plan=plan,
+        merged=merged,
         generated_at=datetime(2026, 10, 30, tzinfo=UTC),
     )
 
@@ -86,8 +109,15 @@ def test_markdown_shows_refusal_reason() -> None:
     data = payload()
     security = data["dimensions"][1]
     security["metrics"]["active"].update(
-        {"status": "refused", "refused_reason": "not_admin", "asr": None,
-         "jailbreak": 0, "total": 0, "vulnerabilities": [], "severity_counts": {}}
+        {
+            "status": "refused",
+            "refused_reason": "not_admin",
+            "asr": None,
+            "jailbreak": 0,
+            "total": 0,
+            "vulnerabilities": [],
+            "severity_counts": {},
+        }
     )
     markdown = render_markdown(data)
     assert "拒绝原因：`not_admin`" in markdown

@@ -7,7 +7,8 @@ from eva_agent.security.passive import has_code, passive_specs, summarize_passiv
 
 def evidence() -> EvidenceBundle:
     return EvidenceBundle(
-        kind=InputKind.PASTE, pasted={"query": "q", "response": "a"},
+        kind=InputKind.PASTE,
+        pasted={"query": "q", "response": "a"},
         manifest_sha256="a" * 64,
     )
 
@@ -36,9 +37,7 @@ def code_rows() -> list[dict[str, str]]:
 
 
 def test_harmfulness_always_runs_and_code_security_is_conditional() -> None:
-    assert [(spec.name, spec.builtin_id) for spec in passive_specs(rows())] == [
-        ("harmfulness", "harmfulness")
-    ]
+    assert [(spec.name, spec.builtin_id) for spec in passive_specs(rows())] == [("harmfulness", "harmfulness")]
     assert [(spec.name, spec.builtin_id) for spec in passive_specs(code_rows())] == [
         ("harmfulness", "harmfulness"),
         ("code_security", "code_security"),
@@ -58,9 +57,7 @@ def test_summarize_passive_scores_and_findings() -> None:
         duration_ms=7,
     )
     rows_value = [*code_rows(), {**code_rows()[0], "response": "class A: pass"}]
-    result = summarize_passive(
-        output, specs=passive_specs(rows_value), rows=rows_value, evidence=evidence()
-    )
+    result = summarize_passive(output, specs=passive_specs(rows_value), rows=rows_value, evidence=evidence())
     assert result.score == 0.7
     assert result.confidence == 1.0
     assert result.metrics["by_grader"] == {"code_security": 0.8, "harmfulness": 0.6}
@@ -74,9 +71,7 @@ def test_summarize_passive_scores_and_findings() -> None:
 
 
 def test_summarize_passive_uses_target_probe_source_indexes() -> None:
-    output = GraderRunOutput(
-        outcomes=[GraderSampleOutcome(grader="harmfulness", sample_index=0, score=0.2)]
-    )
+    output = GraderRunOutput(outcomes=[GraderSampleOutcome(grader="harmfulness", sample_index=0, score=0.2)])
     result = summarize_passive(
         output,
         specs=passive_specs(rows()),

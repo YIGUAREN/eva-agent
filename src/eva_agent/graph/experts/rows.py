@@ -70,9 +70,7 @@ async def _prepare_with_indexes(
         records = [
             record
             for record in probe.records
-            if record.status_code is not None
-            and 200 <= record.status_code < 300
-            and record.response_text
+            if record.status_code is not None and 200 <= record.status_code < 300 and record.response_text
         ]
         rows = [
             {

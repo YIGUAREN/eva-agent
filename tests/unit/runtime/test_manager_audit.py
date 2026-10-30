@@ -30,9 +30,7 @@ async def test_manager_persists_audit_events(tmp_path: Path, monkeypatch: pytest
     assert [row.action for row in rows] == ["active_scan.requested"]
 
 
-async def test_manager_dependencies_share_the_audit_repository(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_manager_dependencies_share_the_audit_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FAKE_API_KEY", "x")
     config = runtime_config(tmp_path)
     async with RunManager.open(config) as manager:

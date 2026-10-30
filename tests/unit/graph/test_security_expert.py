@@ -46,7 +46,10 @@ class FakeEvents:
 
 def target() -> TargetSpec:
     return TargetSpec(
-        name="demo", kind=TargetKind.OPENAI_COMPATIBLE, provider="demo", model="m",
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="m",
         base_url="http://127.0.0.1:8100/v1",
     )
 
@@ -57,8 +60,11 @@ def evidence(tmp_path: Path, kind: InputKind = InputKind.TARGET) -> EvidenceBund
             "run-1", PastedInput(query="q", response="def f():\n    return 1"), tmp_path / "data"
         )
     return EvidenceBundle(
-        kind=kind, root=str(run_paths(tmp_path / "data", "run-1").evidence),
-        target=target(), target_prompts=["q"], manifest_sha256="a" * 64,
+        kind=kind,
+        root=str(run_paths(tmp_path / "data", "run-1").evidence),
+        target=target(),
+        target_prompts=["q"],
+        manifest_sha256="a" * 64,
     )
 
 
@@ -69,8 +75,12 @@ def write_probe(tmp_path: Path) -> None:
     store.reset()
     store.append(
         ProbeRecord(
-            index=0, prompt="q", started_at=datetime.now(UTC), status_code=200,
-            latency_ms=5, response_text="def f():\n    return 1",
+            index=0,
+            prompt="q",
+            started_at=datetime.now(UTC),
+            status_code=200,
+            latency_ms=5,
+            response_text="def f():\n    return 1",
         )
     )
 
@@ -106,9 +116,15 @@ def build_deps(
 
     tools.register(
         ToolSpec(
-            name="run_graders", description="fake", input_model=RunGradersInput,
-            output_model=GraderRunOutput, permission="internal", timeout_s=10,
-            side_effects=False, idempotent=False, handler=graders,
+            name="run_graders",
+            description="fake",
+            input_model=RunGradersInput,
+            output_model=GraderRunOutput,
+            permission="internal",
+            timeout_s=10,
+            side_effects=False,
+            idempotent=False,
+            handler=graders,
         )
     )
 
@@ -119,25 +135,41 @@ def build_deps(
             session_id="s1",
             reports=[
                 AigReport.model_validate(
-                    {"modelName": "m", "total": 10, "jailbreak": 9, "score": 10.0,
-                     "extraBody": {"vulnerabilityResults": [
-                         {"vulnerability": "Harmful Content", "total": 10, "jailbreak": 9, "asr": 0.9}
-                     ]}}
+                    {
+                        "modelName": "m",
+                        "total": 10,
+                        "jailbreak": 9,
+                        "score": 10.0,
+                        "extraBody": {
+                            "vulnerabilityResults": [
+                                {"vulnerability": "Harmful Content", "total": 10, "jailbreak": 9, "asr": 0.9}
+                            ]
+                        },
+                    }
                 )
             ],
-            datasets=["d"], num_prompts=2,
+            datasets=["d"],
+            num_prompts=2,
             raw_result_path=str(tmp_path / "data" / "runs" / "run-1" / "aig" / "s1.json"),
         )
 
     tools.register(
         ToolSpec(
-            name="run_aig_scan", description="fake", input_model=AigScanInput,
-            output_model=AigScanOutput, permission="admin", timeout_s=10,
-            side_effects=True, idempotent=False, handler=scan,
+            name="run_aig_scan",
+            description="fake",
+            input_model=AigScanInput,
+            output_model=AigScanOutput,
+            permission="admin",
+            timeout_s=10,
+            side_effects=True,
+            idempotent=False,
+            handler=scan,
         )
     )
     policy = SecurityPolicy(
-        active_scan_enabled=aig_enabled, requester_is_admin=True, authorization_ref="demo",
+        active_scan_enabled=aig_enabled,
+        requester_is_admin=True,
+        authorization_ref="demo",
         demo_targets=[DemoTarget(name="demo", origin="http://127.0.0.1:8100")],
     )
     scan_policy = ScanPolicy(
@@ -165,8 +197,11 @@ async def test_passive_checks_run_without_a_target(tmp_path: Path) -> None:
     audit = FakeAudit()
     deps = build_deps(tmp_path, audit)
     result = await SecurityExpert(deps).run(
-        run_id="run-1", plan=security_plan(), evidence=evidence(tmp_path, InputKind.PASTE),
-        probe=None, budget=security_budget(),
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path, InputKind.PASTE),
+        probe=None,
+        budget=security_budget(),
     )
     assert result.status == "ok"
     assert result.score == 0.8
@@ -181,7 +216,10 @@ async def test_authorized_active_scan_caps_critical_score(tmp_path: Path) -> Non
     deps = build_deps(tmp_path, audit, events=events)
     probe = ProbeSummary(path="p", total=1, succeeded=1, failed=0)
     result = await SecurityExpert(deps).run(
-        run_id="run-1", plan=security_plan(), evidence=evidence(tmp_path), probe=probe,
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path),
+        probe=probe,
         budget=security_budget(),
     )
     assert result.status == "ok"
@@ -204,7 +242,10 @@ async def test_disabled_active_scan_is_refused_and_partial(tmp_path: Path) -> No
     deps = build_deps(tmp_path, audit, aig_enabled=False)
     probe = ProbeSummary(path="p", total=1, succeeded=1, failed=0)
     result = await SecurityExpert(deps).run(
-        run_id="run-1", plan=security_plan(), evidence=evidence(tmp_path), probe=probe,
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path),
+        probe=probe,
         budget=security_budget(),
     )
     assert result.status == "partial"
@@ -219,7 +260,9 @@ async def test_active_failure_is_degraded_and_partial(tmp_path: Path) -> None:
     audit = FakeAudit()
     deps = build_deps(tmp_path, audit, scan_error=AigTimeout("slow"))
     result = await SecurityExpert(deps).run(
-        run_id="run-1", plan=security_plan(), evidence=evidence(tmp_path),
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path),
         probe=ProbeSummary(path="p", total=1, succeeded=1, failed=0),
         budget=security_budget(),
     )

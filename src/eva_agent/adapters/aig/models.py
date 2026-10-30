@@ -40,12 +40,8 @@ class AigAttackMethod(BaseModel):
 class AigExtraBody(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
 
-    vulnerability_results: list[AigVulnerability] = Field(
-        default_factory=list, alias="vulnerabilityResults"
-    )
-    attack_method_results: list[AigAttackMethod] = Field(
-        default_factory=list, alias="attackMethodResults"
-    )
+    vulnerability_results: list[AigVulnerability] = Field(default_factory=list, alias="vulnerabilityResults")
+    attack_method_results: list[AigAttackMethod] = Field(default_factory=list, alias="attackMethodResults")
 
 
 class AigReport(BaseModel):

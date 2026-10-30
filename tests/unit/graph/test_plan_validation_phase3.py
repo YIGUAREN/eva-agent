@@ -26,11 +26,7 @@ def plan(*dimensions: DimensionPlan) -> EvalPlan:
         objective="阶段 3",
         evidence_summary="target",
         dimensions=list(dimensions),
-        skipped=[
-            SkippedDimension(dimension=item, reason="not selected")
-            for item in Dimension
-            if item not in enabled
-        ],
+        skipped=[SkippedDimension(dimension=item, reason="not selected") for item in Dimension if item not in enabled],
         budget=Budget(max_cost_usd=1, max_wall_clock_s=60, max_target_requests=20),
     )
 
@@ -54,10 +50,15 @@ def test_security_graders_are_rejected() -> None:
 
 def test_target_quality_accepts_relevance_and_rubric() -> None:
     validate_plan(
-        plan(dimension(Dimension.QUALITY, graders=[
-            GraderSpec(level="builtin", name="relevance", builtin_id="relevance"),
-            GraderSpec(level="llm_rubric", name="quality_rubric", rubric="- good"),
-        ])),
+        plan(
+            dimension(
+                Dimension.QUALITY,
+                graders=[
+                    GraderSpec(level="builtin", name="relevance", builtin_id="relevance"),
+                    GraderSpec(level="llm_rubric", name="quality_rubric", rubric="- good"),
+                ],
+            )
+        ),
         catalog_ids={"relevance"},
         input_kind=InputKind.TARGET,
     )
@@ -66,9 +67,12 @@ def test_target_quality_accepts_relevance_and_rubric() -> None:
 def test_target_quality_rejects_reference_or_unsupported_grader() -> None:
     with pytest.raises(PlanValidationError, match="only relevance"):
         validate_plan(
-            plan(dimension(Dimension.QUALITY, graders=[
-                GraderSpec(level="builtin", name="correctness", builtin_id="correctness")
-            ])),
+            plan(
+                dimension(
+                    Dimension.QUALITY,
+                    graders=[GraderSpec(level="builtin", name="correctness", builtin_id="correctness")],
+                )
+            ),
             catalog_ids={"correctness"},
             input_kind=InputKind.TARGET,
         )
@@ -76,22 +80,25 @@ def test_target_quality_rejects_reference_or_unsupported_grader() -> None:
 
 def test_target_quality_rejects_declarative_grader() -> None:
     bad = GraderSpec(
-        level="declarative", name="q", input_map={"latency_ms": "$.latency_ms"},
+        level="declarative",
+        name="q",
+        input_map={"latency_ms": "$.latency_ms"},
         checks=[CheckSpec(type="numeric_threshold", field="latency_ms", op="<=", value=1)],
     )
     with pytest.raises(PlanValidationError, match="declarative"):
         validate_plan(
             plan(dimension(Dimension.QUALITY, graders=[bad])),
-            catalog_ids=set(), input_kind=InputKind.TARGET,
+            catalog_ids=set(),
+            input_kind=InputKind.TARGET,
         )
 
 
 def test_all_four_dimensions_can_be_enabled() -> None:
     validate_plan(
         plan(
-            dimension(Dimension.QUALITY, graders=[
-                GraderSpec(level="builtin", name="relevance", builtin_id="relevance")
-            ]),
+            dimension(
+                Dimension.QUALITY, graders=[GraderSpec(level="builtin", name="relevance", builtin_id="relevance")]
+            ),
             dimension(Dimension.LATENCY, graders=[declarative("latency_budget", "latency_ms")]),
             dimension(Dimension.COST, graders=[declarative("cost_budget", "cost_usd")]),
             dimension(Dimension.SECURITY),

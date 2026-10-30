@@ -39,23 +39,17 @@ class SecurityExpert:
         if plan.dimension is not Dimension.SECURITY:
             raise ValueError("security expert received a non-security plan")
         limit = plan.sample_size or self._deps.default_sample_size
-        rows, source_indexes = await prepare_rows_with_indexes(
-            self._deps.tools, evidence, run_id=run_id, limit=limit
-        )
+        rows, source_indexes = await prepare_rows_with_indexes(self._deps.tools, evidence, run_id=run_id, limit=limit)
         if not rows:
             return self._failed("security 没有可评估的成功响应")
 
         specs = passive_specs(rows)
         try:
-            output = await self._deps.tools.call(
-                "run_graders", RunGradersInput(specs=specs, rows=rows, run_id=run_id)
-            )
+            output = await self._deps.tools.call("run_graders", RunGradersInput(specs=specs, rows=rows, run_id=run_id))
         except Exception as exc:
             return self._failed(f"security 被动检查失败：{type(exc).__name__}")
 
-        passive = summarize_passive(
-            output, specs=specs, rows=rows, evidence=evidence, source_indexes=source_indexes
-        )
+        passive = summarize_passive(output, specs=specs, rows=rows, evidence=evidence, source_indexes=source_indexes)
         await self._event(
             run_id,
             "security.passive.completed",
@@ -115,8 +109,12 @@ class SecurityExpert:
         if not self._deps.aig_configured or self._deps.scan_policy is None:
             audit_error = await self._audit(
                 AuditEvent(
-                    run_id=run_id, actor="cli:admin", action="active_scan.failed",
-                    outcome="failed", target=target.name, scan_kind=SCAN_KIND,
+                    run_id=run_id,
+                    actor="cli:admin",
+                    action="active_scan.failed",
+                    outcome="failed",
+                    target=target.name,
+                    scan_kind=SCAN_KIND,
                     detail={"error_type": "not_configured"},
                 )
             )
@@ -243,10 +241,9 @@ class SecurityExpert:
         else:
             score = active_score
 
-        passive_complete = (
-            passive.metrics.get("expected_outcomes", 0) > 0
-            and passive.metrics.get("scored_outcomes", 0) == passive.metrics.get("expected_outcomes")
-        )
+        passive_complete = passive.metrics.get("expected_outcomes", 0) > 0 and passive.metrics.get(
+            "scored_outcomes", 0
+        ) == passive.metrics.get("expected_outcomes")
         if passive_score is None and active_score is None:
             status = "failed"
         elif passive_score is not None and passive_complete and active_status in {"completed", "not_applicable"}:

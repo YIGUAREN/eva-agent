@@ -5,9 +5,7 @@ from eva_agent.domain.run import RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.state import EvalState
 
-SUPPORTED_DIMENSIONS = frozenset(
-    {Dimension.QUALITY, Dimension.LATENCY, Dimension.COST, Dimension.SECURITY}
-)
+SUPPORTED_DIMENSIONS = frozenset({Dimension.QUALITY, Dimension.LATENCY, Dimension.COST, Dimension.SECURITY})
 
 
 async def dispatch_node(state: EvalState, deps: GraphDependencies) -> dict:

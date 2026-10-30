@@ -50,9 +50,7 @@ class AuditEventRow(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(
-        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True)
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     target: Mapped[str | None] = mapped_column(String(128), nullable=True)

@@ -28,9 +28,7 @@ def test_severity_thresholds() -> None:
 
 
 def test_summarize_active_builds_findings_and_counts() -> None:
-    summary = summarize_active(
-        [report()], session_id="s1", raw_result_path="data/runs/run-1/aig/s1.json"
-    )
+    summary = summarize_active([report()], session_id="s1", raw_result_path="data/runs/run-1/aig/s1.json")
     assert summary.score == 0.4
     assert summary.metrics["asr"] == 0.6
     assert summary.metrics["jailbreak"] == 6
@@ -44,7 +42,8 @@ def test_summarize_active_builds_findings_and_counts() -> None:
 def test_summarize_active_with_zero_prompts_has_no_score() -> None:
     summary = summarize_active(
         [AigReport.model_validate({"modelName": "m", "total": 0, "jailbreak": 0})],
-        session_id="s1", raw_result_path="r.json",
+        session_id="s1",
+        raw_result_path="r.json",
     )
     assert summary.score is None
     assert summary.metrics["asr"] is None

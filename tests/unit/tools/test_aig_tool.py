@@ -45,8 +45,12 @@ class FakeAudit:
 
 def target() -> TargetSpec:
     return TargetSpec(
-        name="demo", kind=TargetKind.OPENAI_COMPATIBLE, provider="demo", model="demo-echo",
-        base_url="http://127.0.0.1:8100/v1", api_key_env="DEMO_KEY",
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="demo-echo",
+        base_url="http://127.0.0.1:8100/v1",
+        api_key_env="DEMO_KEY",
     )
 
 
@@ -56,7 +60,9 @@ def settings() -> AigSettings:
 
 def eval_model() -> ModelConfig:
     return ModelConfig(
-        provider="openai-compatible", model="judge", base_url="https://judge/v1",
+        provider="openai-compatible",
+        model="judge",
+        base_url="https://judge/v1",
         api_key_env="JUDGE_KEY",
     )
 
@@ -65,14 +71,20 @@ async def test_scan_writes_raw_result_and_audits_lifecycle(tmp_path: Path) -> No
     audit = FakeAudit()
     client = FakeClient()
     tool = build_run_aig_scan_tool(
-        client=client, settings=settings(), eval_model=eval_model(),
+        client=client,
+        settings=settings(),
+        eval_model=eval_model(),
         env={"DEMO_KEY": "target-secret", "JUDGE_KEY": "judge-secret"},
-        audit=audit, data_dir=str(tmp_path / "data"),
+        audit=audit,
+        data_dir=str(tmp_path / "data"),
     )
     output = await tool.handler(
         AigScanInput(
-            run_id="run-1", target=target(), scan_base_url="http://demo-target:8100/v1",
-            authorization_ref="demo", max_wait_s=10,
+            run_id="run-1",
+            target=target(),
+            scan_base_url="http://demo-target:8100/v1",
+            authorization_ref="demo",
+            max_wait_s=10,
         )
     )
     assert output.session_id == "session-1"
@@ -82,9 +94,7 @@ async def test_scan_writes_raw_result_and_audits_lifecycle(tmp_path: Path) -> No
     assert client.body["content"]["model"][0]["token"] == "target-secret"
     raw = Path(output.raw_result_path).read_text(encoding="utf-8")
     assert json.loads(raw)["result"]["msgType"] == "json"
-    assert [event.action for event in audit.events] == [
-        "active_scan.started", "active_scan.completed"
-    ]
+    assert [event.action for event in audit.events] == ["active_scan.started", "active_scan.completed"]
     assert audit.events[0].detail["session_id"] == "session-1"
     assert "target-secret" not in json.dumps([event.detail for event in audit.events])
 
@@ -92,14 +102,21 @@ async def test_scan_writes_raw_result_and_audits_lifecycle(tmp_path: Path) -> No
 async def test_timeout_writes_cancelled_audit_and_reraises(tmp_path: Path) -> None:
     audit = FakeAudit()
     tool = build_run_aig_scan_tool(
-        client=FakeClient(error=AigTimeout("slow")), settings=settings(), eval_model=eval_model(),
-        env={"DEMO_KEY": "t", "JUDGE_KEY": "j"}, audit=audit, data_dir=str(tmp_path / "data"),
+        client=FakeClient(error=AigTimeout("slow")),
+        settings=settings(),
+        eval_model=eval_model(),
+        env={"DEMO_KEY": "t", "JUDGE_KEY": "j"},
+        audit=audit,
+        data_dir=str(tmp_path / "data"),
     )
     with pytest.raises(AigTimeout):
         await tool.handler(
             AigScanInput(
-                run_id="run-1", target=target(), scan_base_url="http://demo-target:8100/v1",
-                authorization_ref="demo", max_wait_s=10,
+                run_id="run-1",
+                target=target(),
+                scan_base_url="http://demo-target:8100/v1",
+                authorization_ref="demo",
+                max_wait_s=10,
             )
         )
     assert [event.action for event in audit.events] == [

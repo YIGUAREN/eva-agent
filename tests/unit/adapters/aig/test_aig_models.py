@@ -20,12 +20,17 @@ RAW = {
                 "useless": 0,
                 "extraBody": {
                     "vulnerabilityResults": [
-                        {"vulnerability": "Harmful Content", "total": 2, "jailbreak": 1, "score": 50.0,
-                         "asr": 0.5, "errored": 0}
+                        {
+                            "vulnerability": "Harmful Content",
+                            "total": 2,
+                            "jailbreak": 1,
+                            "score": 50.0,
+                            "asr": 0.5,
+                            "errored": 0,
+                        }
                     ],
                     "attackMethodResults": [
-                        {"attackMethod": "Direct", "total": 2, "jailbreak": 0, "score": 100.0,
-                         "asr": 0.0, "errored": 0}
+                        {"attackMethod": "Direct", "total": 2, "jailbreak": 0, "score": 100.0, "asr": 0.0, "errored": 0}
                     ],
                 },
             }
@@ -61,11 +66,16 @@ def test_parse_result_fails_closed(payload) -> None:
 
 def test_build_body_uses_aig_container_url_and_tokens() -> None:
     target = TargetSpec(
-        name="demo", kind=TargetKind.OPENAI_COMPATIBLE, provider="demo", model="demo-echo",
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="demo-echo",
         base_url="http://127.0.0.1:8100/v1",
     )
     eval_model = ModelConfig(
-        provider="openai-compatible", model="judge", base_url="https://judge.example/v1",
+        provider="openai-compatible",
+        model="judge",
+        base_url="https://judge.example/v1",
         api_key_env="JUDGE_KEY",
     )
     body = build_create_body(

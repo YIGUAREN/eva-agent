@@ -23,9 +23,7 @@ from eva_agent.graph.nodes.report import report_node
 from eva_agent.graph.nodes.security import security_node
 from eva_agent.graph.state import EvalState
 
-SUPPORTED_DIMENSIONS = frozenset(
-    {Dimension.QUALITY, Dimension.LATENCY, Dimension.COST, Dimension.SECURITY}
-)
+SUPPORTED_DIMENSIONS = frozenset({Dimension.QUALITY, Dimension.LATENCY, Dimension.COST, Dimension.SECURITY})
 
 
 def _route_after_intake(state: EvalState) -> str:

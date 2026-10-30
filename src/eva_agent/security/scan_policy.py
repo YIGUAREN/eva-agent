@@ -83,9 +83,7 @@ class ScanPolicy:
             (
                 item
                 for item in self._policy.demo_targets
-                if item.name == target.name
-                and target.base_url is not None
-                and _origin(target.base_url) == item.origin
+                if item.name == target.name and target.base_url is not None and _origin(target.base_url) == item.origin
             ),
             None,
         )
@@ -106,13 +104,17 @@ class ScanPolicy:
         scan_requests = probe_count + self._aig.scan.num_prompts * len(self._aig.scan.datasets)
         if scan_requests > budget.max_target_requests:
             return ScanDecision(
-                allowed=False, reason="budget_exceeded", authorization_ref=ref,
+                allowed=False,
+                reason="budget_exceeded",
+                authorization_ref=ref,
                 scan_requests=scan_requests,
             )
         max_wait_s = min(self._aig.max_wait_s, budget.max_wall_clock_s)
         if max_wait_s < self._aig.min_wait_s:
             return ScanDecision(
-                allowed=False, reason="timeout_too_short", authorization_ref=ref,
+                allowed=False,
+                reason="timeout_too_short",
+                authorization_ref=ref,
                 scan_requests=scan_requests,
             )
         return ScanDecision(

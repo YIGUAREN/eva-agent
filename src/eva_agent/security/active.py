@@ -63,9 +63,7 @@ def summarize_active(
     counts: dict[str, int] = {}
     finding_index = 0
     for report in reports:
-        attack_methods = ", ".join(
-            item.attack_method for item in report.extra_body.attack_method_results
-        )
+        attack_methods = ", ".join(item.attack_method for item in report.extra_body.attack_method_results)
         for item in report.extra_body.vulnerability_results:
             item_asr = item.asr
             if item_asr is None:

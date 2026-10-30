@@ -18,7 +18,10 @@ from eva_agent.tools.target import build_read_target_probe_tool
 
 def evidence(tmp_path: Path) -> EvidenceBundle:
     target = TargetSpec(
-        name="demo", kind=TargetKind.OPENAI_COMPATIBLE, provider="demo", model="demo-echo",
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="demo-echo",
         base_url="http://127.0.0.1:8100/v1",
     )
     return EvidenceBundle(
@@ -37,14 +40,23 @@ def write_probe(tmp_path: Path) -> None:
     store.reset()
     store.append(
         ProbeRecord(
-            index=0, prompt="q1", started_at=datetime.now(UTC), status_code=200,
-            latency_ms=10, response_text="a1",
+            index=0,
+            prompt="q1",
+            started_at=datetime.now(UTC),
+            status_code=200,
+            latency_ms=10,
+            response_text="a1",
         )
     )
     store.append(
         ProbeRecord(
-            index=1, prompt="q2", started_at=datetime.now(UTC), status_code=None,
-            latency_ms=10, response_text="", error="timeout",
+            index=1,
+            prompt="q2",
+            started_at=datetime.now(UTC),
+            status_code=None,
+            latency_ms=10,
+            response_text="",
+            error="timeout",
         )
     )
 
@@ -56,14 +68,23 @@ async def test_quality_expert_cites_source_probe_index(tmp_path: Path) -> None:
     store.reset()
     store.append(
         ProbeRecord(
-            index=0, prompt="q1", started_at=datetime.now(UTC), status_code=None,
-            latency_ms=10, response_text="", error="timeout",
+            index=0,
+            prompt="q1",
+            started_at=datetime.now(UTC),
+            status_code=None,
+            latency_ms=10,
+            response_text="",
+            error="timeout",
         )
     )
     store.append(
         ProbeRecord(
-            index=1, prompt="q2", started_at=datetime.now(UTC), status_code=200,
-            latency_ms=10, response_text="a2",
+            index=1,
+            prompt="q2",
+            started_at=datetime.now(UTC),
+            status_code=200,
+            latency_ms=10,
+            response_text="a2",
         )
     )
 
@@ -79,13 +100,21 @@ async def test_quality_expert_cites_source_probe_index(tmp_path: Path) -> None:
     tools.register(build_read_target_probe_tool())
     tools.register(
         ToolSpec(
-            name="run_graders", description="fake", input_model=RunGradersInput,
-            output_model=GraderRunOutput, permission="internal", timeout_s=10,
-            side_effects=False, idempotent=False, handler=handler,
+            name="run_graders",
+            description="fake",
+            input_model=RunGradersInput,
+            output_model=GraderRunOutput,
+            permission="internal",
+            timeout_s=10,
+            side_effects=False,
+            idempotent=False,
+            handler=handler,
         )
     )
     plan = DimensionPlan(
-        dimension=Dimension.QUALITY, enabled=True, sample_size=2,
+        dimension=Dimension.QUALITY,
+        enabled=True,
+        sample_size=2,
         graders=[GraderSpec(level="builtin", name="relevance", builtin_id="relevance")],
     )
     result = await QualityExpert(tools, default_sample_size=5).run(
@@ -113,13 +142,21 @@ async def test_quality_expert_grades_successful_target_rows(tmp_path: Path) -> N
     tools.register(build_read_target_probe_tool())
     tools.register(
         ToolSpec(
-            name="run_graders", description="fake", input_model=RunGradersInput,
-            output_model=GraderRunOutput, permission="internal", timeout_s=10,
-            side_effects=False, idempotent=False, handler=handler,
+            name="run_graders",
+            description="fake",
+            input_model=RunGradersInput,
+            output_model=GraderRunOutput,
+            permission="internal",
+            timeout_s=10,
+            side_effects=False,
+            idempotent=False,
+            handler=handler,
         )
     )
     plan = DimensionPlan(
-        dimension=Dimension.QUALITY, enabled=True, sample_size=2,
+        dimension=Dimension.QUALITY,
+        enabled=True,
+        sample_size=2,
         graders=[GraderSpec(level="builtin", name="relevance", builtin_id="relevance")],
     )
     result = await QualityExpert(tools, default_sample_size=5).run(
@@ -127,7 +164,5 @@ async def test_quality_expert_grades_successful_target_rows(tmp_path: Path) -> N
     )
     assert result.status == "ok"
     assert result.score == 0.8
-    assert seen[0].rows == [
-        {"query": "q1", "response": "a1", "context": "", "reference": ""}
-    ]
+    assert seen[0].rows == [{"query": "q1", "response": "a1", "context": "", "reference": ""}]
     assert result.findings == []
