@@ -1,4 +1,8 @@
+import asyncio
+import json
+
 from eva_agent.domain.run import RunStatus
+from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.manager import RunManager
 from eva_agent.worker.runner import RunWorker
 from tests.support.runtime import budget, dependencies, fake_config, paste_input
@@ -146,4 +150,81 @@ async def test_resume_is_rejected_for_a_run_that_is_not_running(tmp_path) -> Non
     assert "cannot be resumed from status" in (commands[-1].error or "")
     row = await worker.runs.get(run_id)
     assert row is not None and row.status == RunStatus.WAITING_APPROVAL.value
+    await manager.close()
+
+
+async def test_duplicate_start_backfills_report_rows_after_a_crash(tmp_path) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await manager.create_run(paste_input(), budget())
+    await manager.start_existing(run_id)
+    await manager.approve(run_id, approved=True)
+
+    # The graph completed and wrote report.json, but the worker "crashed" before
+    # _after could persist the report and artifact rows.
+    assert await worker.reports.get(run_id) is None
+    assert await worker.artifacts.get(run_id, "report.json") is None
+
+    await worker.commands.enqueue(run_id, "start")
+    assert await worker.tick() is True
+
+    row = await worker.runs.get(run_id)
+    assert row is not None and row.status == RunStatus.COMPLETED.value
+    snapshot = await worker.reports.get(run_id)
+    assert snapshot is not None and snapshot.payload["run_id"] == run_id
+    assert await worker.artifacts.get(run_id, "report.json") is not None
+    assert await worker.artifacts.get(run_id, "plan.approved.yaml") is not None
+    await manager.close()
+
+
+async def test_run_forever_survives_a_tick_failure(tmp_path, monkeypatch) -> None:
+    manager, worker = await _worker(tmp_path)
+    stop = asyncio.Event()
+
+    async def failing_tick() -> bool:
+        stop.set()
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(worker, "tick", failing_tick)
+    await asyncio.wait_for(worker.run_forever(stop), timeout=1.0)
+    await manager.close()
+
+
+async def test_report_persistence_failure_is_not_leaked_in_the_command_error(tmp_path, monkeypatch) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await manager.create_run(paste_input(), budget())
+
+    async def failing_after(rid: str) -> None:
+        raise RuntimeError(f"cannot read {tmp_path / 'data' / rid / 'report.json'}")
+
+    monkeypatch.setattr(worker, "_after", failing_after)
+    await worker.commands.enqueue(run_id, "start")
+    assert await worker.tick() is True
+
+    commands = await worker.commands.list_for_run(run_id)
+    assert commands[-1].status == "failed"
+    assert commands[-1].error == "failed to record the run report"
+    await manager.close()
+
+
+async def test_malformed_report_version_is_recorded_not_fatal(tmp_path) -> None:
+    manager, worker = await _worker(tmp_path)
+    run_id = await manager.create_run(paste_input(), budget())
+    await manager.start_existing(run_id)
+    await manager.approve(run_id, approved=True)
+
+    paths = run_paths(worker.data_dir, run_id)
+    payload = json.loads(paths.report_json.read_text(encoding="utf-8"))
+    payload["version"] = "not-a-number"
+    paths.report_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    await worker.commands.enqueue(run_id, "start")
+    assert await worker.tick() is True
+
+    snapshot = await worker.reports.get(run_id)
+    assert snapshot is not None
+    assert snapshot.version == 0
+    assert snapshot.payload["version_error"]
+    assert await worker.artifacts.get(run_id, "report.json") is not None
+    commands = await worker.commands.list_for_run(run_id)
+    assert commands[-1].status == "done"
     await manager.close()
