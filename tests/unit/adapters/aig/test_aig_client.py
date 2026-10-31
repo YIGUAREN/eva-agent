@@ -162,6 +162,9 @@ class CountingStream(httpx.AsyncByteStream):
 
 @pytest.mark.parametrize("method", ["wait", "result"])
 async def test_status_and_result_bodies_stop_at_the_size_cap_mid_stream(method: str) -> None:
+    # An absolute budget tied to the untrusted-body threat: the relative check
+    # below must not silently scale up with a growing cap.
+    assert MAX_RESULT_BYTES <= 16 * 1024 * 1024
     # A distinctive marker proves the raised message never carries body content.
     marker = b"SECRET-LOG-LINE"
     per_chunk = 1024 * 1024
