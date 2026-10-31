@@ -18,7 +18,13 @@ export function score(value: number | null | undefined): string {
   return value === null || value === undefined ? "n/a" : value.toFixed(3);
 }
 
+/** Format an amount with the RMB symbol; the number itself is not converted. */
+export function yuan(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) return "—";
+  return `¥${value.toFixed(digits)}`;
+}
+
 export function spend(value: number | null | undefined): string | null {
   if (value === null || value === undefined || !Number.isFinite(value)) return null;
-  return `¥${value.toFixed(2)}`;
+  return yuan(value);
 }

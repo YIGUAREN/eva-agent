@@ -9,10 +9,7 @@ import {
   validateExtension,
   type BudgetDecisionFailure,
 } from "../lib/budget";
-
-function usd(value: number): string {
-  return `${value.toFixed(6)} USD`;
-}
+import { yuan } from "../lib/format";
 
 export function BudgetCard({
   runId,
@@ -67,18 +64,18 @@ export function BudgetCard({
       <h2 className="text-lg font-semibold text-amber-200">预算不足以继续</h2>
       <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
         <dt className="text-slate-400">已花费</dt>
-        <dd className="font-mono">{usd(gate.spent)}</dd>
+        <dd className="font-mono">{yuan(gate.spent, 6)}</dd>
         <dt className="text-slate-400">剩余</dt>
-        <dd className="font-mono">{usd(gate.remaining)}</dd>
+        <dd className="font-mono">{yuan(gate.remaining, 6)}</dd>
         <dt className="text-slate-400">收尾预估</dt>
-        <dd className="font-mono">{usd(gate.finalize_estimate)}</dd>
+        <dd className="font-mono">{yuan(gate.finalize_estimate, 6)}</dd>
         <dt className="text-slate-400">截断维度</dt>
         <dd className="font-mono">{gate.truncated_dimensions.join(", ") || "无"}</dd>
       </dl>
 
       {failure?.kind === "overrun" && (
         <p className="mt-3 text-sm text-amber-300">
-          收尾需要 {usd(failure.finalizeEstimate)}，当前仅剩 {usd(failure.remaining)}。
+          收尾需要 {yuan(failure.finalizeEstimate, 6)}，当前仅剩 {yuan(failure.remaining, 6)}。
           {failure.message && <span className="mt-1 block">{failure.message}</span>}
         </p>
       )}
@@ -115,7 +112,7 @@ export function BudgetCard({
         <p className="text-sm font-medium text-slate-200">追加预算并继续</p>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <label className="text-xs text-slate-400">
-            成本上限 (USD)
+            成本上限（¥）
             <input
               type="number"
               min="0"
