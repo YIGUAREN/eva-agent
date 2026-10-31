@@ -7,7 +7,6 @@ import json
 import os
 import shutil
 import zipfile
-import zlib
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
@@ -143,7 +142,7 @@ def _validated_member_names(names: Iterable[str]) -> list[str]:
     checked: list[str] = []
     for name in names:
         normalized = _member_name(name)
-        if normalized == MANIFEST_NAME:
+        if normalized.casefold() == MANIFEST_NAME.casefold():
             raise PackageError(f"package may not list {MANIFEST_NAME} as a member")
         checked.append(normalized)
     return checked
@@ -153,58 +152,83 @@ def write_zip(root: Path, destination: Path, *, manifest: PackageManifest) -> Pa
     names = [MANIFEST_NAME, *sorted(_validated_member_names(manifest.files))]
     if len(names) > MAX_PACKAGE_FILES:
         raise PackageError(f"package has {len(names)} files; the limit is {MAX_PACKAGE_FILES}")
-    try:
-        expanded = sum((root / name).stat().st_size for name in names)
-    except OSError as exc:
-        raise PackageError(f"cannot read package member: {exc}") from None
+    expanded = 0
+    for name in names:
+        path = root / name
+        try:
+            info = path.stat()
+        except OSError as exc:
+            raise PackageError(f"cannot read package member: {exc}") from None
+        if not path.is_file():
+            # A directory would be written as a ``dir/`` member that
+            # ``extract_zip`` rejects, so refuse it here instead.
+            raise PackageError(f"package member is not a file: {name}")
+        expanded += info.st_size
     if expanded > MAX_PACKAGE_BYTES:
         raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name in names:
-            archive.write(root / name, arcname=name)
+    try:
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name in names:
+                archive.write(root / name, arcname=name)
+    except OSError as exc:
+        raise PackageError(f"cannot write package member: {exc}") from None
     return destination
 
 
-def _extract_zip_into(source: Path, staging: Path) -> PackageManifest:
+def _open_zip(source: Path) -> zipfile.ZipFile:
+    """Open ``source`` as a zip archive, translating parser failures to ``PackageError``."""
     try:
-        with zipfile.ZipFile(source) as archive:
-            entries = archive.infolist()
-            # Directory entries consume the same budget as payload files, so a
-            # directory-heavy archive cannot slip past the file cap.
-            if len(entries) > MAX_PACKAGE_FILES:
-                raise PackageError(f"package has {len(entries)} files; the limit is {MAX_PACKAGE_FILES}")
-            members = [info for info in entries if not info.is_dir()]
-            seen: set[str] = set()
-            total = 0
-            names: list[str] = []
-            for info in members:
-                name = _member_name(info.filename)
-                folded = name.casefold()
-                if folded in seen:
-                    raise PackageError(f"duplicate package member {name}")
-                seen.add(folded)
-                if (info.external_attr >> 16) & 0o170000 == _SYMLINK_MODE:
-                    raise PackageError(f"package member is a symlink: {name}")
-                total += info.file_size
-                if total > MAX_PACKAGE_BYTES:
-                    raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
-                names.append(name)
-            staging.mkdir(parents=True, exist_ok=True)
-            written = 0
-            for info, name in zip(members, names, strict=True):
-                target = staging / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as reader, target.open("wb") as writer:
-                    while chunk := reader.read(1 << 20):
-                        written += len(chunk)
-                        if written > MAX_PACKAGE_BYTES:
-                            raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
-                        writer.write(chunk)
-    except (OSError, zipfile.BadZipFile, zlib.error, EOFError, RuntimeError, NotImplementedError) as exc:
+        return zipfile.ZipFile(source)
+    except Exception as exc:
+        # A malformed central directory (bad signature, bad CRC, invalid UTF-8
+        # filename under flag 0x800, ...) surfaces raw exceptions; fail closed so
+        # callers only ever see ``PackageError``.
+        raise PackageError(f"not a zip package: {exc}") from None
+
+
+def _extract_zip_into(archive: zipfile.ZipFile, staging: Path) -> PackageManifest:
+    try:
+        entries = archive.infolist()
+        # Directory entries consume the same budget as payload files, so a
+        # directory-heavy archive cannot slip past the file cap.
+        if len(entries) > MAX_PACKAGE_FILES:
+            raise PackageError(f"package has {len(entries)} files; the limit is {MAX_PACKAGE_FILES}")
+        members = [info for info in entries if not info.is_dir()]
+        seen: set[str] = set()
+        total = 0
+        names: list[str] = []
+        for info in members:
+            name = _member_name(info.filename)
+            folded = name.casefold()
+            if folded in seen:
+                raise PackageError(f"duplicate package member {name}")
+            seen.add(folded)
+            if (info.external_attr >> 16) & 0o170000 == _SYMLINK_MODE:
+                raise PackageError(f"package member is a symlink: {name}")
+            total += info.file_size
+            if total > MAX_PACKAGE_BYTES:
+                raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
+            names.append(name)
+        staging.mkdir(parents=True, exist_ok=True)
+        written = 0
+        for info, name in zip(members, names, strict=True):
+            target = staging / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as reader, target.open("wb") as writer:
+                while chunk := reader.read(1 << 20):
+                    written += len(chunk)
+                    if written > MAX_PACKAGE_BYTES:
+                        raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
+                    writer.write(chunk)
+    except PackageError:
+        raise
+    except Exception as exc:
         # Corrupt, encrypted or unsupported archives surface raw exceptions from
         # ``zipfile``/``zlib``; fail closed so callers only see ``PackageError``.
         raise PackageError(f"not a zip package: {exc}") from None
+    # Kept outside the translation above so their own ``PackageError``s (hash
+    # and layout failures) keep their precise messages.
     manifest = read_manifest(staging)
     verify_tree(staging, manifest)
     return manifest
@@ -214,15 +238,25 @@ def extract_zip(source: Path, destination: Path) -> PackageManifest:
     """Extract a package into ``destination`` with layout limits, then verify its hashes.
 
     Extraction and verification run in a sibling staging directory that is moved
-    into place only on success. On any failure both the staging directory and
-    ``destination`` are removed, so an unverified partial tree is never left behind.
+    into place only on success. A failure after the archive opens removes both the
+    staging directory and ``destination``, so an unverified partial tree is never
+    left behind; a source that cannot be opened as a zip leaves ``destination``
+    untouched. The staging directory is always removed.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.parent / f".{destination.name}.tmp-{uuid4().hex}"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir()
     try:
-        manifest = _extract_zip_into(source, staging)
+        archive = _open_zip(source)
+    except PackageError:
+        # The source never parsed, so a pre-existing destination is not part of
+        # this operation; leave it alone.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    try:
+        with archive:
+            manifest = _extract_zip_into(archive, staging)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(destination, ignore_errors=True)

@@ -177,6 +177,19 @@ def test_extract_zip_leaves_no_partial_tree_on_failure(tmp_path) -> None:
     assert extract_zip(archive, destination) == manifest
 
 
+def test_extract_zip_leaves_a_preexisting_destination_when_the_source_is_not_a_zip(tmp_path) -> None:
+    destination = tmp_path / "out"
+    destination.mkdir()
+    marker = destination / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    source = tmp_path / "not-a-zip.zip"
+    source.write_bytes(b"this is not a zip archive")
+    with pytest.raises(PackageError, match="not a zip package"):
+        extract_zip(source, destination)
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["not-a-zip.zip", "out"]
+
+
 def _stored_zip(path: Path) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as handle:
         handle.writestr("plan.json", "{}")
@@ -215,6 +228,20 @@ def test_extract_zip_translates_a_bad_crc(tmp_path) -> None:
     local = raw.index(b"PK\x03\x04")
     data_start = local + 30 + len("plan.json")
     raw[data_start] ^= 0xFF
+    archive.write_bytes(raw)
+    with pytest.raises(PackageError, match="not a zip package"):
+        extract_zip(archive, tmp_path / "out")
+
+
+def test_extract_zip_translates_an_invalid_utf8_member_name(tmp_path) -> None:
+    archive = tmp_path / "bad-name.zip"
+    _stored_zip(archive)
+    raw = bytearray(archive.read_bytes())
+    central = raw.index(b"PK\x01\x02")
+    name_length = int.from_bytes(raw[central + 28 : central + 30], "little")
+    name_start = central + 46
+    raw[central + 9] |= 0x08  # general-purpose flag bit 0x800: filename is UTF-8
+    raw[name_start : name_start + name_length] = b"\xff" * name_length
     archive.write_bytes(raw)
     with pytest.raises(PackageError, match="not a zip package"):
         extract_zip(archive, tmp_path / "out")
@@ -285,10 +312,33 @@ def test_write_zip_enforces_the_size_cap(tmp_path, monkeypatch) -> None:
         write_zip(source, tmp_path / "big.zip", manifest=manifest)
 
 
-def test_write_zip_rejects_listing_the_manifest_itself(tmp_path) -> None:
-    manifest = _manifest({MANIFEST_NAME: FileEntry(sha256="0" * 64, size=0)})
-    with pytest.raises(PackageError, match=MANIFEST_NAME):
+@pytest.mark.parametrize("name", [MANIFEST_NAME, "Manifest.json", "MANIFEST.JSON"])
+def test_write_zip_rejects_listing_the_manifest_itself(tmp_path, name: str) -> None:
+    manifest = _manifest({name: FileEntry(sha256="0" * 64, size=0)})
+    with pytest.raises(PackageError, match="may not list"):
         write_zip(tmp_path / "source", tmp_path / "out.zip", manifest=manifest)
+
+
+def test_write_zip_rejects_listing_a_directory(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "sub").mkdir()
+    manifest = _manifest({"sub": FileEntry(sha256="0" * 64, size=0)})
+    write_manifest(source, manifest)
+    with pytest.raises(PackageError, match="not a file"):
+        write_zip(source, tmp_path / "out.zip", manifest=manifest)
+
+
+def test_write_zip_translates_a_write_failure(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    manifest = _tree(source)
+
+    def failing_write(self: zipfile.ZipFile, filename: Any, *args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", failing_write)
+    with pytest.raises(PackageError, match="cannot write package member: disk full"):
+        write_zip(source, tmp_path / "out.zip", manifest=manifest)
 
 
 @pytest.mark.parametrize("name", ["a//b.json", "a/./b.json", "./plan.json", "dir/"])
