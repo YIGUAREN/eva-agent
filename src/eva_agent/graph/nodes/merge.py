@@ -13,7 +13,13 @@ async def merge_node(state: EvalState, deps: GraphDependencies) -> dict:
     results = list(state.get("expert_results") or [])
     skipped = list(plan.skipped) if plan is not None else []
     if not results:
-        merged = MergedResult(status=RunStatus.FAILED, results=[], skipped=skipped)
+        # An all-skipped plan has nothing to run; the run completes with its
+        # skipped annotations. An enabled dimension that produced no result,
+        # or a missing plan, is still a failure.
+        all_skipped = plan is not None and not any(item.enabled for item in plan.dimensions)
+        status = RunStatus.COMPLETED if all_skipped else RunStatus.FAILED
+        metrics = {"overall_score": None} if all_skipped else {}
+        merged = MergedResult(status=status, results=[], skipped=skipped, metrics=metrics)
         await deps.event_sink(state["run_id"], "run.merged", {"status": merged.status.value})
         return {"merged": merged, "status": merged.status}
 

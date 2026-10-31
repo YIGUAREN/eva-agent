@@ -44,6 +44,9 @@ def _evidence_ref(evidence: EvidenceBundle, index: int, *, source_index: int | N
     if evidence.kind is InputKind.TARGET:
         locator_index = source_index if source_index is not None else index
         return EvidenceRef(kind="target_request", locator=f"target_probe.jsonl#{locator_index}")
+    if evidence.kind is InputKind.UPLOAD:
+        locator_index = source_index if source_index is not None else index
+        return EvidenceRef(kind="upload_row", locator=f"qa.jsonl#{locator_index}")
     if evidence.kind is InputKind.DATASET and evidence.dataset is not None:
         return EvidenceRef(kind="dataset_row", locator=f"{evidence.dataset.path}#{index}")
     return EvidenceRef(kind="paste_field", locator="response")
@@ -52,6 +55,8 @@ def _evidence_ref(evidence: EvidenceBundle, index: int, *, source_index: int | N
 def _workspace_ref(evidence: EvidenceBundle) -> EvidenceRef:
     if evidence.kind is InputKind.DATASET and evidence.dataset is not None:
         return EvidenceRef(kind="file", locator=evidence.dataset.path)
+    if evidence.kind is InputKind.UPLOAD:
+        return EvidenceRef(kind="file", locator="qa.jsonl")
     if evidence.kind is InputKind.TARGET:
         return EvidenceRef(kind="file", locator="target_probe.jsonl")
     return EvidenceRef(kind="file", locator="paste.json")

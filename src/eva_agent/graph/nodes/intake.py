@@ -60,9 +60,9 @@ async def intake_node(state: EvalState, deps: GraphDependencies) -> dict:
         await deps.event_sink(run_id, "evidence.failed", {"error": str(exc)})
         return {"status": RunStatus.FAILED, "errors": [f"准备证据失败: {exc}"]}
 
-    await deps.event_sink(
-        run_id,
-        "evidence.ready",
-        {"kind": evidence.kind.value, "manifest_sha256": evidence.manifest_sha256},
-    )
+    summary: dict = {"kind": evidence.kind.value, "manifest_sha256": evidence.manifest_sha256}
+    if evidence.kind is InputKind.UPLOAD:
+        # The planner decides whether to skip quality from the root qa.jsonl flag.
+        summary["qa"] = any(item.path == "qa.jsonl" for item in evidence.files)
+    await deps.event_sink(run_id, "evidence.ready", summary)
     return {"evidence": evidence, "status": RunStatus.RUNNING}

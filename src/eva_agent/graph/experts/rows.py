@@ -1,4 +1,4 @@
-"""Prepare grader rows from paste, dataset, or target evidence."""
+"""Prepare grader rows from paste, dataset, upload, or target evidence."""
 
 from __future__ import annotations
 
@@ -8,11 +8,13 @@ from pathlib import Path
 from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.run import InputKind
 from eva_agent.tools.dataset import SampleDatasetInput
-from eva_agent.tools.evidence import ReadEvidenceInput
+from eva_agent.tools.evidence import EvidenceAccessError, ReadEvidenceInput
 from eva_agent.tools.registry import ToolRegistry
 from eva_agent.tools.target import ReadTargetProbeInput
 
 PASTE_READ_LIMIT = 1_000_000
+UPLOAD_QA_READ_LIMIT = 8 * 1024 * 1024
+_QA_MALFORMED = "qa.jsonl is malformed"
 
 
 def _paste_row(payload: dict) -> dict[str, str]:
@@ -22,6 +24,54 @@ def _paste_row(payload: dict) -> dict[str, str]:
         "context": str(payload.get("context") or ""),
         "reference": "",
     }
+
+
+def _qa_row(line: str) -> dict[str, str]:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        raise ValueError(_QA_MALFORMED) from None
+    if not isinstance(payload, dict):
+        raise ValueError(_QA_MALFORMED)
+    query = payload.get("query")
+    response = payload.get("response")
+    context = payload.get("context", "")
+    reference = payload.get("reference", "")
+    if not isinstance(query, str) or not isinstance(response, str):
+        raise ValueError(_QA_MALFORMED)
+    if not isinstance(context, str) or not isinstance(reference, str):
+        raise ValueError(_QA_MALFORMED)
+    return {"query": query, "response": response, "context": context, "reference": reference}
+
+
+def parse_qa_jsonl(text: str) -> list[dict[str, str]]:
+    """Parse one JSON object per non-empty line of an upload ``qa.jsonl``."""
+    return [_qa_row(line) for line in text.splitlines() if line.strip()]
+
+
+async def read_qa_rows(
+    tools: ToolRegistry,
+    evidence: EvidenceBundle,
+    *,
+    run_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Read ``qa.jsonl`` through the evidence tool, hiding the tool's path errors."""
+    if evidence.root is None:
+        raise ValueError("upload evidence has no qa.jsonl")
+    try:
+        raw = await tools.call(
+            "read_evidence",
+            ReadEvidenceInput(
+                root=evidence.root,
+                path="qa.jsonl",
+                max_bytes=UPLOAD_QA_READ_LIMIT,
+                run_id=run_id,
+            ),
+        )
+    except EvidenceAccessError:
+        # The tool's message embeds the evidence root; never surface it.
+        raise ValueError("upload evidence has no qa.jsonl") from None
+    return parse_qa_jsonl(raw)
 
 
 async def _prepare_with_indexes(
@@ -61,6 +111,9 @@ async def _prepare_with_indexes(
         )
         rows = [_paste_row(json.loads(raw))]
         indexes = [None]
+    elif evidence.kind is InputKind.UPLOAD:
+        rows = await read_qa_rows(tools, evidence, run_id=run_id)
+        indexes = [None] * len(rows)
     elif evidence.kind is InputKind.TARGET:
         if evidence.root is None:
             raise ValueError("target evidence has no workspace")

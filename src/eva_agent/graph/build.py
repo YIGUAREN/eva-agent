@@ -43,7 +43,7 @@ def _route_after_approve(state: EvalState) -> str:
 def route_experts(state: EvalState) -> list[Send] | str:
     if state["status"] is not RunStatus.RUNNING or state["plan"] is None:
         return END
-    return [
+    sends = [
         Send(
             item.dimension.value,
             {
@@ -57,6 +57,7 @@ def route_experts(state: EvalState) -> list[Send] | str:
         for item in state["plan"].dimensions
         if item.enabled and item.dimension in SUPPORTED_DIMENSIONS
     ]
+    return sends or "merge"
 
 
 def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None) -> Any:
@@ -86,7 +87,14 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
     graph.add_conditional_edges(
         "dispatch",
         route_experts,
-        {"quality": "quality", "latency": "latency", "cost": "cost", "security": "security", END: END},
+        {
+            "quality": "quality",
+            "latency": "latency",
+            "cost": "cost",
+            "security": "security",
+            "merge": "merge",
+            END: END,
+        },
     )
     graph.add_edge("quality", "merge")
     graph.add_edge("latency", "merge")

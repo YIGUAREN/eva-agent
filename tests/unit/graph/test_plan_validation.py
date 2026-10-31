@@ -170,14 +170,42 @@ def test_missing_skip_reason_is_rejected() -> None:
         validate_plan(plan, catalog_ids={"correctness"})
 
 
-def test_no_enabled_dimension_is_rejected() -> None:
+def all_skipped_plan() -> EvalPlan:
+    return EvalPlan(
+        objective="评估上传证据",
+        evidence_summary="上传证据没有 qa.jsonl",
+        dimensions=[],
+        skipped=[SkippedDimension(dimension=dimension, reason="证据没有可用响应") for dimension in Dimension],
+        budget=budget(),
+    )
+
+
+def test_all_skipped_plan_is_valid() -> None:
+    validate_plan(all_skipped_plan(), catalog_ids=set())
+
+
+def test_empty_plan_without_skip_reasons_is_rejected() -> None:
+    plan = all_skipped_plan().model_copy(update={"skipped": []})
+
+    with pytest.raises(PlanValidationError, match="missing skip reason"):
+        validate_plan(plan, catalog_ids=set())
+
+
+def test_all_skipped_plan_requires_every_skip_reason() -> None:
+    plan = all_skipped_plan().model_copy(update={"skipped": all_skipped_plan().skipped[:-1]})
+
+    with pytest.raises(PlanValidationError, match="missing skip reason"):
+        validate_plan(plan, catalog_ids=set())
+
+
+def test_disabled_dimension_still_requires_a_skip_reason() -> None:
     plan = valid_plan().model_copy(
         update={
             "dimensions": [DimensionPlan(dimension=Dimension.QUALITY, enabled=False)],
         }
     )
 
-    with pytest.raises(PlanValidationError, match="at least one dimension"):
+    with pytest.raises(PlanValidationError, match="missing skip reason"):
         validate_plan(plan, catalog_ids={"correctness"})
 
 

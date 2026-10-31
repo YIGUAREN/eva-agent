@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -106,3 +107,39 @@ async def test_intake_target_validates_env(tmp_path: Path):
 
     assert result["status"] is RunStatus.FAILED
     assert "DEMO_KEY" in result["errors"][0]
+
+
+async def _upload_ready_payload(tmp_path: Path, files: dict[str, bytes]) -> dict[str, Any]:
+    evidence_dir = tmp_path / "data" / "runs" / "run-1" / "evidence"
+    evidence_dir.mkdir(parents=True)
+    for name, content in files.items():
+        (evidence_dir / name).write_bytes(content)
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> None:
+        events.append((event_type, payload or {}))
+
+    deps = replace(dependencies(tmp_path), event_sink=sink)
+    run_input = RunInput(kind=InputKind.UPLOAD, upload_id="upload_a")
+
+    result = await intake_node(initial_state(run_input), deps)
+
+    assert result["status"] is RunStatus.RUNNING
+    payload = next(payload for event_type, payload in events if event_type == "evidence.ready")
+    assert str(tmp_path) not in json.dumps(payload)
+    return payload
+
+
+async def test_intake_upload_reports_qa_present(tmp_path: Path):
+    payload = await _upload_ready_payload(
+        tmp_path,
+        {"qa.jsonl": b'{"query": "q", "response": "a"}\n', "qa.txt": b"q\na"},
+    )
+
+    assert payload["qa"] is True
+
+
+async def test_intake_upload_reports_qa_absent(tmp_path: Path):
+    payload = await _upload_ready_payload(tmp_path, {"qa.txt": b"q\na"})
+
+    assert payload["qa"] is False

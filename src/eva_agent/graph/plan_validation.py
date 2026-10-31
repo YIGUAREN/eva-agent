@@ -35,9 +35,9 @@ def validate_plan(
     if len(set(dimensions)) != len(dimensions):
         raise PlanValidationError("dimensions", "duplicate dimension")
 
+    # An all-skipped plan is valid (for example, upload evidence without a
+    # qa.jsonl); the final loop below still requires a skip reason per dimension.
     enabled = [item for item in plan.dimensions if item.enabled]
-    if not enabled:
-        raise PlanValidationError("dimensions", "at least one dimension must be enabled")
 
     skipped = {item.dimension for item in plan.skipped}
     enabled_dimensions = {item.dimension for item in enabled}
