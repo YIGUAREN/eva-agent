@@ -74,6 +74,23 @@ async def test_export_builds_stores_and_downloads_a_package(
     assert download.content[:2] == b"PK"
 
 
+async def test_download_rejects_a_tampered_archive(
+    client: AsyncClient, state: AppState, monkeypatch
+) -> None:
+    run_id = await _completed_run(client, state)
+    _patch_builder(monkeypatch)
+    csrf = await login(client)
+    created = await client.post(f"/api/runs/{run_id}/grader-package", headers=csrf_headers(csrf))
+    assert created.status_code == 201
+    archive = packages_route.package_archive_path(state.config.storage.data_dir, run_id)
+    archive.write_bytes(b"PK tampered payload")
+
+    response = await client.get(f"/api/runs/{run_id}/grader-package/download")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "package_corrupt"
+
+
 async def test_export_reports_blockers_for_an_unreplayable_run(
     client: AsyncClient, state: AppState, monkeypatch
 ) -> None:

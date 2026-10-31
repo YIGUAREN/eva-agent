@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -27,6 +28,10 @@ from eva_agent.tools.target import build_read_target_probe_tool
 
 _EVIDENCE_MANIFEST = "manifest.json"
 _PROBE_FILE = "target_probe.jsonl"
+# ``TargetSpec`` requires a request template for HTTP targets and a template
+# containing a prompt placeholder. Replay never reads the body, so a fixed
+# placeholder keeps the model valid without carrying the original values.
+_PLACEHOLDER_REQUEST_TEMPLATE = {"prompt": "{{prompt}}"}
 
 
 class EvidenceSnapshot(BaseModel):
@@ -101,14 +106,22 @@ def _error_detail(exc: Exception) -> str:
 
 
 def _without_target_secrets(target: TargetSpec | None) -> TargetSpec | None:
-    """Drop literal header values and header env references from the snapshot.
+    """Strip every target field that can carry a credential from the snapshot.
 
-    Replay only needs ``kind``/``provider``/``model`` for pricing; the package
-    must never carry request header values.
+    Replay only needs ``kind``/``provider``/``model`` for pricing, so header
+    values, header env references, the request body and the URL query/fragment
+    (where API keys are commonly passed) never enter the package. The scheme,
+    host and path stay because the public report and evidence display them.
     """
     if target is None:
         return None
-    return target.model_copy(update={"headers": {}, "header_env": {}})
+    updates: dict[str, Any] = {"headers": {}, "header_env": {}}
+    if target.url is not None:
+        parts = urlsplit(target.url)
+        updates["url"] = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    if target.request_template is not None:
+        updates["request_template"] = dict(_PLACEHOLDER_REQUEST_TEMPLATE)
+    return target.model_copy(update=updates)
 
 
 def load_evidence_snapshot(evidence_dir: Path) -> EvidenceSnapshot:

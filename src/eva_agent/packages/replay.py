@@ -267,6 +267,10 @@ def replay_package(package: GraderPackage) -> ReplayResult:
             skipped.append(name)
             continue
         compared.append(name)
+    if not compared:
+        # An untrusted package that verifies no dimension must not be reported
+        # as a match: ``matched = not differences`` would otherwise be true.
+        raise PackageError("package compared no dimension; refusing to report a match")
     return ReplayResult(
         matched=not differences,
         compared=compared,

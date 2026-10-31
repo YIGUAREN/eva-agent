@@ -123,6 +123,19 @@ async def download_grader_package(
     archive = package_archive_path(state.config.storage.data_dir, run_id)
     if row is None or not archive.is_file():
         raise ApiError(404, "not_found", "no grader package for this run")
+    try:
+        digest = sha256_file(archive)
+        size_bytes = archive.stat().st_size
+    except OSError:
+        raise ApiError(404, "not_found", "no grader package for this run") from None
+    if digest != row.sha256 or size_bytes != row.size_bytes:
+        # The row and the file disagree, so serving either would ship an
+        # archive the exporter never recorded. The message stays path-free.
+        raise ApiError(
+            409,
+            "package_corrupt",
+            "the stored grader package does not match its recorded checksum",
+        )
     return FileResponse(
         archive, media_type="application/zip", filename=f"{run_id}.grader-package.zip"
     )

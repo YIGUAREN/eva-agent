@@ -216,24 +216,27 @@ async def _report(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 async def _export_grader_package(args: argparse.Namespace, config: AppConfig) -> int:
-    async with RunManager.open(config, enforce_budget=False) as manager:
-        run_row = await manager.run_row(args.run_id)
-        archive, manifest = await build_grader_package(
-            config=config, run_row=run_row, out_dir=Path(args.out)
+    try:
+        async with RunManager.open(config, enforce_budget=False) as manager:
+            run_row = await manager.run_row(args.run_id)
+            archive, manifest = await build_grader_package(
+                config=config, run_row=run_row, out_dir=Path(args.out)
+            )
+        payload = {
+            "package": str(archive),
+            "sha256": sha256_file(archive),
+            "size_bytes": archive.stat().st_size,
+            "replayable": manifest.replayable,
+            "replay_blockers": manifest.replay_blockers,
+        }
+    except OSError as exc:
+        # ``str(OSError)`` embeds the path; the OS reason is enough and safe.
+        print(
+            f"error: cannot write grader package: {exc.strerror or type(exc).__name__}",
+            file=sys.stderr,
         )
-    print(
-        json.dumps(
-            {
-                "package": str(archive),
-                "sha256": sha256_file(archive),
-                "size_bytes": archive.stat().st_size,
-                "replayable": manifest.replayable,
-                "replay_blockers": manifest.replay_blockers,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 

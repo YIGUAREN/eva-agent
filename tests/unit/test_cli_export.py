@@ -66,6 +66,31 @@ async def test_export_grader_package_prints_the_package_summary(
     assert payload["package"].endswith("run-1.grader-package.zip")
 
 
+def test_export_grader_package_reports_an_unwritable_out_without_a_traceback(
+    monkeypatch, capsys, tmp_path
+):
+    out_file = tmp_path / "out-is-a-file"
+    out_file.write_text("not a directory", encoding="utf-8")
+
+    async def fake_build(**kwargs):
+        # The real builder's first filesystem operation; raises FileExistsError
+        # whose ``filename`` is the absolute output path.
+        kwargs["out_dir"].mkdir(parents=True, exist_ok=True)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(cli, "build_grader_package", fake_build)
+    monkeypatch.setattr(cli, "RunManager", _FakeManager)
+    monkeypatch.setattr(cli, "load_config", lambda path: fake_config(tmp_path))
+
+    code = cli.main(["export-grader-package", "run-1", "--out", str(out_file)])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.startswith("error: cannot write grader package:")
+    assert "Traceback" not in captured.err
+    assert str(out_file) not in captured.err
+
+
 def test_main_reports_a_package_error_without_a_traceback(monkeypatch, capsys):
     async def failing_dispatch(args):
         raise PackageError("unsafe package")
