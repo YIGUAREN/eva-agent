@@ -325,6 +325,45 @@ def test_accepts_zip_with_or_without_comment(tmp_path: Path, comment: bytes) -> 
     assert (tmp_path / "out" / "a.txt").read_bytes() == b"x"
 
 
+def test_accepts_stored_member_containing_zip_signature(tmp_path: Path) -> None:
+    """Stored member data may itself contain an EOCD signature (nested zip)."""
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("inner.txt", b"inside")
+    nested_bytes = inner.read_bytes()
+
+    outer = tmp_path / "outer.bin"
+    with zipfile.ZipFile(outer, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("nested/inner.zip", nested_bytes)
+    # The outer archive legitimately holds two EOCD signatures: the nested
+    # archive's and its own.
+    assert outer.read_bytes().count(b"PK\x05\x06") == 2
+    with zipfile.ZipFile(outer) as archive:
+        assert archive.namelist() == ["nested/inner.zip"]
+
+    manifest = extract_archive(outer, tmp_path / "out")
+
+    assert [item["path"] for item in manifest["files"]] == ["nested/inner.zip"]
+    assert (tmp_path / "out" / "nested" / "inner.zip").read_bytes() == nested_bytes
+
+
+def test_still_rejects_appended_data_with_nested_signature(tmp_path: Path) -> None:
+    """Trailing bytes after the last EOCD must stay rejected despite earlier signatures."""
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("inner.txt", b"inside")
+    outer = tmp_path / "outer.bin"
+    with zipfile.ZipFile(outer, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("nested/inner.zip", inner.read_bytes())
+    package = tmp_path / "p.bin"
+    package.write_bytes(outer.read_bytes() + b"J")
+
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "unsupported_format"
+    assert not (tmp_path / "out").exists()
+
+
 def test_maps_filesystem_errors_to_invalid_path(tmp_path: Path) -> None:
     package = _zip(tmp_path / "p.bin", {"a": b"x", "a/b": b"y"})
     with pytest.raises(ExtractionError) as caught:

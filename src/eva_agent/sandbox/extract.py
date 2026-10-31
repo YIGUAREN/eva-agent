@@ -132,10 +132,13 @@ def _reject_unsafe_unicode_path_extra(info: zipfile.ZipInfo) -> None:
 def _reject_multi_volume(package: Path) -> None:
     """Reject a zip whose end-of-central-directory declares another disk.
 
-    The EOCD signature is only searched inside the window a valid archive
-    comment could occupy. Exactly one candidate must exist and its declared
-    comment length must end exactly at EOF; anything else fails closed so
-    appended bytes cannot desynchronize this check from ``zipfile``.
+    Like ``zipfile``, only the last EOCD signature inside the window a valid
+    archive comment could occupy is considered; earlier occurrences inside
+    stored member data are inert. That last candidate must end exactly at EOF
+    (its declared comment length reaches the end of the file) and declare
+    disk 0 for both the archive and the central directory. A missing or
+    malformed candidate fails closed as ``unsupported_format``, so appended
+    bytes cannot desynchronize this check from ``zipfile``.
     """
     with package.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
@@ -143,14 +146,9 @@ def _reject_multi_volume(package: Path) -> None:
         window = min(file_size, _EOCD_MIN_SIZE + _MAX_COMMENT_SIZE)
         handle.seek(file_size - window)
         tail = handle.read()
-    positions: list[int] = []
-    position = tail.find(_EOCD_SIGNATURE)
-    while position >= 0:
-        positions.append(position)
-        position = tail.find(_EOCD_SIGNATURE, position + 1)
-    if len(positions) != 1:
+    start = tail.rfind(_EOCD_SIGNATURE)
+    if start < 0:
         raise ExtractionError("unsupported_format")
-    start = positions[0]
     if start + _EOCD_MIN_SIZE > len(tail):
         raise ExtractionError("unsupported_format")
     comment_length = int.from_bytes(tail[start + 20 : start + 22], "little")
