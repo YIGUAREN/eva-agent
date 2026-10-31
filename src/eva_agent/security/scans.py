@@ -269,6 +269,8 @@ def summarize_threat(
 def merge_passive(passive: NormalizedQuality, threat: NormalizedQuality | None) -> NormalizedQuality:
     if threat is None:
         return passive
+    # Either pass may have stopped at the budget; both must survive the merge.
+    truncated_reason = passive.metrics.get("truncated_reason") or threat.metrics.get("truncated_reason")
     metrics = {
         **passive.metrics,
         "by_grader": {**(passive.metrics.get("by_grader") or {}), **(threat.metrics.get("by_grader") or {})},
@@ -278,11 +280,14 @@ def merge_passive(passive: NormalizedQuality, threat: NormalizedQuality | None) 
         + threat.metrics.get("expected_outcomes", 0),
         "errors": sorted({*(passive.metrics.get("errors") or []), *(threat.metrics.get("errors") or [])}),
     }
+    if truncated_reason is not None:
+        metrics["truncated_reason"] = truncated_reason
     scores = [score for score in (passive.score, threat.score) if score is not None]
     return NormalizedQuality(
         score=min(scores) if scores else None,
         confidence=max(passive.confidence, threat.confidence),
         metrics=metrics,
+        truncated_reason=truncated_reason,
         findings=[*passive.findings, *threat.findings],
         evidence=[*passive.evidence, *threat.evidence],
         usage=Usage(

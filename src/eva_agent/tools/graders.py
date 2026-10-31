@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from eva_agent.adapters.openjudge.catalog import GraderEntry, summarize
 from eva_agent.budget.context import budget_context
+from eva_agent.budget.estimator import BudgetPricingError
 from eva_agent.budget.types import BudgetExhausted
 from eva_agent.config.settings import ModelConfig
 from eva_agent.domain.grader import GraderSpec
@@ -71,9 +72,15 @@ def build_run_graders_tool(
         if len(payload.rows) > max_rows:
             raise ValueError(f"rows is {len(payload.rows)}; max_rows is {max_rows}")
         context = budget_context()
+        enforced = context is not None and context.ledger.enforced
+        if enforced and judge_model is None:
+            # Fail closed: an unpriced judge call would run outside the budget.
+            raise BudgetPricingError(
+                "budget enforcement requires a judge model to price run_graders calls"
+            )
         combined = GraderRunOutput()
         for spec in payload.specs:
-            reserve = context is not None and context.ledger.enforced and judge_model is not None
+            reserve = enforced
             estimate = Decimal("0")
             if reserve:
                 assert context is not None
@@ -88,24 +95,25 @@ def build_run_graders_tool(
                     await context.ledger.reserve(estimate, kind="grader")
                 except BudgetExhausted:
                     return combined.model_copy(update={"truncated_reason": "budget"})
+            part: GraderRunOutput | None = None
             try:
                 part = await runner.run([spec], payload.rows)
-            except Exception:
+            finally:
+                # Settle on every exit path, including cancellation: a
+                # ``wait_for`` timeout raises ``CancelledError``, which is a
+                # ``BaseException`` and would leak the reservation otherwise.
                 if reserve:
                     assert context is not None
-                    await context.ledger.settle(estimate, None, kind="grader")
-                raise
-            if reserve:
-                assert context is not None
-                assert judge_model is not None
-                actual = None
-                if part.input_tokens or part.output_tokens:
-                    actual = context.estimator.cost_for_tokens(
-                        judge_model,
-                        input_tokens=part.input_tokens or 0,
-                        output_tokens=part.output_tokens or 0,
-                    )
-                await context.ledger.settle(estimate, actual, kind="grader")
+                    assert judge_model is not None
+                    actual = None
+                    if part is not None and (part.input_tokens or part.output_tokens):
+                        actual = context.estimator.cost_for_tokens(
+                            judge_model,
+                            input_tokens=part.input_tokens or 0,
+                            output_tokens=part.output_tokens or 0,
+                        )
+                    await context.ledger.settle(estimate, actual, kind="grader")
+            assert part is not None
             combined = GraderRunOutput(
                 outcomes=[*combined.outcomes, *part.outcomes],
                 duration_ms=combined.duration_ms + part.duration_ms,

@@ -185,7 +185,9 @@ class SecurityExpert:
             requester_is_admin=requester_is_admin,
         )
         truncated = "budget" if active[4] or passive.metrics.get("truncated_reason") == "budget" else None
-        if truncated is not None:
+        if truncated is not None and not active[4]:
+            # ``_active`` already emitted the event when its own reservation
+            # was refused; emit only for passive/threat truncation here.
             await self._budget_exhausted(run_id, "security")
         spec_count = len(passive_specs(rows)) + (1 if skill_rows else 0)
         return self._result(
@@ -391,12 +393,18 @@ class SecurityExpert:
         reserved = False
         scan_estimate = Decimal("0")
         if context is not None and context.ledger.enforced:
+            # A model scan's ``scan_requests`` also counts the probes the probe
+            # node already charged; reserve only the AIG traffic here.
+            if kind == "model_redteam_report":
+                aig_requests = max(1, decision.scan_requests - probe_count)
+            else:
+                aig_requests = decision.scan_requests or 1
             scan_estimate = context.estimator.estimate_aig_scan(
                 context.models.attack,
-                requests=decision.scan_requests or 1,
+                requests=aig_requests,
             )
             try:
-                await context.ledger.reserve_scan(decision.scan_requests or 1, scan_estimate)
+                await context.ledger.reserve_scan(aig_requests, scan_estimate)
                 reserved = True
             except BudgetExhausted:
                 await self._budget_exhausted(run_id, "security")
@@ -523,7 +531,7 @@ class SecurityExpert:
         threat_unavailable: str | None = None,
         truncated_reason: str | None = None,
     ) -> DimensionResult:
-        active_status, active_summary, active_metrics, audit_error, _budget_stopped = active
+        active_status, active_summary, active_metrics, audit_error = active[:4]
         passive_score = passive.score if passive is not None else None
         active_score = active_summary.score if active_summary is not None else None
         severity_counts = active_metrics.get("severity_counts") or {}

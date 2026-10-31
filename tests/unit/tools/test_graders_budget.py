@@ -1,8 +1,12 @@
+import asyncio
 from decimal import Decimal
 from typing import Any
 
+import pytest
+
+from eva_agent.adapters.target import tokens as tokens_module
 from eva_agent.budget.context import BudgetModels, bind_budget
-from eva_agent.budget.estimator import CostEstimator
+from eva_agent.budget.estimator import BudgetPricingError, CostEstimator
 from eva_agent.budget.ledger import BudgetLedger
 from eva_agent.config.settings import ModelConfig
 from eva_agent.domain.budget import Budget
@@ -10,6 +14,21 @@ from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
 from eva_agent.pricing import ModelPrice, PricingTable
 from eva_agent.tools.graders import RunGradersInput, build_run_graders_tool
+
+
+class FakeEncoding:
+    """Offline stand-in for ``tiktoken.Encoding``: one token per character."""
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(len(text)))
+
+
+@pytest.fixture(autouse=True)
+def fake_tokenizer(monkeypatch: pytest.MonkeyPatch):
+    tokens_module._encoding.cache_clear()
+    monkeypatch.setattr(tokens_module.tiktoken, "get_encoding", lambda name: FakeEncoding())
+    yield
+    tokens_module._encoding.cache_clear()
 
 
 class CountingRunner:
@@ -98,3 +117,87 @@ async def test_graders_without_a_budget_context_run_every_spec() -> None:
     output = await spec.handler(RunGradersInput(specs=specs, rows=[{"query": "q", "response": "a"}]))
     assert runner.calls == 2
     assert output.truncated_reason is None
+
+
+class HangingRunner:
+    """Signals when the graded call starts, then never finishes on its own."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def run(self, specs: list[GraderSpec], rows: list[dict[str, Any]]) -> GraderRunOutput:
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+def budget_ledger() -> BudgetLedger:
+    return BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=10),
+        store=NoopStore(),
+    )
+
+
+def bound_models() -> BudgetModels:
+    return BudgetModels(agent=model(), judge=model(), attack=model())
+
+
+async def test_a_timed_out_grader_settles_its_reservation() -> None:
+    runner = HangingRunner()
+    tool = build_run_graders_tool(runner, max_rows=10, judge_model=model(), max_output_tokens=512)
+    ledger = budget_ledger()
+    specs = [GraderSpec(level="llm_rubric", name="quality", rubric="- clear")]
+    with bind_budget(ledger, estimator(), bound_models()):
+        assert tool.handler is not None
+        before = ledger.snapshot()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                tool.handler(RunGradersInput(specs=specs, rows=[{"query": "q", "response": "a"}])),
+                timeout=0.05,
+            )
+        after = ledger.snapshot()
+
+    # The reservation must not leak; it settles at the estimate because no
+    # usage could be reported. The timeout still propagates.
+    assert runner.started.is_set()
+    assert before.reserved_usd == Decimal("0")
+    assert after.reserved_usd == before.reserved_usd
+    assert after.spent_usd == Decimal("0.000512")
+    assert after.estimated is True
+
+
+async def test_a_cancelled_grader_settles_its_reservation() -> None:
+    runner = HangingRunner()
+    tool = build_run_graders_tool(runner, max_rows=10, judge_model=model(), max_output_tokens=512)
+    ledger = budget_ledger()
+    specs = [GraderSpec(level="llm_rubric", name="quality", rubric="- clear")]
+    with bind_budget(ledger, estimator(), bound_models()):
+        assert tool.handler is not None
+        task = asyncio.ensure_future(
+            tool.handler(RunGradersInput(specs=specs, rows=[{"query": "q", "response": "a"}]))
+        )
+        await asyncio.wait_for(runner.started.wait(), timeout=1.0)
+        assert ledger.snapshot().reserved_usd == Decimal("0.000512")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        after = ledger.snapshot()
+
+    assert after.reserved_usd == Decimal("0")
+    assert after.spent_usd == Decimal("0.000512")
+    assert after.estimated is True
+
+
+async def test_graders_refuse_to_run_unpriced_under_an_enforced_ledger() -> None:
+    runner = CountingRunner()
+    tool = build_run_graders_tool(runner, max_rows=10)
+    ledger = budget_ledger()
+    specs = [GraderSpec(level="llm_rubric", name="quality", rubric="- clear")]
+    with bind_budget(ledger, estimator(), bound_models()):
+        assert tool.handler is not None
+        with pytest.raises(BudgetPricingError, match="judge model"):
+            await tool.handler(RunGradersInput(specs=specs, rows=[{"query": "q", "response": "a"}]))
+
+    assert runner.calls == 0
+    assert ledger.snapshot().reserved_usd == Decimal("0")
+    assert ledger.snapshot().spent_usd == Decimal("0")
