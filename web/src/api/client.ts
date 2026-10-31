@@ -3,6 +3,7 @@ import type {
   CreateRunBody,
   DemoTarget,
   GraderInfo,
+  GraderPackageInfo,
   ReportResponse,
   RunDetail,
   RunSummary,
@@ -26,6 +27,19 @@ export class ApiError extends Error {
   }
 }
 
+type ErrorEnvelope = {
+  error?: { code?: string; message?: string; details?: Record<string, unknown> };
+};
+
+function apiError(status: number, body: ErrorEnvelope | null): ApiError {
+  return new ApiError(
+    status,
+    body?.error?.code ?? "http_error",
+    body?.error?.message ?? "请求失败，请重试",
+    body?.error?.details,
+  );
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const method = (init.method ?? "GET").toUpperCase();
@@ -44,18 +58,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (response.status === 204) {
     return undefined as T;
   }
-  const body = (await response.json().catch(() => null)) as
-    | { error?: { code?: string; message?: string; details?: Record<string, unknown> } }
-    | null;
+  const body = (await response.json().catch(() => null)) as ErrorEnvelope | null;
   if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      body?.error?.code ?? "http_error",
-      body?.error?.message ?? "请求失败，请重试",
-      body?.error?.details,
-    );
+    throw apiError(response.status, body);
   }
   return body as T;
+}
+
+async function requestBlob(path: string): Promise<Blob> {
+  const response = await fetch(path, { method: "GET", credentials: "same-origin" });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as ErrorEnvelope | null;
+    throw apiError(response.status, body);
+  }
+  return response.blob();
+}
+
+function graderPackagePath(runId: string, suffix = ""): string {
+  return `/api/runs/${encodeURIComponent(runId)}/grader-package${suffix}`;
 }
 
 export const api = {
@@ -90,6 +110,11 @@ export const api = {
       body: JSON.stringify({ published }),
     }),
   report: (runId: string) => request<ReportResponse>(`/api/runs/${runId}/report`),
+  exportGraderPackage: (runId: string) =>
+    request<GraderPackageInfo>(graderPackagePath(runId), { method: "POST" }),
+  graderPackage: (runId: string) => request<GraderPackageInfo>(graderPackagePath(runId)),
+  graderPackageUrl: (runId: string) => graderPackagePath(runId, "/download"),
+  downloadGraderPackage: (runId: string) => requestBlob(graderPackagePath(runId, "/download")),
   publicRuns: (cursor?: string) =>
     request<{ items: RunSummary[]; next_cursor: string | null }>(
       cursor ? `/api/public/runs?cursor=${encodeURIComponent(cursor)}` : "/api/public/runs",

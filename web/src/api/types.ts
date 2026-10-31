@@ -72,6 +72,18 @@ export interface ReportResponse {
   };
 }
 
+export interface GraderPackageInfo {
+  package_id: string;
+  run_id: string;
+  sha256: string;
+  size_bytes: number;
+  created_at?: string;
+  replayable?: boolean;
+  replay_blockers?: string[];
+  members?: string[];
+  download_url?: string;
+}
+
 export interface GraderInfo {
   id: string;
   mode: string;
