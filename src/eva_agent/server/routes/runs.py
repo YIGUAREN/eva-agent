@@ -31,6 +31,7 @@ from eva_agent.server.schemas import (
 from eva_agent.server.state import AppState
 from eva_agent.storage.commands import ActiveCommandExists
 from eva_agent.storage.models import AdminSessionRow, RunRow
+from eva_agent.storage.uploads import UPLOAD_EXTRACTED
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -96,6 +97,14 @@ async def create_run(
         if existing is not None:
             response.status_code = 200
             return {"run_id": existing.id, "status": existing.status}
+
+    if payload.input.kind is InputKind.UPLOAD:
+        upload_id = payload.input.upload_id or ""
+        upload = await state.uploads.get(upload_id)
+        if upload is None:
+            raise ApiError(422, "unknown_upload", "上传记录不存在")
+        if upload.status != UPLOAD_EXTRACTED:
+            raise ApiError(409, "upload_not_ready", "上传包尚未解压完成")
 
     run_id = f"run_{uuid4().hex}"
     try:

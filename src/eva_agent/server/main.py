@@ -17,6 +17,7 @@ from eva_agent.config.settings import (
 )
 from eva_agent.server.app import create_app
 from eva_agent.server.ratelimit import LoginRateLimiter
+from eva_agent.server.sandbox import SandboxClient
 from eva_agent.server.state import AppState
 from eva_agent.storage.audit import AuditRepository
 from eva_agent.storage.commands import RunCommandRepository
@@ -25,6 +26,7 @@ from eva_agent.storage.migrate import run_migrations
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
 from eva_agent.storage.sessions import AdminSessionRepository
+from eva_agent.storage.uploads import UploadRepository
 
 DEFAULT_INDEX = Path("web/dist/index.html")
 
@@ -35,7 +37,7 @@ async def serve(config_path: Path, host: str, port: int) -> None:
     if not password_hash:
         raise SystemExit("ADMIN_PASSWORD_HASH is not set; run uv run python scripts/hash_password.py")
     try:
-        sandbox_token = require_sandbox_token()  # noqa: F841 - consumed by the sandbox client
+        sandbox_token = require_sandbox_token()
         validate_sandbox_url(config.web.sandbox_runner_url)
     except ConfigError as exc:
         raise SystemExit(str(exc)) from None
@@ -53,6 +55,12 @@ async def serve(config_path: Path, host: str, port: int) -> None:
         sessions=AdminSessionRepository(factory),
         reports=ReportRepository(factory),
         artifacts=ArtifactRepository(factory),
+        uploads=UploadRepository(factory),
+        sandbox=SandboxClient(
+            config.web.sandbox_runner_url,
+            sandbox_token,
+            config.web.sandbox_timeout_s,
+        ),
         audit=AuditRepository(factory),
         admin_password_hash=password_hash,
         login_limiter=LoginRateLimiter(),

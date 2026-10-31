@@ -1,7 +1,10 @@
+from datetime import UTC, datetime, timedelta
+
 from httpx import AsyncClient
 
 from eva_agent.domain.run import RunStatus
 from eva_agent.server.state import AppState
+from eva_agent.storage.uploads import UPLOAD_EXTRACTING
 from tests.support.api import PASTE_PAYLOAD, csrf_headers, login
 
 
@@ -140,3 +143,37 @@ async def test_publish_is_audited(client: AsyncClient, state: AppState) -> None:
 
     actions = [event.action for event in await state.audit.list_for_run(run_id)]
     assert actions == ["run.publish"]
+
+
+def _upload_payload(upload_id: str) -> dict:
+    return {
+        "input": {"kind": "upload", "upload_id": upload_id},
+        "budget": {"max_cost_usd": 1.0, "max_wall_clock_s": 60.0, "max_target_requests": 1},
+    }
+
+
+async def test_create_run_rejects_unknown_upload(client: AsyncClient, state: AppState) -> None:
+    csrf = await login(client)
+    response = await client.post(
+        "/api/runs", json=_upload_payload("upload_missing"), headers=csrf_headers(csrf)
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "unknown_upload"
+
+
+async def test_create_run_rejects_unready_upload(client: AsyncClient, state: AppState) -> None:
+    await state.uploads.create(
+        "upload_pending",
+        filename="p.zip",
+        size_bytes=1,
+        sha256="a" * 64,
+        format="zip",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    assert (await state.uploads.get("upload_pending")).status == UPLOAD_EXTRACTING
+    csrf = await login(client)
+    response = await client.post(
+        "/api/runs", json=_upload_payload("upload_pending"), headers=csrf_headers(csrf)
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "upload_not_ready"
