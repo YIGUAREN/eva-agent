@@ -16,12 +16,19 @@ from eva_agent.security.target_policy import TargetPolicy
 from eva_agent.tools.registry import ToolRegistry
 
 
+class GateRow(Protocol):
+    """The fields the gate needs from one persisted decision row."""
+
+    seq: int
+    payload_json: dict[str, Any]
+
+
 class GateStore(Protocol):
     async def next_seq(self, run_id: str) -> int: ...
 
     async def record(self, run_id: str, seq: int, action: str, payload: dict[str, Any]) -> bool: ...
 
-    async def latest_gate(self, run_id: str) -> Any | None: ...
+    async def latest_gate(self, run_id: str) -> GateRow | None: ...
 
 
 @dataclass(frozen=True)
