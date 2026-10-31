@@ -85,15 +85,14 @@ class AigClient:
 
     async def _get_envelope(self, path: str) -> dict[str, Any]:
         """GET a status/result envelope, stopping mid-stream at MAX_RESULT_BYTES."""
-        async with self._client() as client:
-            async with client.stream("GET", path) as response:
-                if not 200 <= response.status_code < 300:
-                    raise AigUnavailable(f"AIG returned HTTP {response.status_code}")
-                buffer = bytearray()
-                async for chunk in response.aiter_bytes():
-                    buffer.extend(chunk)
-                    if len(buffer) > MAX_RESULT_BYTES:
-                        raise AigUnavailable("AIG returned an oversized result")
+        async with self._client() as client, client.stream("GET", path) as response:
+            if not 200 <= response.status_code < 300:
+                raise AigUnavailable(f"AIG returned HTTP {response.status_code}")
+            buffer = bytearray()
+            async for chunk in response.aiter_bytes():
+                buffer.extend(chunk)
+                if len(buffer) > MAX_RESULT_BYTES:
+                    raise AigUnavailable("AIG returned an oversized result")
         return self._decode(bytes(buffer))
 
     async def create(self, body: dict[str, Any]) -> str:
