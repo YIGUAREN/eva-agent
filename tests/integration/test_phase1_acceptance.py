@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from eva_agent.domain.plan import Dimension
@@ -52,18 +51,19 @@ async def test_dataset_run_meets_phase_one_acceptance(tmp_path: Path) -> None:
     usage = report["usage"]
     assert usage["budget_enforced"] is False
     assert usage["estimated"] is False
-    # Provenance still counts grading calls on an unenforced run (the dataset
-    # is 2 samples x 2 graders), so only its shape is part of the contract.
-    assert isinstance(usage["cached"], int) and usage["cached"] >= 0
-    assert isinstance(usage["fresh"], int) and usage["fresh"] >= 0
+    # Provenance counts every grading call on an unenforced run: 2 samples x
+    # 2 graders are all fresh, and none is served from the cache.
+    assert usage["cached"] == 0
+    assert usage["fresh"] == 4
     assert report["truncated_dimensions"] == []
     assert report["finalize_overrun"] is False
-    # Spend and paths are admin-only: the public projection keeps only the four
-    # non-spend usage keys and replaces absolute paths wholesale.
+    # Spend is admin-only: the public projection keeps only the four non-spend
+    # usage keys.
     public_usage = public_report_usage(report)
     assert set(public_usage) == {"estimated", "cached", "fresh", "budget_enforced"}
-    # Mirror the public report route: sanitize paths, then whitelist usage.
-    public = {**sanitize_public_payload(report), "usage": public_usage}
-    public_text = json.dumps(public, ensure_ascii=False)
-    assert "spent_usd" not in public_text
-    assert str(tmp_path) not in public_text
+    assert "spent_usd" not in public_usage
+    # A stored report carries no filesystem path, so inject one to prove the
+    # public projection actually strips absolute paths rather than passing them
+    # through: an assertion against a path that never appears is vacuous.
+    leaky = {**report, "evidence_summary": str(tmp_path / "qa.csv")}
+    assert sanitize_public_payload(leaky)["evidence_summary"] == "<path>"

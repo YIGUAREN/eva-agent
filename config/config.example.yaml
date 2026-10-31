@@ -19,6 +19,11 @@ openjudge:
 agent:
   max_steps: 12
 
+# Enforced-budget runs (eva-web / eva-worker) price every model call against
+# config/pricing.yaml. Every provider/model entry below must have a pricing row;
+# a missing row fails the call (fail closed) instead of assuming zero cost.
+# The example judge (qwen-plus) is not in the shipped pricing table, so add its
+# real price before starting an enforced run from this file.
 models:
   agent:
     provider: openai-compatible

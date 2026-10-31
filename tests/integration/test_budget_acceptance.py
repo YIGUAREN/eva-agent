@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
 
@@ -32,10 +34,19 @@ def _config(tmp_path: Path):
     return fake_config(tmp_path).model_copy(update={"pricing": PricingSettings(path=str(pricing))})
 
 
-async def _client(tmp_path: Path, config):
+@asynccontextmanager
+async def _app_client(tmp_path: Path, config) -> AsyncIterator[AsyncClient]:
+    """Yield a client bound to a test app, disposing its engine on every path.
+
+    An assertion failure inside the ``with`` body must not leave the aiosqlite
+    engine open: on Windows the pytest process then never exits.
+    """
     app, state = await build_test_app(tmp_path, config=config)
-    http = AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
-    return http, state
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as http:
+            yield http
+    finally:
+        await state.engine.dispose()
 
 
 async def _start_and_approve(manager, worker, budget: Budget) -> str:
@@ -56,47 +67,45 @@ async def test_summarize_needs_confirmation_then_completes_with_an_overrun(tmp_p
     second = estimator.estimate_grader(config.models.judge, spec=quality.graders[1], rows=ROWS)
     runner = FakeRunner()
     deps = dependencies(tmp_path, planner=FakePlanner(plan=plan), runner=runner)
-    manager = RunManager(config, dependencies=deps, enforce_budget=True)
-    await manager.setup()
-    worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir)
-    # The fake planner does not reserve; the first grader fits, the second does not.
-    budget = Budget(
-        max_cost_usd=float(first + second / 2),
-        max_wall_clock_s=60.0,
-        max_target_requests=1,
-    )
-    run_id = await _start_and_approve(manager, worker, budget)
-
-    assert (await manager.status(run_id)).status is RunStatus.WAITING_BUDGET
-    http, state = await _client(tmp_path, config)
-    async with http:
-        csrf = await login(http)
-        detail = (await http.get(f"/api/runs/{run_id}")).json()
-        assert detail["budget_gate"]["truncated_dimensions"] == ["quality"]
-        blocked = await http.post(
-            f"/api/runs/{run_id}/budget/decision",
-            json={"action": "summarize"},
-            headers=csrf_headers(csrf),
+    # The context manager closes the manager on every path, including a failed
+    # assertion; leaving it open wedges pytest's exit on Windows + aiosqlite.
+    async with RunManager.open(config, dependencies=deps, enforce_budget=True) as manager:
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir)
+        # The fake planner does not reserve; the first grader fits, the second does not.
+        budget = Budget(
+            max_cost_usd=float(first + second / 2),
+            max_wall_clock_s=60.0,
+            max_target_requests=1,
         )
-        assert blocked.status_code == 409
-        assert set(blocked.json()["error"]["details"]) == {"finalize_estimate", "remaining"}
-        confirmed = await http.post(
-            f"/api/runs/{run_id}/budget/decision",
-            json={"action": "summarize", "confirm_overrun": True},
-            headers=csrf_headers(csrf),
-        )
-        assert confirmed.status_code == 202
+        run_id = await _start_and_approve(manager, worker, budget)
 
-    assert await worker.tick() is True
-    assert (await manager.status(run_id)).status is RunStatus.COMPLETED
-    report = await manager.report(run_id)
-    assert report["version"] == 4
-    assert report["finalize_overrun"] is True
-    assert report["truncated_dimensions"] == ["quality"]
-    assert report["usage"]["budget_enforced"] is True
-    assert report["dimensions"][0]["status"] == "partial"
-    await manager.close()
-    await state.engine.dispose()
+        assert (await manager.status(run_id)).status is RunStatus.WAITING_BUDGET
+        async with _app_client(tmp_path, config) as http:
+            csrf = await login(http)
+            detail = (await http.get(f"/api/runs/{run_id}")).json()
+            assert detail["budget_gate"]["truncated_dimensions"] == ["quality"]
+            blocked = await http.post(
+                f"/api/runs/{run_id}/budget/decision",
+                json={"action": "summarize"},
+                headers=csrf_headers(csrf),
+            )
+            assert blocked.status_code == 409
+            assert set(blocked.json()["error"]["details"]) == {"finalize_estimate", "remaining"}
+            confirmed = await http.post(
+                f"/api/runs/{run_id}/budget/decision",
+                json={"action": "summarize", "confirm_overrun": True},
+                headers=csrf_headers(csrf),
+            )
+            assert confirmed.status_code == 202
+
+        assert await worker.tick() is True
+        assert (await manager.status(run_id)).status is RunStatus.COMPLETED
+        report = await manager.report(run_id)
+        assert report["version"] == 4
+        assert report["finalize_overrun"] is True
+        assert report["truncated_dimensions"] == ["quality"]
+        assert report["usage"]["budget_enforced"] is True
+        assert report["dimensions"][0]["status"] == "partial"
 
 
 async def test_extend_reruns_only_fresh_samples_and_completes_without_truncation(tmp_path) -> None:
@@ -113,36 +122,32 @@ async def test_extend_reruns_only_fresh_samples_and_completes_without_truncation
     )
     runner = FakeRunner()
     deps = dependencies(tmp_path, planner=FakePlanner(plan=plan), runner=runner)
-    manager = RunManager(config, dependencies=deps, enforce_budget=True)
-    await manager.setup()
-    worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir)
-    run_id = await _start_and_approve(manager, worker, budget)
+    async with RunManager.open(config, dependencies=deps, enforce_budget=True) as manager:
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir)
+        run_id = await _start_and_approve(manager, worker, budget)
 
-    assert (await manager.status(run_id)).status is RunStatus.WAITING_BUDGET
-    http, state = await _client(tmp_path, config)
-    async with http:
-        csrf = await login(http)
-        extended = await http.post(
-            f"/api/runs/{run_id}/budget/decision",
-            json={
-                "action": "extend",
-                "budget": {
-                    "max_cost_usd": float(first + second + Decimal("1")),
-                    "max_wall_clock_s": 60.0,
-                    "max_target_requests": 10,
+        assert (await manager.status(run_id)).status is RunStatus.WAITING_BUDGET
+        async with _app_client(tmp_path, config) as http:
+            csrf = await login(http)
+            extended = await http.post(
+                f"/api/runs/{run_id}/budget/decision",
+                json={
+                    "action": "extend",
+                    "budget": {
+                        "max_cost_usd": float(first + second + Decimal("1")),
+                        "max_wall_clock_s": 60.0,
+                        "max_target_requests": 10,
+                    },
                 },
-            },
-            headers=csrf_headers(csrf),
-        )
-        assert extended.status_code == 202
+                headers=csrf_headers(csrf),
+            )
+            assert extended.status_code == 202
 
-    assert await worker.tick() is True
-    assert (await manager.status(run_id)).status is RunStatus.COMPLETED
-    report = await manager.report(run_id)
-    assert report["truncated_dimensions"] == []
-    assert report["dimensions"][0]["status"] == "ok"
-    assert report["usage"]["cached"] == 1
-    assert report["usage"]["fresh"] == 1
-    assert runner.calls == 2
-    await manager.close()
-    await state.engine.dispose()
+        assert await worker.tick() is True
+        assert (await manager.status(run_id)).status is RunStatus.COMPLETED
+        report = await manager.report(run_id)
+        assert report["truncated_dimensions"] == []
+        assert report["dimensions"][0]["status"] == "ok"
+        assert report["usage"]["cached"] == 1
+        assert report["usage"]["fresh"] == 1
+        assert runner.calls == 2
