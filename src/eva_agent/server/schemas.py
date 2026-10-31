@@ -140,7 +140,8 @@ _ABSOLUTE_PATH_PATTERNS = (
 # Run-relative AIG artifact names, e.g. data/runs/<id>/aig/<session>.json or aig/<session>.csv.
 # They are admin-only artifacts, so public output must never carry them.
 _AIG_ARTIFACT_PATH = re.compile(
-    r"(?<![A-Za-z0-9._-])(?:[A-Za-z0-9._-]+/)*aig/[A-Za-z0-9_-]{1,128}\.(?:json|csv)(?![A-Za-z0-9._-])"
+    r"(?<![A-Za-z0-9._-])(?:[A-Za-z0-9._-]+[\\/])*(?i:aig)[\\/][A-Za-z0-9_-]{1,128}\.(?:json|csv)"
+    r"(?![A-Za-z0-9._-])"
 )
 _PUBLIC_PATH_PATTERNS = (*_ABSOLUTE_PATH_PATTERNS, _AIG_ARTIFACT_PATH)
 
