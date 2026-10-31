@@ -71,6 +71,18 @@ async def test_build_grader_package_writes_every_declared_member(write_run, arch
     assert "usage" in package.report
 
 
+async def test_build_grader_package_readme_is_chinese(write_run, archive_dir):
+    config, run_row = await write_run()
+    archive, _ = await build_grader_package(config=config, run_row=run_row, out_dir=archive_dir)
+    with zipfile.ZipFile(archive) as z:
+        readme = z.read("README.md").decode("utf-8")
+    assert any("一" <= character <= "鿿" for character in readme)
+    for member in ("plan.json", "input.json", "snapshots/gradings.json", "report.json"):
+        assert member in readme
+    assert "eva replay" in readme
+    assert "# Grader package" not in readme
+
+
 def _priced_config(tmp_path: Path) -> AppConfig:
     pricing = tmp_path / "pricing.yaml"
     pricing.write_text(
