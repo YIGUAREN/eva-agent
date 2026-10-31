@@ -36,11 +36,19 @@ describe("budget helpers", () => {
     ).toBe(true);
   });
 
-  it("defaults every extension strictly above what was consumed", () => {
-    const next = defaultExtension(budget, usage);
-    expect(next.max_cost_usd).toBeGreaterThan(usage.spent_usd);
-    expect(next.max_wall_clock_s).toBeGreaterThan(usage.spent_wall_clock_s);
-    expect(next.max_target_requests).toBeGreaterThan(usage.target_requests);
+  it("defaults every extension to the exact value used by the form", () => {
+    expect(defaultExtension(budget, usage)).toEqual({
+      max_cost_usd: 1.9,
+      max_wall_clock_s: 90,
+      max_target_requests: 20,
+    });
+  });
+
+  it("seeds the request default above aig_requests too", () => {
+    const aigHeavy = { ...usage, target_requests: 4, aig_requests: 33 };
+    const next = defaultExtension(budget, aigHeavy);
+    expect(next.max_target_requests).toBe(43);
+    expect(validateExtension(next, aigHeavy)).toBeNull();
   });
 
   it("reports the first limit that is not strictly larger", () => {
@@ -66,13 +74,83 @@ describe("budget helpers", () => {
     ).toEqual({ kind: "overrun", finalizeEstimate: 0.2, remaining: 0.1 });
   });
 
-  it("maps a rejected limit to the field name", () => {
+  it("preserves the server message on an overrun", () => {
+    expect(
+      budgetDecisionError({
+        status: 409,
+        code: "budget_overrun",
+        message: "finalize estimate exceeds the remaining budget",
+        details: { finalize_estimate: 0.2, remaining: 0.1 },
+      }),
+    ).toEqual({
+      kind: "overrun",
+      finalizeEstimate: 0.2,
+      remaining: 0.1,
+      message: "finalize estimate exceeds the remaining budget",
+    });
+  });
+
+  it("maps a rejected limit to the field name and server message", () => {
+    expect(
+      budgetDecisionError({
+        status: 400,
+        code: "invalid_request",
+        message: "max_cost_usd must be greater than spent_usd",
+        details: { field: "max_cost_usd" },
+      }),
+    ).toEqual({
+      kind: "field",
+      field: "max_cost_usd",
+      message: "max_cost_usd must be greater than spent_usd",
+    });
+  });
+
+  it("falls back to a human field label when the server message is empty", () => {
     expect(
       budgetDecisionError({
         status: 400,
         code: "invalid_request",
         details: { field: "max_cost_usd" },
       }),
-    ).toEqual({ kind: "field", field: "max_cost_usd" });
+    ).toEqual({ kind: "field", field: "max_cost_usd", message: "费用上限 必须严格大于已消费值" });
+  });
+
+  it("preserves the server message for pending and state errors", () => {
+    expect(
+      budgetDecisionError({
+        status: 409,
+        code: "command_pending",
+        message: "another command is already pending",
+      }),
+    ).toEqual({ kind: "message", message: "another command is already pending" });
+    expect(
+      budgetDecisionError({
+        status: 409,
+        code: "invalid_state",
+        message: "run is not waiting for a budget decision",
+      }),
+    ).toEqual({ kind: "message", message: "run is not waiting for a budget decision" });
+  });
+
+  it("uses the server message for a FastAPI-style 422 payload", () => {
+    expect(
+      budgetDecisionError({
+        status: 422,
+        code: "invalid_request",
+        message: "field required",
+      }),
+    ).toEqual({ kind: "message", message: "field required" });
+  });
+
+  it("falls back to the generic message when the server message is blank", () => {
+    expect(
+      budgetDecisionError({ status: 409, code: "invalid_state", message: "   " }),
+    ).toEqual({ kind: "message", message: "预算决策提交失败" });
+  });
+
+  it("only treats budget_overrun as an overrun on a 409", () => {
+    expect(
+      budgetDecisionError({ status: 400, code: "budget_overrun", message: "bad request" }),
+    ).toEqual({ kind: "message", message: "bad request" });
   });
 });

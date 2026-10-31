@@ -1,9 +1,15 @@
 import type { Budget, BudgetGate, RunUsageView } from "../api/types";
 
 export type BudgetDecisionFailure =
-  | { kind: "overrun"; finalizeEstimate: number; remaining: number }
-  | { kind: "field"; field: string }
+  | { kind: "overrun"; finalizeEstimate: number; remaining: number; message?: string }
+  | { kind: "field"; field: string; message: string }
   | { kind: "message"; message: string };
+
+const FIELD_LABELS: Record<string, string> = {
+  max_cost_usd: "费用上限",
+  max_wall_clock_s: "时长上限",
+  max_target_requests: "目标请求数上限",
+};
 
 export function gateNeedsConfirmation(gate: BudgetGate): boolean {
   return gate.remaining < gate.finalize_estimate;
@@ -13,7 +19,8 @@ export function defaultExtension(budget: Budget, usage: RunUsageView): Budget {
   return {
     max_cost_usd: roundUp(Math.max(budget.max_cost_usd, usage.spent_usd + 1)),
     max_wall_clock_s: Math.ceil(Math.max(budget.max_wall_clock_s, usage.spent_wall_clock_s + 60)),
-    max_target_requests: Math.max(budget.max_target_requests, usage.target_requests + 10),
+    max_target_requests:
+      Math.max(budget.max_target_requests, usage.target_requests, usage.aig_requests) + 10,
   };
 }
 
@@ -41,17 +48,25 @@ export function validateExtension(
 export function budgetDecisionError(error: {
   status: number;
   code: string;
+  message?: string;
   details?: Record<string, unknown>;
 }): BudgetDecisionFailure {
-  if (error.code === "budget_overrun") {
+  const message = error.message?.trim() ?? "";
+  if (error.status === 409 && error.code === "budget_overrun") {
     return {
       kind: "overrun",
       finalizeEstimate: Number(error.details?.finalize_estimate ?? 0),
       remaining: Number(error.details?.remaining ?? 0),
+      ...(message ? { message } : {}),
     };
   }
   if (error.code === "invalid_request" && typeof error.details?.field === "string") {
-    return { kind: "field", field: error.details.field };
+    const field = error.details.field;
+    return {
+      kind: "field",
+      field,
+      message: message || `${FIELD_LABELS[field] ?? field} 必须严格大于已消费值`,
+    };
   }
-  return { kind: "message", message: "预算决策提交失败" };
+  return { kind: "message", message: message || "预算决策提交失败" };
 }

@@ -83,6 +83,7 @@ describe("api client", () => {
     });
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/run_1/budget/decision");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
       action: "extend",
       budget: { max_cost_usd: 2, max_wall_clock_s: 90, max_target_requests: 20 },

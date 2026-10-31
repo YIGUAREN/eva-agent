@@ -51,7 +51,7 @@ export function BudgetCard({
   function extend() {
     const invalid = validateExtension(extension, usage);
     if (invalid) {
-      setFailure({ kind: "field", field: invalid.field });
+      setFailure({ kind: "field", field: invalid.field, message: invalid.message });
       return;
     }
     void submit({ action: "extend", budget: extension });
@@ -79,11 +79,12 @@ export function BudgetCard({
       {failure?.kind === "overrun" && (
         <p className="mt-3 text-sm text-amber-300">
           收尾需要 {usd(failure.finalizeEstimate)}，当前仅剩 {usd(failure.remaining)}。
+          {failure.message && <span className="mt-1 block">{failure.message}</span>}
         </p>
       )}
       {failure?.kind === "field" && (
         <p role="alert" className="mt-3 text-sm text-rose-300">
-          {failure.field} 必须严格大于已消费值
+          {failure.message}
         </p>
       )}
       {failure?.kind === "message" && (
