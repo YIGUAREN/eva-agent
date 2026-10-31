@@ -7,7 +7,7 @@ import asyncio
 import signal
 from pathlib import Path
 
-from eva_agent.config.settings import load_config
+from eva_agent.config.settings import ConfigError, load_config, require_sandbox_token
 from eva_agent.runtime.manager import RunManager
 from eva_agent.storage.migrate import run_migrations
 from eva_agent.worker.runner import RunWorker
@@ -30,6 +30,10 @@ async def _run(config_path: Path) -> None:
     except NotImplementedError:
         pass
     await asyncio.to_thread(run_migrations, config.storage.url)
+    try:
+        require_sandbox_token()
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from None
     async with RunManager.open(config) as manager:
         worker = RunWorker.from_manager(
             manager,

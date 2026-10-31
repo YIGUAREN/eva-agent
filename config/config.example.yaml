@@ -54,6 +54,15 @@ web:
   cookie_secure: true
   max_concurrent_runs: 2
   poll_interval_s: 0.5
+  upload_max_bytes: 52428800
+  upload_timeout_s: 120
+  sandbox_runner_url: http://127.0.0.1:8090
+  sandbox_timeout_s: 120
+
+uploads:
+  max_extracted_bytes: 536870912
+  max_files: 10000
+  max_depth: 20
 
 aig:
   base_url: "http://127.0.0.1:8088"

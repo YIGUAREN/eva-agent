@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -127,6 +128,16 @@ class AigSettings(BaseModel):
         return self
 
 
+class UploadsSettings(BaseModel):
+    """Extraction limits enforced by the sandbox runner."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_extracted_bytes: int = Field(default=536_870_912, gt=0)
+    max_files: int = Field(default=10_000, gt=0)
+    max_depth: int = Field(default=20, gt=0)
+
+
 class WebSettings(BaseModel):
     """HTTP server and worker-loop settings."""
 
@@ -137,6 +148,10 @@ class WebSettings(BaseModel):
     cookie_secure: bool = True
     max_concurrent_runs: int = Field(default=2, gt=0)
     poll_interval_s: float = Field(default=0.5, gt=0)
+    upload_max_bytes: int = Field(default=52_428_800, gt=0)
+    upload_timeout_s: float = Field(default=120.0, gt=0)
+    sandbox_runner_url: str = Field(default="http://127.0.0.1:8090", min_length=1)
+    sandbox_timeout_s: float = Field(default=120.0, gt=0)
 
 
 class AppConfig(BaseModel):
@@ -153,6 +168,7 @@ class AppConfig(BaseModel):
     pricing: PricingSettings = Field(default_factory=PricingSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     web: WebSettings = Field(default_factory=WebSettings)
+    uploads: UploadsSettings = Field(default_factory=UploadsSettings)
     aig: AigSettings | None = None
 
 
@@ -187,4 +203,24 @@ def resolve_api_key(model: ModelConfig, env: Mapping[str, str] | None = None) ->
     value = source.get(model.api_key_env)
     if not value:
         raise MissingSecretError(f"environment variable {model.api_key_env} is not set")
+    return value
+
+
+def require_sandbox_token(env: Mapping[str, str] | None = None) -> str:
+    """Return SANDBOX_TOKEN from the environment; never accept it from YAML."""
+    source = os.environ if env is None else env
+    value = source.get("SANDBOX_TOKEN", "")
+    if not value:
+        raise ConfigError("environment variable SANDBOX_TOKEN is not set")
+    return value
+
+
+def validate_sandbox_url(value: str) -> str:
+    """Return *value* when it is a usable http(s) base URL."""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        raise ConfigError("web.sandbox_runner_url must be a valid http(s) URL") from None
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ConfigError("web.sandbox_runner_url must be a valid http(s) URL")
     return value

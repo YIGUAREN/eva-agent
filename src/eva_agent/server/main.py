@@ -9,7 +9,12 @@ from pathlib import Path
 
 import uvicorn
 
-from eva_agent.config.settings import load_config
+from eva_agent.config.settings import (
+    ConfigError,
+    load_config,
+    require_sandbox_token,
+    validate_sandbox_url,
+)
 from eva_agent.server.app import create_app
 from eva_agent.server.ratelimit import LoginRateLimiter
 from eva_agent.server.state import AppState
@@ -28,7 +33,12 @@ async def serve(config_path: Path, host: str, port: int) -> None:
     config = load_config(config_path)
     password_hash = os.environ.get("ADMIN_PASSWORD_HASH", "")
     if not password_hash:
-        raise SystemExit("ADMIN_PASSWORD_HASH is not set; run python scripts/hash_password.py")
+        raise SystemExit("ADMIN_PASSWORD_HASH is not set; run uv run python scripts/hash_password.py")
+    try:
+        sandbox_token = require_sandbox_token()  # noqa: F841 - consumed by the sandbox client
+        validate_sandbox_url(config.web.sandbox_runner_url)
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from None
 
     await asyncio.to_thread(run_migrations, config.storage.url)
 
