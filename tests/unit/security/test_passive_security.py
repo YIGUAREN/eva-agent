@@ -126,6 +126,17 @@ def test_summarize_passive_cites_upload_qa_rows() -> None:
     assert result.findings[0].evidence[0].locator == "qa.jsonl#0"
 
 
+def test_summarize_passive_keeps_the_cache_counts() -> None:
+    output = GraderRunOutput(
+        outcomes=[GraderSampleOutcome(grader="harmfulness", sample_index=0, score=1.0)],
+        cached=3,
+        fresh=1,
+    )
+    result = summarize_passive(output, specs=passive_specs(rows()), rows=rows(), evidence=evidence())
+
+    assert (result.usage.cached, result.usage.fresh) == (3, 1)
+
+
 def test_summarize_passive_reports_all_failed() -> None:
     output = GraderRunOutput(
         outcomes=[

@@ -26,8 +26,9 @@ from tests.support.api import PASTE_PAYLOAD, csrf_headers, login
 from tests.support.runtime import budget, dependencies, fake_config, paste_input
 
 # Grading now reserves from the ledger, so the gate budget must cover the fake
-# run's two grader specs (~1.19 USD at the priced-config rates) while staying
-# below the finalize estimate (~1.33 USD) that triggers the pause.
+# run's two grader specs (~1.204 USD at the priced-config rates) while staying
+# below the finalize estimate (~1.33 USD) that triggers the pause.  The margin
+# above grading is thin: a tokenizer or sample-plan change can flip the assertion.
 GATE_BUDGET = Budget(max_cost_usd=1.25, max_wall_clock_s=60.0, max_target_requests=90)
 EXTENDED_BUDGET = Budget(max_cost_usd=3.5, max_wall_clock_s=60.0, max_target_requests=90)
 

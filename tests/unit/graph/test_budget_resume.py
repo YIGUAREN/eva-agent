@@ -1,21 +1,39 @@
+from dataclasses import replace
+from decimal import Decimal
 from typing import Literal, cast
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END
+from langgraph.types import Command
 
+from eva_agent.adapters.target import tokens as tokens_module
 from eva_agent.budget.context import BudgetModels, bind_budget
 from eva_agent.budget.estimator import CostEstimator
 from eva_agent.budget.ledger import BudgetLedger
 from eva_agent.config.settings import ModelConfig
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
+from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.domain.result import DimensionResult, Usage
 from eva_agent.domain.run import InputKind, RunStatus
-from eva_agent.graph.build import route_after_budget_gate
+from eva_agent.graph.build import build_graph, route_after_budget_gate
 from eva_agent.graph.nodes import budget_gate as budget_gate_module
 from eva_agent.graph.nodes.budget_gate import budget_gate_node
 from eva_agent.graph.state import EvalState, merge_expert_results
+from eva_agent.pricing import ModelPrice, PricingTable
+from tests.support.runtime import (
+    FakePlanner,
+    FakeRunner,
+    dependencies,
+    fake_config,
+    initial_state,
+    paste_input,
+    sample_plan,
+)
+
+CONFIG = {"configurable": {"thread_id": "run-1"}}
 
 ResultStatus = Literal["ok", "partial", "skipped", "failed"]
 
@@ -152,3 +170,138 @@ async def test_summarize_clears_the_retry_dimensions(
     result = await budget_gate_node(state)
 
     assert result["retry_dimensions"] == []
+
+
+def test_a_retry_with_no_enabled_dimension_routes_to_merge() -> None:
+    # COST is skipped, so no enabled plan dimension matches the retry list.
+    assert route_after_budget_gate(_state(["cost"])) == "merge"
+
+
+def test_a_retry_outside_supported_dimensions_routes_to_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "eva_agent.graph.build.SUPPORTED_DIMENSIONS",
+        frozenset({Dimension.LATENCY}),
+    )
+
+    assert route_after_budget_gate(_state(["quality"])) == "merge"
+
+
+class _FakeEncoding:
+    """Offline stand-in for ``tiktoken.Encoding``: one token per character."""
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(len(text)))
+
+
+@pytest.fixture
+def fake_tokenizer(monkeypatch: pytest.MonkeyPatch):
+    tokens_module._encoding.cache_clear()
+    monkeypatch.setattr(tokens_module.tiktoken, "get_encoding", lambda name: _FakeEncoding())
+    yield
+    tokens_module._encoding.cache_clear()
+
+
+class _NoopLedgerStore:
+    async def load(self, run_id: str) -> None:
+        return None
+
+    async def save(self, run_id: str, usage: object) -> None:
+        return None
+
+
+class _RecordingGateStore:
+    def __init__(self) -> None:
+        self.rows: list[tuple[int, dict]] = []
+
+    async def next_seq(self, run_id: str) -> int:
+        return len(self.rows) + 1
+
+    async def record(self, run_id: str, seq: int, action: str, payload: dict) -> bool:
+        self.rows.append((seq, payload))
+        return True
+
+    async def latest_gate(self, run_id: str):
+        return None
+
+
+def _resume_plan() -> EvalPlan:
+    return sample_plan(sample_size=1).model_copy(
+        update={
+            "dimensions": [
+                DimensionPlan(
+                    dimension=Dimension.QUALITY,
+                    enabled=True,
+                    sample_size=1,
+                    graders=[GraderSpec(level="builtin", name="relevance", builtin_id="relevance")],
+                ),
+                DimensionPlan(dimension=Dimension.SECURITY, enabled=True, sample_size=1, graders=[]),
+            ],
+            "skipped": [
+                SkippedDimension(dimension=Dimension.LATENCY, reason="not applicable to paste input"),
+                SkippedDimension(dimension=Dimension.COST, reason="not applicable to paste input"),
+            ],
+        }
+    )
+
+
+def _priced_estimator() -> CostEstimator:
+    return CostEstimator(
+        PricingTable(
+            [
+                ModelPrice(
+                    provider="openai-compatible",
+                    model="fake",
+                    input_per_million=Decimal("1000"),
+                    output_per_million=Decimal("1000"),
+                )
+            ]
+        )
+    )
+
+
+async def test_the_compiled_graph_retries_the_truncated_experts_after_extend(
+    tmp_path,
+    fake_tokenizer,
+) -> None:
+    runner = FakeRunner()
+    deps = replace(
+        dependencies(tmp_path, planner=FakePlanner(plan=_resume_plan()), runner=runner),
+        finalize_estimator=lambda state: Decimal("0.5"),
+        gate_store=_RecordingGateStore(),
+    )
+    app = build_graph(deps, MemorySaver())
+    model = fake_config(tmp_path).models.judge
+    ledger = BudgetLedger(
+        Budget(max_cost_usd=0.000001, max_wall_clock_s=60.0, max_target_requests=90),
+        store=_NoopLedgerStore(),
+    )
+    extended = Budget(max_cost_usd=100.0, max_wall_clock_s=60.0, max_target_requests=90)
+
+    with bind_budget(ledger, _priced_estimator(), BudgetModels(agent=model, judge=model, attack=model)):
+        await app.ainvoke(initial_state(paste_input()), CONFIG)
+        await app.ainvoke(Command(resume={"approved": True}), CONFIG)
+        paused = await app.aget_state(CONFIG)
+
+        assert paused.next == ("budget_gate",)
+        assert runner.calls == 0
+        before = paused.values["expert_results"]
+        assert {(result.dimension, result.status, result.truncated_reason) for result in before} == {
+            (Dimension.QUALITY, "partial", "budget"),
+            (Dimension.SECURITY, "partial", "budget"),
+        }
+
+        await app.ainvoke(
+            Command(resume={"action": "extend", "budget": extended.model_dump(mode="json")}),
+            CONFIG,
+        )
+        final = await app.aget_state(CONFIG)
+
+    assert final.values["status"] is RunStatus.COMPLETED
+    results = final.values["expert_results"]
+    assert len(results) == 2
+    assert {result.dimension for result in results} == {Dimension.QUALITY, Dimension.SECURITY}
+    assert all(result.status == "ok" and result.truncated_reason is None for result in results)
+    # The quality relevance spec and the security harmfulness spec ran on the retry.
+    assert runner.calls == 2

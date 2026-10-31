@@ -89,7 +89,7 @@ def route_after_budget_gate(state: EvalState) -> list[Send] | str:
     plan = state["plan"]
     if not retry or plan is None:
         return "merge"
-    return [
+    sends = [
         Send(
             item.dimension.value,
             {
@@ -103,8 +103,9 @@ def route_after_budget_gate(state: EvalState) -> list[Send] | str:
             },
         )
         for item in plan.dimensions
-        if item.enabled and item.dimension.value in retry
+        if item.enabled and item.dimension in SUPPORTED_DIMENSIONS and item.dimension.value in retry
     ]
+    return sends or "merge"
 
 
 def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None) -> Any:

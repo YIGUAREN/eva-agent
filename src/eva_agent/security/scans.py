@@ -262,7 +262,13 @@ def summarize_threat(
         metrics=metrics,
         findings=findings,
         evidence=[],
-        usage=Usage(grader_calls=len(output.outcomes), samples=len(rows), duration_ms=output.duration_ms),
+        usage=Usage(
+            grader_calls=len(output.outcomes),
+            samples=len(rows),
+            duration_ms=output.duration_ms,
+            cached=output.cached,
+            fresh=output.fresh,
+        ),
     )
 
 
@@ -294,5 +300,7 @@ def merge_passive(passive: NormalizedQuality, threat: NormalizedQuality | None) 
             grader_calls=passive.usage.grader_calls + threat.usage.grader_calls,
             samples=passive.usage.samples + threat.usage.samples,
             duration_ms=passive.usage.duration_ms + threat.usage.duration_ms,
+            cached=passive.usage.cached + threat.usage.cached,
+            fresh=passive.usage.fresh + threat.usage.fresh,
         ),
     )
