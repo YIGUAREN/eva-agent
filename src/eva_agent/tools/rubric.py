@@ -8,6 +8,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from eva_agent.budget.context import budget_context
+from eva_agent.budget.types import BudgetExhausted
 from eva_agent.budget.usage import track_usage
 from eva_agent.tools.registry import ToolSpec
 
@@ -42,36 +43,50 @@ def build_generate_rubric_tool(
         context = budget_context()
         enforced = context is not None and context.ledger.enforced
         estimate = Decimal("0")
-        if enforced:
-            assert context is not None
-            input_text = "\n".join([payload.task_description, *payload.sample_queries])
-            estimate = context.estimator.estimate_chat(
-                context.models.judge,
-                input_text=input_text,
-                max_output_tokens=max_output_tokens,
-            )
-            await context.ledger.reserve(estimate, kind="rubric")
+        reserve_attempted = False
+        reserved = False
         try:
+            if enforced:
+                assert context is not None
+                input_text = "\n".join([payload.task_description, *payload.sample_queries])
+                estimate = context.estimator.estimate_chat(
+                    context.models.judge,
+                    input_text=input_text,
+                    max_output_tokens=max_output_tokens,
+                )
+                reserve_attempted = True
+                await context.ledger.reserve(estimate, kind="rubric")
+                reserved = True
             with track_usage() as totals:
                 rubrics = await generator.generate(
                     task_description=payload.task_description,
                     sample_queries=payload.sample_queries,
                     scenario=payload.scenario,
                 )
-        except Exception:
-            if enforced:
+        except BudgetExhausted:
+            # The reservation was refused before any charge; nothing to settle.
+            raise
+        except BaseException:
+            # The registry enforces timeout_s with asyncio.wait_for, which
+            # cancels the handler; CancelledError is a BaseException and must
+            # still release the reservation.
+            if enforced and (reserved or reserve_attempted):
                 assert context is not None
                 await context.ledger.settle(estimate, None, kind="rubric")
             raise
         if enforced:
             assert context is not None
             actual = None
-            if totals.input_tokens or totals.output_tokens:
-                actual = context.estimator.cost_for_tokens(
-                    context.models.judge,
-                    input_tokens=totals.input_tokens,
-                    output_tokens=totals.output_tokens,
-                )
+            try:
+                if totals.input_tokens or totals.output_tokens:
+                    actual = context.estimator.cost_for_tokens(
+                        context.models.judge,
+                        input_tokens=totals.input_tokens,
+                        output_tokens=totals.output_tokens,
+                    )
+            except Exception:
+                # Pricing the actual cost must never orphan the reservation.
+                actual = None
             await context.ledger.settle(estimate, actual, kind="rubric")
         return RubricOutput(rubrics=rubrics)
 

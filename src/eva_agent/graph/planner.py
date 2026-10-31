@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from eva_agent.budget.context import BudgetContext, budget_context
+from eva_agent.budget.types import BudgetExhausted
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.grader import GraderSpec
@@ -169,12 +170,25 @@ class LlmPlanner:
             self._structured = structured_runner
         elif chat_model is not None:
             kwargs = {} if structured_method is None else {"method": structured_method}
-            self._structured = chat_model.with_structured_output(PlannerOutput, **kwargs)
+            # Keep the raw message so provider-reported token usage stays reachable.
+            self._structured = chat_model.with_structured_output(PlannerOutput, include_raw=True, **kwargs)
         else:
             raise ValueError("LlmPlanner requires chat_model or structured_runner")
         self._tools = tools
         self._sample_rows = sample_rows
         self._max_output_tokens = max_output_tokens
+
+    @staticmethod
+    def _unwrap_structured(output: Any) -> tuple[Any, Any]:
+        """Split langchain's include_raw envelope into (parsed, raw message)."""
+        if isinstance(output, Mapping) and "parsed" in output:
+            parsing_error = output.get("parsing_error")
+            if parsing_error is not None:
+                if isinstance(parsing_error, BaseException):
+                    raise parsing_error
+                raise ValueError(f"structured output parsing failed: {parsing_error}")
+            return output.get("parsed"), output.get("raw")
+        return output, output
 
     @staticmethod
     def _actual_cost(context: BudgetContext, output: Any) -> Decimal | None:
@@ -183,37 +197,59 @@ class LlmPlanner:
             return None
         input_tokens = metadata.get("input_tokens")
         output_tokens = metadata.get("output_tokens")
-        if input_tokens is None and output_tokens is None:
+        # One-sided or zero usage cannot be priced reliably; prefer the estimate.
+        if input_tokens is None or output_tokens is None:
+            return None
+        input_count = int(input_tokens)
+        output_count = int(output_tokens)
+        if input_count <= 0 or output_count <= 0:
             return None
         return context.estimator.cost_for_tokens(
             context.models.agent,
-            input_tokens=int(input_tokens or 0),
-            output_tokens=int(output_tokens or 0),
+            input_tokens=input_count,
+            output_tokens=output_count,
         )
 
     async def _invoke_structured(self, prompt: str) -> Any:
         context = budget_context()
         enforced = context is not None and context.ledger.enforced
         estimate = Decimal("0")
-        if enforced:
-            assert context is not None
-            estimate = context.estimator.estimate_chat(
-                context.models.agent,
-                input_text=prompt,
-                max_output_tokens=self._max_output_tokens,
-            )
-            await context.ledger.reserve(estimate, kind="planner")
+        reserve_attempted = False
+        reserved = False
         try:
-            output = await self._structured.ainvoke(prompt)
-        except Exception:
             if enforced:
+                assert context is not None
+                estimate = context.estimator.estimate_chat(
+                    context.models.agent,
+                    input_text=prompt,
+                    max_output_tokens=self._max_output_tokens,
+                )
+                reserve_attempted = True
+                await context.ledger.reserve(estimate, kind="planner")
+                reserved = True
+            output = await self._structured.ainvoke(prompt)
+            parsed, usage_holder = self._unwrap_structured(output)
+        except BudgetExhausted:
+            # The reservation was refused before any charge; nothing to settle.
+            raise
+        except BaseException:
+            # Cancellation (including a registry timeout) bypasses `except
+            # Exception`, so settle the reservation before propagating to avoid
+            # shrinking the remaining budget for the rest of the run.
+            if enforced and (reserved or reserve_attempted):
                 assert context is not None
                 await context.ledger.settle(estimate, None, kind="planner")
             raise
         if enforced:
             assert context is not None
-            await context.ledger.settle(estimate, self._actual_cost(context, output), kind="planner")
-        return output
+            actual: Decimal | None
+            try:
+                actual = self._actual_cost(context, usage_holder)
+            except Exception:
+                # Pricing the actual cost must never orphan the reservation.
+                actual = None
+            await context.ledger.settle(estimate, actual, kind="planner")
+        return parsed
 
     async def plan(
         self,
