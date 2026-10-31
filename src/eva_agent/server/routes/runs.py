@@ -288,12 +288,16 @@ async def decide_run_budget(
             except ActiveCommandExists:
                 await _audit_rejection(state, row, action)
                 raise ApiError(409, "command_pending", "another command is already pending") from None
+            # The submission did not decide anything: the first decision for the
+            # seq is final and the recorded one is what actually runs.  Record
+            # that replayed decision rather than the submitted action.
+            replayed = str(recovery.get("action") or "")
             await state.audit.record(
                 AuditEvent(
                     run_id=run_id,
                     actor="admin",
-                    action=action,
-                    outcome="accepted",
+                    action=f"run.budget.{replayed}" if replayed else action,
+                    outcome="replayed",
                     authorization_ref=row.authorization_ref,
                 )
             )

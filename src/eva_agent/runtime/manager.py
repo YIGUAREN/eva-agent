@@ -336,6 +336,23 @@ class RunManager:
             return False
         return await self._decisions.latest_gate(run_id) is not None
 
+    async def _has_queued_work_after_decision(self, run_id: str) -> bool:
+        """Return whether a decided run died mid-graph with work still queued.
+
+        Only a RUNNING row with a recorded decision qualifies: ordinary runs
+        keep their existing crash semantics, and a checkpoint parked at
+        ``budget_gate`` or ``approve`` must stay parked for its own decision.
+        """
+        if self._decisions is None:
+            return False
+        if await self._decisions.latest_decision(run_id) is None:
+            return False
+        row = await self._require_repo().get(run_id)
+        if row is None or RunStatus(row.status) is not RunStatus.RUNNING:
+            return False
+        next_nodes = await self._paused_nodes(run_id)
+        return bool(next_nodes) and "budget_gate" not in next_nodes and "approve" not in next_nodes
+
     async def converge_from_checkpoint(self, run_id: str) -> bool:
         """Reconcile a RUNNING row with the checkpoint when the graph ran ahead.
 
@@ -712,6 +729,13 @@ class RunManager:
                 # graph resumed; replay the recorded decision instead of treating
                 # the missing gate as "already resumed".
                 return await self._replay_recorded_decision(run_id)
+            if await self._has_queued_work_after_decision(run_id):
+                # The decision resumed the graph, which then died mid-flight
+                # (merge/analyze/report still queued).  Reuse the ordinary
+                # resume path under this decision lock so the run finishes
+                # instead of reporting RUNNING forever.  A resume failure
+                # propagates, leaving the command un-done for a later retry.
+                return await self.resume(run_id)
             # A duplicate delivery after a successful resume is idempotent, but
             # the first delivery may have finished the graph without persisting
             # the row (the process died or _sync failed).  Converge from the

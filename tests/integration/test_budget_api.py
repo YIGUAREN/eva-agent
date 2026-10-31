@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from langgraph.types import Command
+from sqlalchemy import func, select
 
 from eva_agent.budget.types import RunUsage
 from eva_agent.config.settings import AppConfig, PricingSettings
@@ -17,6 +19,7 @@ from eva_agent.server.state import AppState
 from eva_agent.storage.budget import BudgetDecisionRepository
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
+from eva_agent.storage.models import ArtifactRow, ReportRow
 from eva_agent.storage.repository import RunRepository
 from eva_agent.worker.runner import RunWorker
 from tests.support.api import PASTE_PAYLOAD, csrf_headers, login
@@ -216,6 +219,32 @@ async def test_route_enqueues_a_recovery_for_a_resumed_but_unsynced_run(
     assert commands[-1].payload_json == decision
 
 
+async def test_recovery_audit_records_the_replayed_decision(
+    client: AsyncClient, state: AppState
+) -> None:
+    """Finding 2: the audit row must not claim a different action was accepted."""
+    run_id, csrf = await _waiting_run(client, state)
+    decision = {"action": "summarize", "confirm_overrun": True}
+    await state.decisions.decide(run_id, 1, "summarize", {"decision": decision})
+    await state.runs.set_status(run_id, RunStatus.RUNNING)
+
+    response = await client.post(
+        f"/api/runs/{run_id}/budget/decision",
+        json={
+            "action": "extend",
+            "budget": {"max_cost_usd": 2.0, "max_wall_clock_s": 60.0, "max_target_requests": 90},
+        },
+        headers=csrf_headers(csrf),
+    )
+
+    assert response.status_code == 202
+    commands = await state.commands.list_for_run(run_id)
+    assert commands[-1].payload_json == decision
+    events = await state.audit.list_for_run(run_id)
+    assert events[-1].action == "run.budget.summarize"
+    assert events[-1].outcome == "replayed"
+
+
 async def test_decide_claims_the_gate_row_exactly_once(tmp_path: Path) -> None:
     config = fake_config(tmp_path)
     engine = create_engine(config.storage.url)
@@ -343,6 +372,26 @@ class _CountingGraph:
     async def ainvoke(self, *args: object, **kwargs: object) -> object:
         self.calls += 1
         return await self._inner.ainvoke(*args, **kwargs)
+
+
+async def _count_rows(factory: Any, model: Any, run_id: str) -> int:
+    async with factory() as session:
+        count = await session.scalar(
+            select(func.count()).select_from(model).where(model.run_id == run_id)
+        )
+    return int(count or 0)
+
+
+async def _advance_one_superstep(manager: RunManager, run_id: str, decision: dict[str, Any]) -> None:
+    """Drive the resumed graph for one superstep, then abandon it like a crash."""
+    graph = manager._require_graph()
+    async with manager._budget_scope(run_id):
+        stream = graph.astream(Command(resume=decision), manager._thread(run_id), stream_mode="updates")
+        try:
+            async for _chunk in stream:
+                break
+        finally:
+            await stream.aclose()
 
 
 async def test_crash_after_decide_recovers_the_recorded_decision_on_retry(tmp_path: Path) -> None:
@@ -535,11 +584,82 @@ async def test_worker_recovers_a_run_that_finished_before_sync(tmp_path: Path) -
         assert (await manager.status(run_id)).status is RunStatus.COMPLETED
         assert await worker.reports.get(run_id) is not None
         assert await worker.artifacts.get(run_id, "report.json") is not None
+        reports_before = await _count_rows(manager.session_factory, ReportRow, run_id)
+        artifacts_before = await _count_rows(manager.session_factory, ArtifactRow, run_id)
+        assert reports_before == 1
+        assert artifacts_before >= 1
 
         # Replaying the recovery must not duplicate report/artifact rows.
         await commands.enqueue(run_id, "budget_decision", decision)
         assert await worker.tick() is True
         assert await worker.artifacts.get(run_id, "report.json") is not None
+        assert await _count_rows(manager.session_factory, ReportRow, run_id) == reports_before
+        assert await _count_rows(manager.session_factory, ArtifactRow, run_id) == artifacts_before
+
+
+async def test_mid_graph_crash_after_the_decision_recovers_and_completes(tmp_path: Path) -> None:
+    """Finding 1: the decision resumed the graph, which then died mid-flight."""
+    config = _priced_config(tmp_path)
+    async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
+        run_id = await _gate_run(manager, "run-gate-mid-graph")
+        repo = manager._require_repo()
+        decisions = manager._decisions
+        assert decisions is not None
+        gate = await decisions.latest_gate(run_id)
+        assert gate is not None
+        decision = {"action": "summarize", "confirm_overrun": True}
+        assert await repo.claim(
+            run_id,
+            from_statuses=(RunStatus.WAITING_BUDGET,),
+            to_status=RunStatus.RUNNING,
+        )
+        assert await decisions.decide(
+            run_id, int(gate.seq), "summarize", {**dict(gate.payload_json), "decision": decision}
+        )
+        # The decision resumed the graph, one tail superstep ran, and the
+        # process died before the invocation could return (merge/analyze/report
+        # still queued).
+        await _advance_one_superstep(manager, run_id, decision)
+        snapshot = await manager._require_graph().aget_state(manager._thread(run_id))
+        next_nodes = set(snapshot.next or ())
+        assert next_nodes
+        assert "budget_gate" not in next_nodes
+        assert "approve" not in next_nodes
+        assert (await manager.status(run_id)).status is RunStatus.RUNNING
+        assert await decisions.latest_gate(run_id) is None
+
+        commands = RunCommandRepository(manager.session_factory)
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir, poll_interval_s=0.01)
+        real_graph = manager._graph
+        counting = _CountingGraph(real_graph)
+        manager._graph = counting
+        try:
+            await commands.enqueue(run_id, "budget_decision", decision)
+            assert await worker.tick() is True
+        finally:
+            manager._graph = real_graph
+
+        assert counting.calls == 1
+        assert (await manager.status(run_id)).status is RunStatus.COMPLETED
+        assert await worker.reports.get(run_id) is not None
+        assert await worker.artifacts.get(run_id, "report.json") is not None
+        reports_before = await _count_rows(manager.session_factory, ReportRow, run_id)
+        artifacts_before = await _count_rows(manager.session_factory, ArtifactRow, run_id)
+        assert reports_before == 1
+
+        # A second recovery command must neither invoke the graph again nor
+        # write the report/artifacts a second time.
+        extra = _CountingGraph(real_graph)
+        manager._graph = extra
+        try:
+            await commands.enqueue(run_id, "budget_decision", decision)
+            assert await worker.tick() is True
+        finally:
+            manager._graph = real_graph
+
+        assert extra.calls == 0
+        assert await _count_rows(manager.session_factory, ReportRow, run_id) == reports_before
+        assert await _count_rows(manager.session_factory, ArtifactRow, run_id) == artifacts_before
 
 
 async def test_worker_resume_keeps_a_decided_gate_replayable(tmp_path: Path) -> None:
