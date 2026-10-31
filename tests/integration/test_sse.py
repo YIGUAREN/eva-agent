@@ -185,6 +185,12 @@ async def test_public_sse_neutralizes_non_dict_budget_payloads(
         ("budget.gate", {"truncated_dimensions": {"spent_usd": 12.345678}}, {}),
         # Allowlisted strings still have to be real dimension names.
         ("budget.exhausted", {"dimension": "spent_usd=12.345678"}, {}),
+        # "probe" is the engine's real budget dimension, not a Dimension member.
+        (
+            "budget.exhausted",
+            {"dimension": "probe", "spent_usd": 12.345678},
+            {"dimension": "probe"},
+        ),
         (
             "budget.gate",
             {"truncated_dimensions": ["quality", "spent_usd=12.345678", 3]},

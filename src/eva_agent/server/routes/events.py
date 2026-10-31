@@ -53,6 +53,9 @@ _PUBLIC_BUDGET_EVENT_TYPES = frozenset({"budget.exhausted", "budget.gate"})
 
 # Derived from the enum so a future dimension is accepted automatically.
 _PUBLIC_DIMENSION_NAMES = frozenset(item.value for item in Dimension)
+# A probe budget exhaustion legitimately reports "probe", which is not a
+# Dimension member; allow it for budget.exhausted only.
+_PUBLIC_EVENT_DIMENSION_NAMES = _PUBLIC_DIMENSION_NAMES | {"probe"}
 
 
 def _without_budget_money(value: object) -> object:
@@ -71,8 +74,9 @@ def _public_event_payload(event_type: str, payload: object) -> object:
     """Reduce public budget events to their allowlisted, type-checked shape.
 
     ``budget.exhausted`` exposes ``dimension`` only when it is a real
-    ``Dimension`` name; ``budget.gate`` exposes ``truncated_dimensions`` only
-    when it is a list, filtered down to its real dimension names. Any malformed
+    dimension label (a ``Dimension`` name, or ``"probe"``); ``budget.gate``
+    exposes ``truncated_dimensions`` only when it is a list, filtered down to
+    its real ``Dimension`` names. Any malformed
     budget payload or value becomes an empty object. Other event types keep the
     generic money-key denylist.
     """
@@ -82,7 +86,7 @@ def _public_event_payload(event_type: str, payload: object) -> object:
         return {}
     if event_type == "budget.exhausted":
         dimension = payload.get("dimension")
-        if isinstance(dimension, str) and dimension in _PUBLIC_DIMENSION_NAMES:
+        if isinstance(dimension, str) and dimension in _PUBLIC_EVENT_DIMENSION_NAMES:
             return {"dimension": dimension}
         return {}
     truncated = payload.get("truncated_dimensions")

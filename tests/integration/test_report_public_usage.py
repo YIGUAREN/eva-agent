@@ -357,3 +357,27 @@ async def test_public_report_keeps_only_real_dimension_names(
 
     assert admin.status_code == 200
     assert admin.json()["report"]["truncated_dimensions"] == stored_dimensions
+
+
+@pytest.mark.parametrize(
+    "stored_payload",
+    ["usage", ["usage"], "truncated_dimensions", ["truncated_dimensions"]],
+)
+async def test_public_report_tolerates_non_dict_stored_payloads(
+    client: AsyncClient, state: AppState, stored_payload: object
+) -> None:
+    run_id = await _create(client)
+    await state.reports.upsert(run_id, 4, stored_payload, "# report")  # type: ignore[arg-type]
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert "spent_usd" not in response.text
+    assert response.json()["report"] == stored_payload
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/report", headers=csrf_headers(csrf))
+
+    assert admin.status_code == 200
+    assert admin.json()["report"] == stored_payload

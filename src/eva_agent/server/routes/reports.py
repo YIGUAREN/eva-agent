@@ -140,6 +140,10 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
     snapshot = await state.reports.get(run_id)
     if snapshot is None:
         raise ApiError(404, "report_not_ready", "report is not ready")
+    # A malformed stored payload (a string or list) must not crash the public
+    # rewrite gates; only mappings can carry the whitelisted keys. The admin
+    # route still returns the stored value unchanged.
+    stored_payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
     payload = snapshot.payload
     digest = snapshot.sha256
     markdown = snapshot.markdown
@@ -149,17 +153,17 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
         # Only rewrite keys the stored payload already has; injecting them would
         # change the shape and digest of legacy v2/v3 reports. Key presence (not
         # type) gates the whitelist so malformed non-mapping usage is neutralized.
-        if "usage" in snapshot.payload:
-            payload = {**payload, "usage": public_report_usage(payload)}
-        if "truncated_dimensions" in snapshot.payload:
+        if "usage" in stored_payload:
+            payload = {**payload, "usage": public_report_usage(stored_payload)}
+        if "truncated_dimensions" in stored_payload:
             payload = {
                 **payload,
-                "truncated_dimensions": public_truncated_dimensions(payload),
+                "truncated_dimensions": public_truncated_dimensions(stored_payload),
             }
-        if "truncated_sample_counts" in snapshot.payload:
+        if "truncated_sample_counts" in stored_payload:
             payload = {
                 **payload,
-                "truncated_sample_counts": public_truncated_sample_counts(payload),
+                "truncated_sample_counts": public_truncated_sample_counts(stored_payload),
             }
         # The stored digest covers the unsanitized payload, so recompute it with
         # the same canonicalization used by ReportRepository.upsert.
