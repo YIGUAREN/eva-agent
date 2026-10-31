@@ -1,11 +1,20 @@
 import hashlib
 import stat
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
 
-from eva_agent.sandbox.extract import ExtractionError, ExtractionLimits, detect_format, extract_archive
+from eva_agent.sandbox.extract import (
+    ExtractionError,
+    ExtractionLimits,
+    _reject_unsafe_unicode_path_extra,
+    detect_format,
+    extract_archive,
+)
+
+_UNICODE_PATH_EXTRA_ID = 0x7075
 
 
 def _zip(path: Path, members: dict[str, bytes]) -> Path:
@@ -81,6 +90,77 @@ def test_rejects_names_zipfile_would_sanitize(tmp_path: Path, stored: bytes, dec
         extract_archive(package, tmp_path / "out")
     assert caught.value.reason == "invalid_path"
     assert not (tmp_path / "out").exists()
+
+
+def _unicode_path_extra(raw_name: bytes, unicode_name: bytes) -> bytes:
+    """Build a 0x7075 Unicode-path extra field with a valid name CRC."""
+    payload = b"\x01" + zlib.crc32(raw_name).to_bytes(4, "little") + unicode_name
+    return _UNICODE_PATH_EXTRA_ID.to_bytes(2, "little") + len(payload).to_bytes(2, "little") + payload
+
+
+def _zip_with_unicode_path(path: Path, unicode_name: bytes) -> Path:
+    """Create a zip whose 0x7075 field is patched into both headers in place.
+
+    The writer emits the extra field in the local header and the central
+    directory, so patching the equally sized placeholder payload rewrites both
+    copies without shifting any offsets.
+    """
+    raw_name = b"safe.txt"
+    placeholder = b"xxxxxxx"
+    assert len(placeholder) == len(unicode_name)
+    with zipfile.ZipFile(path, "w") as archive:
+        info = zipfile.ZipInfo(raw_name.decode("ascii"))
+        info.extra = _unicode_path_extra(raw_name, placeholder)
+        archive.writestr(info, b"x")
+    data = path.read_bytes()
+    assert data.count(placeholder) == 2
+    path.write_bytes(data.replace(placeholder, unicode_name))
+    return path
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [b"a\\b.txt", b"a\x00b.txt"],
+    ids=["backslash", "nul"],
+)
+def test_rejects_unsafe_unicode_path_extra(tmp_path: Path, declared: bytes) -> None:
+    """The raw 0x7075 payload must be rejected even though zipfile sanitizes it."""
+    package = _zip_with_unicode_path(tmp_path / "p.bin", declared)
+    # Sanity check: zipfile itself does apply the extra field to ``filename``.
+    with zipfile.ZipFile(package) as archive:
+        info = archive.infolist()[0]
+        assert info.orig_filename == "safe.txt"
+        assert info.filename != "safe.txt"
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # 0x7075 whose data is shorter than version + name_crc32.
+        _UNICODE_PATH_EXTRA_ID.to_bytes(2, "little") + (2).to_bytes(2, "little") + b"\x01\x00",
+        # 0x7075 with a valid header but a non-UTF-8 payload.
+        _UNICODE_PATH_EXTRA_ID.to_bytes(2, "little") + (6).to_bytes(2, "little") + b"\x01\x00\x00\x00\x00\xff",
+        # Declared field size overruns the extra buffer; the parser must not over-read.
+        _UNICODE_PATH_EXTRA_ID.to_bytes(2, "little") + (100).to_bytes(2, "little") + b"\x01\x00\x00\x00\x00",
+    ],
+    ids=["short-header", "invalid-utf8", "overlong-size"],
+)
+def test_rejects_malformed_unicode_path_extra(extra: bytes) -> None:
+    info = zipfile.ZipInfo("safe.txt")
+    info.extra = extra
+    with pytest.raises(ExtractionError) as caught:
+        _reject_unsafe_unicode_path_extra(info)
+    assert caught.value.reason == "invalid_path"
+
+
+def test_ignores_trailing_extra_bytes_too_short_for_a_header() -> None:
+    info = zipfile.ZipInfo("safe.txt")
+    info.extra = b"\x75\x70"
+    _reject_unsafe_unicode_path_extra(info)
 
 
 def test_rejects_symlink_and_special_modes(tmp_path: Path) -> None:
@@ -217,6 +297,32 @@ def test_rejects_eocd_disk_numbers(tmp_path: Path, offset: int) -> None:
         extract_archive(package, tmp_path / "out")
     assert caught.value.reason == "unsupported_format"
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("disk", [0, 1])
+def test_rejects_appended_data_after_eocd(tmp_path: Path, disk: int) -> None:
+    """Trailing bytes must not let the EOCD validation fall through."""
+    package = _zip(tmp_path / "p.bin", {"a.txt": b"x"})
+    data = bytearray(package.read_bytes())
+    index = data.rfind(b"PK\x05\x06")
+    assert index != -1
+    data[index + 4 : index + 6] = disk.to_bytes(2, "little")
+    package.write_bytes(bytes(data) + b"J")
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "unsupported_format"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("comment", [b"", b"evidence package comment"])
+def test_accepts_zip_with_or_without_comment(tmp_path: Path, comment: bytes) -> None:
+    package = tmp_path / "p.bin"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("a.txt", b"x")
+        archive.comment = comment
+    manifest = extract_archive(package, tmp_path / "out")
+    assert [item["path"] for item in manifest["files"]] == ["a.txt"]
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"x"
 
 
 def test_maps_filesystem_errors_to_invalid_path(tmp_path: Path) -> None:

@@ -21,6 +21,8 @@ _TAR_MAGIC = b"ustar"
 _EOCD_SIGNATURE = b"PK\x05\x06"
 _EOCD_MIN_SIZE = 22
 _MAX_COMMENT_SIZE = 0xFFFF
+_UNICODE_PATH_EXTRA_ID = 0x7075
+_UNICODE_PATH_HEADER_SIZE = 5
 _INVALID_COMPONENT_CHARS = frozenset('<>:"|?*')
 # On Windows these basenames resolve to devices rather than files, even inside
 # the staging directory, so writing ``NUL`` would send bytes outside the
@@ -94,25 +96,70 @@ def _safe_parts(name: str, limits: ExtractionLimits, *, allow_empty: bool = Fals
     return parts
 
 
+def _reject_unsafe_unicode_path_extra(info: zipfile.ZipInfo) -> None:
+    """Reject a 0x7075 Unicode-path extra field that hides an unsafe name.
+
+    ``zipfile`` replaces ``ZipInfo.filename`` with the 0x7075 payload and then
+    sanitizes it, so a NUL truncates or a backslash is rewritten before the
+    effective-name checks run. The raw payload is only available through
+    ``ZipInfo.extra`` and must be validated with the same NUL/backslash rules
+    as a raw member name.
+    """
+    extra = info.extra
+    offset = 0
+    while offset + 4 <= len(extra):
+        header_id = int.from_bytes(extra[offset : offset + 2], "little")
+        data_size = int.from_bytes(extra[offset + 2 : offset + 4], "little")
+        data_start = offset + 4
+        data_end = data_start + data_size
+        if data_end > len(extra):
+            # Cannot skip past the declared field; fail closed rather than
+            # lose track of a later 0x7075 payload.
+            raise ExtractionError("invalid_path")
+        if header_id == _UNICODE_PATH_EXTRA_ID:
+            data = extra[data_start:data_end]
+            if len(data) < _UNICODE_PATH_HEADER_SIZE:
+                raise ExtractionError("invalid_path")
+            try:
+                unicode_path = data[_UNICODE_PATH_HEADER_SIZE:].decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ExtractionError("invalid_path") from exc
+            if "\x00" in unicode_path or "\\" in unicode_path:
+                raise ExtractionError("invalid_path")
+        offset = data_end
+
+
 def _reject_multi_volume(package: Path) -> None:
-    """Reject a zip whose end-of-central-directory declares another disk."""
+    """Reject a zip whose end-of-central-directory declares another disk.
+
+    The EOCD signature is only searched inside the window a valid archive
+    comment could occupy. Exactly one candidate must exist and its declared
+    comment length must end exactly at EOF; anything else fails closed so
+    appended bytes cannot desynchronize this check from ``zipfile``.
+    """
     with package.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
         file_size = handle.tell()
         window = min(file_size, _EOCD_MIN_SIZE + _MAX_COMMENT_SIZE)
         handle.seek(file_size - window)
         tail = handle.read()
-    position = tail.rfind(_EOCD_SIGNATURE)
+    positions: list[int] = []
+    position = tail.find(_EOCD_SIGNATURE)
     while position >= 0:
-        if position + _EOCD_MIN_SIZE <= len(tail):
-            comment_length = int.from_bytes(tail[position + 20 : position + 22], "little")
-            if position + _EOCD_MIN_SIZE + comment_length == len(tail):
-                disk_number = int.from_bytes(tail[position + 4 : position + 6], "little")
-                central_disk = int.from_bytes(tail[position + 6 : position + 8], "little")
-                if disk_number != 0 or central_disk != 0:
-                    raise ExtractionError("unsupported_format")
-                return
-        position = tail.rfind(_EOCD_SIGNATURE, 0, position)
+        positions.append(position)
+        position = tail.find(_EOCD_SIGNATURE, position + 1)
+    if len(positions) != 1:
+        raise ExtractionError("unsupported_format")
+    start = positions[0]
+    if start + _EOCD_MIN_SIZE > len(tail):
+        raise ExtractionError("unsupported_format")
+    comment_length = int.from_bytes(tail[start + 20 : start + 22], "little")
+    if start + _EOCD_MIN_SIZE + comment_length != len(tail):
+        raise ExtractionError("unsupported_format")
+    disk_number = int.from_bytes(tail[start + 4 : start + 6], "little")
+    central_disk = int.from_bytes(tail[start + 6 : start + 8], "little")
+    if disk_number != 0 or central_disk != 0:
+        raise ExtractionError("unsupported_format")
 
 
 def _write_member(source, target: Path, *, limits: ExtractionLimits, total_written: int) -> tuple[int, str, int]:
@@ -148,6 +195,7 @@ def _extract_zip(package: Path, staging: Path, limits: ExtractionLimits) -> dict
                 # available through ``orig_filename``.
                 if "\x00" in info.orig_filename or "\\" in info.orig_filename:
                     raise ExtractionError("invalid_path")
+                _reject_unsafe_unicode_path_extra(info)
                 if info.volume != 0:
                     raise ExtractionError("unsupported_format")
                 is_dir = info.is_dir()
