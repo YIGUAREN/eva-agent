@@ -196,6 +196,85 @@ async def test_later_ledger_does_not_move_the_stored_clock_backwards() -> None:
     assert clocks[-1] == pytest.approx(3.0)
 
 
+def test_a_lax_second_ledger_cannot_overspend_the_shared_limit() -> None:
+    strict = BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=FakeStore(),
+        run_id="run-shared-budget",
+    )
+    strict._reserve_sync(Decimal("0.9"))
+    lax = BudgetLedger(
+        Budget(max_cost_usd=100.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=FakeStore(),
+        run_id="run-shared-budget",
+    )
+    with pytest.raises(BudgetExhausted) as exc:
+        lax._reserve_sync(Decimal("0.5"))
+    assert exc.value.reason == "max_cost_usd"
+    assert lax.snapshot().remaining_usd == Decimal("0.1")
+
+
+def test_update_budget_is_shared_across_ledgers() -> None:
+    first = BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=FakeStore(),
+        run_id="run-shared-update",
+    )
+    second = BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=FakeStore(),
+        run_id="run-shared-update",
+    )
+    first._reserve_sync(Decimal("0.9"))
+    first.update_budget(Budget(max_cost_usd=2.0, max_wall_clock_s=60.0, max_target_requests=5))
+    second._reserve_sync(Decimal("0.5"))
+    assert second.snapshot().remaining_usd == Decimal("0.6")
+
+
+def test_extension_through_one_ledger_unblocks_the_other() -> None:
+    first = BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=FakeStore(),
+        run_id="run-shared-extend",
+    )
+    second = BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=FakeStore(),
+        run_id="run-shared-extend",
+    )
+    first._reserve_sync(Decimal("0.9"))
+    with pytest.raises(BudgetExhausted):
+        second._reserve_sync(Decimal("0.2"))
+    first.update_budget(Budget(max_cost_usd=2.0, max_wall_clock_s=60.0, max_target_requests=5))
+    second._reserve_sync(Decimal("0.2"))
+    assert second.snapshot().reserved_usd == Decimal("1.1")
+
+
+async def test_unlimited_ledger_does_not_overwrite_the_enforced_row() -> None:
+    store = FakeStore()
+    enforced = BudgetLedger(
+        money_budget(),
+        store=store,
+        run_id="run-unlimited-store",
+        throttle_s=0.0,
+    )
+    await enforced.reserve(Decimal("0.5"), kind="enforced")
+    await enforced.settle(Decimal("0.5"), Decimal("0.5"), kind="enforced")
+    assert store.saved[-1].spent_usd == Decimal("0.5")
+
+    unlimited = BudgetLedger(
+        money_budget(),
+        store=store,
+        run_id="run-unlimited-store",
+        unlimited=True,
+        throttle_s=0.0,
+    )
+    unlimited._reserve_sync(Decimal("9"))
+    unlimited._settle_sync(Decimal("9"), Decimal("9"))
+    await unlimited.flush()
+    assert store.saved[-1].spent_usd == Decimal("0.5")
+
+
 def test_reusing_a_run_across_event_loops_does_not_raise() -> None:
     store = SlowStore()
 

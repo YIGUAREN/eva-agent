@@ -28,6 +28,7 @@ _RUN_LOCKS_ATTR = "_eva_budget_run_locks"
 class _RunState:
     """Mutable state shared by every enforced ledger for one run id."""
 
+    budget: Budget
     usage: RunUsage = field(default_factory=RunUsage)
     started: float = 0.0
     last_persist: float = 0.0
@@ -67,11 +68,16 @@ class BudgetLedger:
         throttle_s: float = 1.0,
         state: RunUsage | None = None,
     ) -> None:
+        """Create a ledger for one run.
+
+        ``state`` only seeds the first ledger created for a non-empty ``run_id``.
+        Later ledgers for the same run join the live in-memory entry (adopting
+        its usage, elapsed baseline, and budget limits) and ignore their seed.
+        """
         if not unlimited and store is None:
             # Fail closed: an enforced ledger without a store would let callers
             # believe budget checks are active while persistence silently no-ops.
             raise ValueError("a limited BudgetLedger requires a store")
-        self._budget = budget
         self._store = store
         self._run_id = run_id
         self._unlimited = unlimited
@@ -81,13 +87,23 @@ class BudgetLedger:
         if not unlimited and run_id != "":
             shared = _RUN_STATES.get(run_id)
             if shared is None:
-                shared = _RunState(usage=state or RunUsage(), started=started, last_persist=started)
+                shared = _RunState(
+                    budget=budget,
+                    usage=state or RunUsage(),
+                    started=started,
+                    last_persist=started,
+                )
                 _RUN_STATES[run_id] = shared
             # A later ledger joins the existing run state; it must not reload
-            # over it or reset the elapsed baseline.
+            # over it, reset the elapsed baseline, or impose its own limits.
             self._run_state = shared
         else:
-            self._run_state = _RunState(usage=state or RunUsage(), started=started, last_persist=started)
+            self._run_state = _RunState(
+                budget=budget,
+                usage=state or RunUsage(),
+                started=started,
+                last_persist=started,
+            )
 
     @classmethod
     def unlimited(cls, budget: Budget) -> BudgetLedger:
@@ -102,7 +118,9 @@ class BudgetLedger:
         return self._run_state.estimated
 
     def update_budget(self, budget: Budget) -> None:
-        self._budget = budget
+        # Limits are run-level: an extension must apply to every ledger that
+        # shares this run's state, not just the one that received the update.
+        self._run_state.budget = budget
 
     def _elapsed(self) -> float:
         # The usage stores the wall clock loaded from the store at construction;
@@ -115,14 +133,15 @@ class BudgetLedger:
             return Decimal("Infinity")
         return max(
             ZERO,
-            quantize_money(Decimal(str(self._budget.max_cost_usd))) - usage.spent_usd - usage.reserved_usd,
+            quantize_money(Decimal(str(self._run_state.budget.max_cost_usd))) - usage.spent_usd - usage.reserved_usd,
         )
 
     def _check_cost(self, estimate: Decimal) -> None:
         usage = self._run_state.usage
         if self._unlimited:
             return
-        if usage.spent_usd + usage.reserved_usd + estimate > quantize_money(Decimal(str(self._budget.max_cost_usd))):
+        limit = quantize_money(Decimal(str(self._run_state.budget.max_cost_usd)))
+        if usage.spent_usd + usage.reserved_usd + estimate > limit:
             raise BudgetExhausted(
                 spent=usage.spent_usd,
                 remaining=self._remaining(),
@@ -132,7 +151,7 @@ class BudgetLedger:
     def _check_wall_clock(self) -> None:
         if self._unlimited:
             return
-        if self._elapsed() > self._budget.max_wall_clock_s:
+        if self._elapsed() > self._run_state.budget.max_wall_clock_s:
             raise BudgetExhausted(
                 spent=self._run_state.usage.spent_usd,
                 remaining=self._remaining(),
@@ -180,7 +199,7 @@ class BudgetLedger:
             raise ValueError("count must be non-negative")
         self._check_wall_clock()
         usage = self._run_state.usage
-        if not self._unlimited and usage.target_requests + count > self._budget.max_target_requests:
+        if not self._unlimited and usage.target_requests + count > self._run_state.budget.max_target_requests:
             raise BudgetExhausted(
                 spent=usage.spent_usd,
                 remaining=self._remaining(),
@@ -204,7 +223,7 @@ class BudgetLedger:
         self._check_wall_clock()
         usage = self._run_state.usage
         # AIG scans hit the target too, so they share the max_target_requests pool.
-        if not self._unlimited and usage.target_requests + count > self._budget.max_target_requests:
+        if not self._unlimited and usage.target_requests + count > self._run_state.budget.max_target_requests:
             raise BudgetExhausted(
                 spent=usage.spent_usd,
                 remaining=self._remaining(),
@@ -258,7 +277,9 @@ class BudgetLedger:
         )
 
     async def _persist(self, *, force: bool = False) -> None:
-        if self._store is None or self._run_id == "":
+        # An unlimited ledger tracks usage locally but must never overwrite the
+        # enforced ledger's row for the same run.
+        if self._store is None or self._run_id == "" or self._unlimited:
             return
         now = self._clock()
         run_state = self._run_state
