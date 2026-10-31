@@ -35,7 +35,6 @@ class ScanDecision:
     reason: ScanReason
     scan_kind: ScanKind | None = None
     scan_base_url: str | None = None
-    target_url: str | None = None
     authorization_ref: str | None = None
     max_wait_s: float | None = None
     scan_requests: int = 0
@@ -126,7 +125,6 @@ class ScanPolicy:
         budget: Budget,
         ref: str | None,
         scan_base_url: str | None = None,
-        target_url: str | None = None,
     ) -> ScanDecision:
         if scan_requests > budget.max_target_requests:
             return ScanDecision(
@@ -134,7 +132,6 @@ class ScanPolicy:
                 reason="budget_exceeded",
                 scan_kind=scan_kind,
                 scan_base_url=scan_base_url,
-                target_url=target_url,
                 authorization_ref=ref,
                 scan_requests=scan_requests,
             )
@@ -145,7 +142,6 @@ class ScanPolicy:
                 reason="timeout_too_short",
                 scan_kind=scan_kind,
                 scan_base_url=scan_base_url,
-                target_url=target_url,
                 authorization_ref=ref,
                 scan_requests=scan_requests,
             )
@@ -154,13 +150,13 @@ class ScanPolicy:
             reason="allowed",
             scan_kind=scan_kind,
             scan_base_url=scan_base_url,
-            target_url=target_url,
             authorization_ref=ref,
             max_wait_s=max_wait_s,
             scan_requests=scan_requests,
         )
 
-    def _demo_url(self, target: TargetSpec, *, url: str, ref: str) -> ScanDecision | str:
+    def _demo_denial(self, target: TargetSpec, *, url: str, ref: str) -> ScanDecision | None:
+        """Refuse an agent target that is neither its allowed demo nor allowlisted."""
         demo = next(
             (
                 item
@@ -172,10 +168,10 @@ class ScanPolicy:
         if demo is not None:
             if ref != demo.name:
                 return _deny("authorization_mismatch", ref=ref, scan_kind="agent_scan")
-            return demo.aig_base_url or url
+            return None
         if _origin(url) not in self._policy.allowlist:
             return _deny("target_not_allowlisted", ref=ref, scan_kind="agent_scan")
-        return url
+        return None
 
     def _decide_model(
         self,
@@ -245,15 +241,14 @@ class ScanPolicy:
         if denied is not None:
             return denied
         assert target.url is not None
-        resolved = self._demo_url(target, url=target.url, ref=ref or "")
-        if isinstance(resolved, ScanDecision):
-            return resolved
+        denied = self._demo_denial(target, url=target.url, ref=ref or "")
+        if denied is not None:
+            return denied
         return self._limits(
             scan_kind="agent_scan",
             scan_requests=self._aig.agent_scan.num_prompts,
             budget=budget,
             ref=ref,
-            target_url=resolved,
         )
 
     def _decide_skill(

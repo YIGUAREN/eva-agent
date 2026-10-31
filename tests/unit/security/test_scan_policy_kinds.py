@@ -64,8 +64,33 @@ def test_agent_scan_allowed_for_demo_agent() -> None:
     )
     assert decision.allowed is True
     assert decision.scan_kind == "agent_scan"
-    assert decision.target_url == "http://127.0.0.1:8200/chat"
+    assert decision.authorization_ref == "demo-agent"
     assert decision.scan_requests == 3
+
+
+def test_demo_target_is_allowed_without_a_dead_url_rewrite() -> None:
+    # The demo entry carries an ``aig_base_url`` that no consumer reads. The
+    # decision must keep the same allow/deny outcome and audit ref as before,
+    # with no resolved URL field dangling on it.
+    demo_policy = policy(
+        demo_targets=[
+            DemoTarget(
+                name="demo-agent",
+                origin="http://127.0.0.1:8200",
+                aig_base_url="http://demo-target:8200",
+            )
+        ]
+    )
+    decision = decide(
+        ScanPolicy(demo_policy, aig=aig(), eval_model_available=True),
+        scan_kind="agent_scan",
+        target=agent_target(),
+    )
+
+    assert decision.allowed is True
+    assert decision.reason == "allowed"
+    assert decision.authorization_ref == "demo-agent"
+    assert not hasattr(decision, "target_url")
 
 
 def test_agent_scan_requires_agent_target() -> None:
@@ -88,7 +113,9 @@ def test_agent_scan_requires_agent_target() -> None:
 def test_agent_scan_denied_for_non_allowlisted_origin() -> None:
     target = agent_target().model_copy(update={"url": "https://agent.example.com/chat"})
     decision = decide(ScanPolicy(policy(), aig=aig(), eval_model_available=True), scan_kind="agent_scan", target=target)
+    assert decision.allowed is False
     assert decision.reason == "target_not_allowlisted"
+    assert decision.authorization_ref == "demo-agent"
 
 
 def test_agent_scan_authorization_mismatch() -> None:
@@ -98,7 +125,9 @@ def test_agent_scan_authorization_mismatch() -> None:
         target=agent_target(),
         authorization_ref="other",
     )
+    assert decision.allowed is False
     assert decision.reason == "authorization_mismatch"
+    assert decision.authorization_ref == "other"
 
 
 def test_skill_scan_allowed_for_upload() -> None:
