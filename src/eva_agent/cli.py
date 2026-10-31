@@ -16,8 +16,9 @@ from dotenv import load_dotenv
 from eva_agent.config.settings import AppConfig, ConfigError, MissingSecretError, load_config
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput, RunStatus
-from eva_agent.packages.grader_package import build_grader_package
+from eva_agent.packages.grader_package import build_grader_package, read_grader_package
 from eva_agent.packages.manifest import sha256_file
+from eva_agent.packages.replay import replay_package
 from eva_agent.runtime.manager import RunManager, RunStateError, RunStatusView
 
 
@@ -74,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     export_package.add_argument("run_id")
     export_package.add_argument("--out", required=True)
     export_package.add_argument("--config", default="config/config.yaml")
+
+    replay = subparsers.add_parser("replay")
+    replay.add_argument("package")
+    replay.add_argument("--out", required=True)
     return parser
 
 
@@ -221,7 +226,29 @@ async def _export_grader_package(args: argparse.Namespace, config: AppConfig) ->
     return 0
 
 
+async def _replay(args: argparse.Namespace, _config: AppConfig | None) -> int:
+    package = read_grader_package(Path(args.package))
+    result = replay_package(package)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "matched": result.matched,
+        "compared": result.compared,
+        "skipped": result.skipped,
+        "differences": [
+            {"path": item.path, "recorded": item.recorded, "replayed": item.replayed}
+            for item in result.differences
+        ],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+    (out_dir / "replay.json").write_text(encoded, encoding="utf-8")
+    print(encoded)
+    return 0 if result.matched else 1
+
+
 async def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "replay":
+        return await _replay(args, None)
     config = load_config(Path(args.config))
     if args.command == "export-grader-package":
         return await _export_grader_package(args, config)
