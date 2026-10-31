@@ -17,3 +17,8 @@ export function isTerminal(status: string): boolean {
 export function score(value: number | null | undefined): string {
   return value === null || value === undefined ? "n/a" : value.toFixed(3);
 }
+
+export function spend(value: number | null | undefined): string | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return `¥${value.toFixed(2)}`;
+}
