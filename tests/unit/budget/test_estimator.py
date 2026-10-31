@@ -52,7 +52,7 @@ def test_unknown_model_fails_closed() -> None:
 
 def test_missing_pricing_table_fails_closed() -> None:
     with pytest.raises(BudgetPricingError):
-        CostEstimator(None).estimate_finalize(model(), input_text="x")
+        CostEstimator(None).estimate_chat(model(), input_text="x", max_output_tokens=10)
 
 
 def test_chat_and_grader_estimates_are_positive_decimals() -> None:

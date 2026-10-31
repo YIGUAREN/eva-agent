@@ -87,12 +87,3 @@ class CostEstimator:
         count = max(1, requests)
         unit = self.cost_for_tokens(model, input_tokens=0, output_tokens=max(0, max_output_tokens))
         return unit * count
-
-    def estimate_finalize(
-        self,
-        model: ModelConfig,
-        *,
-        input_text: str,
-        max_output_tokens: int = 1024,
-    ) -> Decimal:
-        return self.estimate_chat(model, input_text=input_text, max_output_tokens=max_output_tokens)

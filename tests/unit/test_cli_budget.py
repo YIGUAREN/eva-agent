@@ -49,17 +49,35 @@ def _start_args() -> argparse.Namespace:
     )
 
 
-HANDLERS: list[tuple[str, Handler, argparse.Namespace]] = [
-    ("start", _start, _start_args()),
-    ("approve", _approve, argparse.Namespace(run_id="run-1", approve=True, reject=False, plan_file=None)),
-    ("status", _status, argparse.Namespace(run_id="run-1")),
-    ("report", _report, argparse.Namespace(run_id="run-1")),
+def _approve_args() -> argparse.Namespace:
+    return argparse.Namespace(run_id="run-1", approve=True, reject=False, plan_file=None)
+
+
+def _run_id_args() -> argparse.Namespace:
+    return argparse.Namespace(run_id="run-1")
+
+
+HANDLERS: list[tuple[str, Handler, Callable[[], argparse.Namespace]]] = [
+    ("start", _start, _start_args),
+    ("approve", _approve, _approve_args),
+    ("status", _status, _run_id_args),
+    ("report", _report, _run_id_args),
 ]
 
 
-@pytest.mark.parametrize(("name", "handler", "args"), HANDLERS, ids=[item[0] for item in HANDLERS])
+def test_parameterized_cases_get_a_fresh_namespace() -> None:
+    """A handler that mutates its args must not leak into the next case."""
+    for name, _handler, make_args in HANDLERS:
+        first = make_args()
+        second = make_args()
+        assert first is not second, name
+        vars(first)["mutated_by_earlier_case"] = True
+        assert "mutated_by_earlier_case" not in vars(second), name
+
+
+@pytest.mark.parametrize(("name", "handler", "make_args"), HANDLERS, ids=[item[0] for item in HANDLERS])
 async def test_cli_opens_an_unlimited_ledger(
-    name: str, handler: Handler, args: argparse.Namespace, tmp_path, monkeypatch
+    name: str, handler: Handler, make_args: Callable[[], argparse.Namespace], tmp_path, monkeypatch
 ) -> None:
     seen: dict[str, object] = {}
 
@@ -69,5 +87,5 @@ async def test_cli_opens_an_unlimited_ledger(
         yield FakeManager()
 
     monkeypatch.setattr(RunManager, "open", fake_open)
-    assert await handler(args, fake_config(tmp_path)) == 0
+    assert await handler(make_args(), fake_config(tmp_path)) == 0
     assert seen["enforce_budget"] is False

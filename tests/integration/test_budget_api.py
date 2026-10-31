@@ -593,9 +593,15 @@ async def test_worker_recovers_a_run_that_finished_before_sync(tmp_path: Path) -
         assert reports_before == 1
         assert artifacts_before >= 1
 
-        # Replaying the recovery must not duplicate report/artifact rows.
-        await commands.enqueue(run_id, "budget_decision", decision)
+        # Replaying the recovery must not duplicate report/artifact rows, and the
+        # replay itself must succeed: a swallowed duplicate-write error would
+        # leave the command row `failed` while row counts stayed unchanged.
+        replay_command = await commands.enqueue(run_id, "budget_decision", decision)
         assert await worker.tick() is True
+        replay = await commands.get(replay_command)
+        assert replay is not None
+        assert replay.status == "done"
+        assert replay.error is None
         assert await worker.artifacts.get(run_id, "report.json") is not None
         assert await _count_rows(manager.session_factory, ReportRow, run_id) == reports_before
         assert await _count_rows(manager.session_factory, ArtifactRow, run_id) == artifacts_before
@@ -656,11 +662,15 @@ async def test_mid_graph_crash_after_the_decision_recovers_and_completes(tmp_pat
         extra = _CountingGraph(real_graph)
         manager._graph = extra
         try:
-            await commands.enqueue(run_id, "budget_decision", decision)
+            extra_command = await commands.enqueue(run_id, "budget_decision", decision)
             assert await worker.tick() is True
         finally:
             manager._graph = real_graph
 
+        replay = await commands.get(extra_command)
+        assert replay is not None
+        assert replay.status == "done"
+        assert replay.error is None
         assert extra.calls == 0
         assert await _count_rows(manager.session_factory, ReportRow, run_id) == reports_before
         assert await _count_rows(manager.session_factory, ArtifactRow, run_id) == artifacts_before
