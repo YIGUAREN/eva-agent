@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +38,26 @@ def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
         report_markdown=root / "report.md",
         report_json=root / "report.json",
     )
+
+
+_SAFE_ARTIFACT_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}")
+_AIG_ARTIFACT_NAME = re.compile(r"aig/([A-Za-z0-9_-]{1,128})\.(json|csv)")
+
+
+def artifact_file(data_dir: str | Path, run_id: str, name: str) -> Path:
+    """Resolve a stored artifact name to a file, refusing anything outside the run."""
+    paths = run_paths(data_dir, run_id)
+    if _SAFE_ARTIFACT_NAME.fullmatch(name) is not None:
+        base, relative = paths.root, name
+    elif (match := _AIG_ARTIFACT_NAME.fullmatch(name)) is not None:
+        base, relative = paths.aig_dir, f"{match.group(1)}.{match.group(2)}"
+    else:
+        raise ValueError(f"unsafe artifact name {name!r}")
+    root = base.resolve()
+    path = (base / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError(f"unsafe artifact name {name!r}")
+    return path
 
 
 def write_plan_draft(paths: RunPaths, plan: EvalPlan, *, overwrite: bool = False) -> None:

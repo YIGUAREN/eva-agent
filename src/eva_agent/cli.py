@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Sequence
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     export_package.add_argument("run_id")
     export_package.add_argument("--out", required=True)
     export_package.add_argument("--config", default="config/config.yaml")
+
+    export_run = subparsers.add_parser("export-run")
+    export_run.add_argument("run_id")
+    export_run.add_argument("--out", required=True)
+    export_run.add_argument("--config", default="config/config.yaml")
 
     replay = subparsers.add_parser("replay")
     replay.add_argument("package")
@@ -226,6 +232,27 @@ async def _export_grader_package(args: argparse.Namespace, config: AppConfig) ->
     return 0
 
 
+def _open_manager(config: AppConfig) -> AbstractAsyncContextManager[RunManager]:
+    return RunManager.open(config, enforce_budget=False)
+
+
+async def _export_run(args: argparse.Namespace, config: AppConfig) -> int:
+    async with _open_manager(config) as manager:
+        archive, manifest = await manager.export_run_bundle(args.run_id, Path(args.out))
+    print(
+        json.dumps(
+            {
+                "package": str(archive),
+                "run_id": manifest.run_id,
+                "members": sorted(manifest.files),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 async def _replay(args: argparse.Namespace, _config: AppConfig | None) -> int:
     package = read_grader_package(Path(args.package))
     result = replay_package(package)
@@ -252,6 +279,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     if args.command == "export-grader-package":
         return await _export_grader_package(args, config)
+    if args.command == "export-run":
+        return await _export_run(args, config)
     if args.run_command == "start":
         return await _start(args, config)
     if args.run_command == "approve":

@@ -21,6 +21,7 @@ _SENSITIVE_KEYS = frozenset(
         "markdown_path",
         "json_path",
         "path",
+        "api_key",
         "output_path",
         "report_json_path",
         "input_json",
@@ -223,6 +224,32 @@ def redact_markdown_paths(text: str) -> str:
             line = f"{line[:first.start()]}<path>{suffix}"
         redacted.append(_AIG_ARTIFACT_PATH.sub("<path>", line))
     return "\n".join(redacted)
+
+
+# Public Markdown never carries budget or spend figures.
+_HIDDEN_LINE_PREFIXES = ("- 预算：", "- 已花费：")
+
+
+def _redact_data_dir(text: str, data_dir: str) -> str:
+    resolved = str(Path(data_dir).resolve())
+    return text.replace(resolved, "<data>").replace(str(data_dir), "<data>")
+
+
+def sanitize_public_markdown(
+    markdown: str, *, data_dir: str, internal_hosts: tuple[str, ...] = ()
+) -> str:
+    """Sanitize report markdown for public output such as a run bundle.
+
+    Admin responses return the stored markdown unchanged. Public output must
+    never reveal absolute filesystem paths, internal addresses, secrets, or
+    budget figures.
+    """
+    # Line-level path redaction drops the remainder of any path-bearing line, so
+    # spaced path components and UNC share tails cannot survive. Internal
+    # addresses and secrets are still scrubbed token by token.
+    text = redact_markdown_paths(_redact_data_dir(markdown, data_dir))
+    text = redact_internal_addresses_and_secrets(text, internal_hosts=internal_hosts)
+    return "\n".join(line for line in text.split("\n") if not line.startswith(_HIDDEN_LINE_PREFIXES))
 
 
 # Loopback and RFC1918 addresses, with an optional port. The lookarounds keep

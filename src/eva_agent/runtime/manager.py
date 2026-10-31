@@ -31,6 +31,8 @@ from eva_agent.domain.run import InputKind, RunInput, RunStatus, validate_run_id
 from eva_agent.graph.build import build_graph
 from eva_agent.graph.dependencies import GateStore, GraphDependencies
 from eva_agent.graph.plan_validation import parse_plan_edit
+from eva_agent.packages.manifest import PackageManifest
+from eva_agent.packages.run_bundle import build_run_bundle
 from eva_agent.pricing import PricingTable
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.budget_decisions import (
@@ -47,6 +49,7 @@ from eva_agent.storage.budget import (
 )
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
 from eva_agent.storage.models import AuditEventRow, RunRow
+from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,8 @@ class RunManager:
         self._checkpoint_conn: aiosqlite.Connection | None = None
         self._engine: Any = None
         self._repo: RunRepository | None = None
+        self._reports: ReportRepository | None = None
+        self._artifacts: ArtifactRepository | None = None
         self._session_factory: async_sessionmaker[AsyncSession] | None = None
         self._audit: AuditRepository | None = None
         self._graph: Any = None
@@ -158,6 +163,8 @@ class RunManager:
         session_factory = create_session_factory(engine)
         self._session_factory = session_factory
         self._repo = RunRepository(session_factory)
+        self._reports = ReportRepository(session_factory)
+        self._artifacts = ArtifactRepository(session_factory)
         audit = AuditRepository(session_factory)
         self._audit = audit
         self._usage_repo = RunUsageRepository(session_factory)
@@ -912,6 +919,24 @@ class RunManager:
         if not path.is_file():
             raise RunStateError(f"report for run '{run_id}' is not ready")
         return json.loads(path.read_text(encoding="utf-8"))
+
+    async def export_run_bundle(self, run_id: str, out_dir: Path) -> tuple[Path, PackageManifest]:
+        """Build a public run bundle for *run_id* under *out_dir*."""
+        async with self.session_factory() as session:
+            run_row = await session.get(RunRow, run_id)
+        if run_row is None:
+            raise KeyError(run_id)
+        if self._reports is None or self._artifacts is None:
+            raise RuntimeError("RunManager.setup() must run before export")
+        report = await self._reports.get(run_id)
+        artifacts = await self._artifacts.list_public(run_id)
+        return await build_run_bundle(
+            config=self._config,
+            run_row=run_row,
+            report=report,
+            artifacts=artifacts,
+            out_dir=out_dir,
+        )
 
     async def audit_events(self, run_id: str) -> list[AuditEventRow]:
         if self._audit is None:

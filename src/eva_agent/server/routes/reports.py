@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Annotated
 
@@ -15,25 +14,15 @@ from eva_agent.adapters.openjudge.catalog import CatalogError, load_catalog, sum
 from eva_agent.config.settings import ConfigError
 from eva_agent.config.targets import load_targets
 from eva_agent.domain.plan import Dimension
-from eva_agent.runtime.artifacts import run_paths
+from eva_agent.runtime.artifacts import artifact_file
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
 from eva_agent.server.errors import ApiError
 from eva_agent.server.routes.runs import _internal_hosts, _load_public_run, _load_run
-from eva_agent.server.schemas import (
-    redact_internal_addresses_and_secrets,
-    redact_markdown_paths,
-    sanitize_public_payload,
-)
+from eva_agent.server.schemas import sanitize_public_markdown, sanitize_public_payload
 from eva_agent.storage.models import AdminSessionRow
 
 router = APIRouter(prefix="/api", tags=["reports"])
-
-_SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}")
-_AIG_NAME = re.compile(r"aig/([A-Za-z0-9_-]{1,128})\.(json|csv)")
-
-# Public Markdown never carries budget or spend figures.
-_HIDDEN_LINE_PREFIXES = ("- 预算：", "- 已花费：")
 
 _PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
 _PUBLIC_USAGE_BOOL_KEYS = frozenset({"estimated", "budget_enforced"})
@@ -116,26 +105,6 @@ def public_truncated_sample_counts(payload: dict[str, object]) -> list[dict[str,
     return public
 
 
-def _redact_data_dir(text: str, data_dir: str) -> str:
-    resolved = str(Path(data_dir).resolve())
-    return text.replace(resolved, "<data>").replace(str(data_dir), "<data>")
-
-
-def _sanitize_public_markdown(markdown: str, data_dir: str, *, internal_hosts: tuple[str, ...] = ()) -> str:
-    """Sanitize report markdown for the public route only.
-
-    Admin responses return the stored markdown unchanged. Public reports must
-    never reveal absolute filesystem paths, internal addresses, secrets, or
-    budget figures.
-    """
-    # Line-level path redaction drops the remainder of any path-bearing line, so
-    # spaced path components and UNC share tails cannot survive. Internal
-    # addresses and secrets are still scrubbed token by token.
-    text = redact_markdown_paths(_redact_data_dir(markdown, data_dir))
-    text = redact_internal_addresses_and_secrets(text, internal_hosts=internal_hosts)
-    return "\n".join(line for line in text.split("\n") if not line.startswith(_HIDDEN_LINE_PREFIXES))
-
-
 async def _report(state, run_id: str, *, public: bool = False) -> dict[str, object]:
     snapshot = await state.reports.get(run_id)
     if snapshot is None:
@@ -169,9 +138,9 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
         # the same canonicalization used by ReportRepository.upsert.
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()
-        markdown = _sanitize_public_markdown(
+        markdown = sanitize_public_markdown(
             markdown,
-            state.config.storage.data_dir,
+            data_dir=state.config.storage.data_dir,
             internal_hosts=internal_hosts,
         )
     return {
@@ -183,27 +152,14 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
     }
 
 
-def _artifact_path(state, run_id: str, name: str) -> Path:
-    """Resolve a stored artifact name to a file, refusing anything outside the run."""
-    paths = run_paths(state.config.storage.data_dir, run_id)
-    if _SAFE_NAME.fullmatch(name) is not None:
-        base, relative = paths.root, name
-    elif (match := _AIG_NAME.fullmatch(name)) is not None:
-        base, relative = paths.aig_dir, f"{match.group(1)}.{match.group(2)}"
-    else:
-        raise ApiError(404, "not_found", "artifact not found")
-    root = base.resolve()
-    path = (base / relative).resolve()
-    if not path.is_relative_to(root):
-        raise ApiError(404, "not_found", "artifact not found")
-    return path
-
-
 async def _artifact(state, run_id: str, name: str, *, public: bool) -> FileResponse:
     row = await state.artifacts.get(run_id, name)
     if row is None or (public and row.visibility != "public"):
         raise ApiError(404, "not_found", "artifact not found")
-    path = _artifact_path(state, run_id, row.name)
+    try:
+        path = artifact_file(state.config.storage.data_dir, run_id, row.name)
+    except ValueError:
+        raise ApiError(404, "not_found", "artifact not found") from None
     if not path.is_file():
         raise ApiError(404, "not_found", "artifact not found")
     return FileResponse(path, media_type=row.content_type, filename=Path(row.name).name)
