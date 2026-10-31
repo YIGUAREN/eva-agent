@@ -1,8 +1,10 @@
 import json
+import shutil
 import zipfile
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.domain.run import RunStatus
@@ -11,6 +13,7 @@ from eva_agent.packages.manifest import (
     FileEntry,
     PackageError,
     PackageManifest,
+    extract_zip,
     sha256_bytes,
     sha256_file,
     write_manifest,
@@ -20,10 +23,10 @@ from eva_agent.packages.run_bundle import build_run_bundle, import_run_bundle
 from eva_agent.report.render import REPORT_VERSION
 from eva_agent.runtime.artifacts import artifact_file, run_paths
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
-from eva_agent.storage.models import ArtifactRow, ReportRow, RunRow
+from eva_agent.storage.models import ArtifactRow, ReportRow, RunEventCounterRow, RunRow
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
-from tests.support.runtime import budget, fake_config, paste_input, sample_plan
+from tests.support.runtime import budget, dataset_input, fake_config, paste_input, sample_plan
 
 _factory: async_sessionmaker[AsyncSession]
 
@@ -58,13 +61,75 @@ async def _completed_run(tmp_path):
     return config, run_row
 
 
-async def _reset_run(_config) -> None:
+async def _reset_run(_config, run_id: str = "run-1") -> None:
     """Remove the run, its report and its artifacts so an import has a clean slate."""
     async with _factory() as session:
-        await session.execute(delete(ArtifactRow).where(ArtifactRow.run_id == "run-1"))
-        await session.execute(delete(ReportRow).where(ReportRow.run_id == "run-1"))
-        await session.execute(delete(RunRow).where(RunRow.id == "run-1"))
+        await session.execute(delete(ArtifactRow).where(ArtifactRow.run_id == run_id))
+        await session.execute(delete(ReportRow).where(ReportRow.run_id == run_id))
+        await session.execute(delete(RunEventCounterRow).where(RunEventCounterRow.run_id == run_id))
+        await session.execute(delete(RunRow).where(RunRow.id == run_id))
         await session.commit()
+    shutil.rmtree(run_paths(_config.storage.data_dir, run_id).root, ignore_errors=True)
+
+
+async def _completed_dataset_run(tmp_path):
+    """A public, completed DATASET run whose input points at an absolute CSV path."""
+    global _factory
+    config = fake_config(tmp_path)
+    engine = create_engine(config.storage.url)
+    await init_db(engine)
+    _factory = create_session_factory(engine)
+    runs = RunRepository(_factory)
+    source = tmp_path / "data.csv"
+    source.write_text("question,answer\nq,a\n", encoding="utf-8")
+    await runs.create("run-ds", dataset_input(source), budget())
+    await runs.set_plan("run-ds", sample_plan())
+    await runs.set_status("run-ds", RunStatus.COMPLETED)
+    run_row = await runs.set_public("run-ds", True)
+    await ReportRepository(_factory).upsert(
+        "run-ds", REPORT_VERSION, {"version": REPORT_VERSION}, "# report\n"
+    )
+    return config, run_row
+
+
+def _rewrite_run_document(tmp_path, archive, mutate, *, report_version: int | None = None):
+    """Rebuild ``archive`` after mutating its ``run.json``, rehashing the member."""
+    root = tmp_path / "rewritten"
+    manifest = extract_zip(archive, root)
+    document = json.loads((root / "run.json").read_text(encoding="utf-8"))
+    mutate(document)
+    data = json.dumps(document).encode("utf-8")
+    (root / "run.json").write_bytes(data)
+    files = {
+        **manifest.files,
+        "run.json": FileEntry(sha256=sha256_bytes(data), size=len(data)),
+    }
+    updated = manifest.model_copy(
+        update={
+            "files": files,
+            "report_version": (
+                manifest.report_version if report_version is None else report_version
+            ),
+        }
+    )
+    write_manifest(root, updated)
+    return write_zip(root, tmp_path / "rewritten.run-bundle.zip", manifest=updated)
+
+
+async def _assert_nothing_written(config, run_id: str) -> None:
+    """No row and no run directory may exist for a rejected import."""
+    async with _factory() as session:
+        assert await session.get(RunRow, run_id) is None
+        assert await session.get(ReportRow, run_id) is None
+        assert (
+            await session.scalars(select(ArtifactRow).where(ArtifactRow.run_id == run_id))
+        ).all() == []
+        assert (
+            await session.scalars(
+                select(RunEventCounterRow).where(RunEventCounterRow.run_id == run_id)
+            )
+        ).all() == []
+    assert not run_paths(config.storage.data_dir, run_id).root.exists()
 
 
 def _bundle_with_run_id(tmp_path, run_id: str):
@@ -354,3 +419,197 @@ async def test_builder_rejects_an_invalid_run_id(tmp_path) -> None:
             artifacts=[],
             out_dir=tmp_path / "out",
         )
+
+
+async def _archive_for_completed_run(tmp_path):
+    """Build an archive for ``run-1`` and remove the source run, ready for import."""
+    config, run_row = await _completed_run(tmp_path)
+    report = await ReportRepository(_factory).get("run-1")
+    artifacts = await ArtifactRepository(_factory).list_public("run-1")
+    archive, _ = await build_run_bundle(
+        config=config, run_row=run_row, report=report, artifacts=artifacts, out_dir=tmp_path / "out"
+    )
+    await _reset_run(config)
+    return config, archive
+
+
+async def _archive_for_dataset_run(tmp_path):
+    config, run_row = await _completed_dataset_run(tmp_path)
+    report = await ReportRepository(_factory).get("run-ds")
+    archive, _ = await build_run_bundle(
+        config=config, run_row=run_row, report=report, artifacts=[], out_dir=tmp_path / "out"
+    )
+    return config, archive
+
+
+async def test_failed_import_rolls_back_and_a_retry_imports(tmp_path, monkeypatch) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+    original_set_plan = RunRepository.set_plan
+    attempts = 0
+
+    async def flaky_set_plan(self, run_id, plan):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("injected import failure")
+        await original_set_plan(self, run_id, plan)
+
+    monkeypatch.setattr(RunRepository, "set_plan", flaky_set_plan)
+
+    with pytest.raises(RuntimeError, match="injected import failure"):
+        await import_run_bundle(config=config, archive=archive, public=True)
+
+    assert await RunRepository(_factory).get("run-1") is None
+    assert await ReportRepository(_factory).get("run-1") is None
+    await _assert_nothing_written(config, "run-1")
+
+    result = await import_run_bundle(config=config, archive=archive, public=True)
+
+    assert result.status == "imported"
+    restored = await RunRepository(_factory).get("run-1")
+    assert restored is not None and restored.status == RunStatus.COMPLETED.value
+
+
+async def test_import_treats_a_concurrent_create_race_as_skipped(tmp_path, monkeypatch) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+
+    async def losing_create(self, run_id, run_input, budget, **kwargs):
+        raise IntegrityError("INSERT INTO runs", {}, Exception("UNIQUE constraint failed: runs.id"))
+
+    monkeypatch.setattr(RunRepository, "create", losing_create)
+
+    result = await import_run_bundle(config=config, archive=archive, public=True)
+
+    assert result.status == "skipped"
+
+
+async def test_import_rejects_an_out_of_range_report_version(tmp_path) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+    doc_changed = _rewrite_run_document(
+        tmp_path,
+        archive,
+        lambda document: document.__setitem__("report_version", 2**31),
+        report_version=2**31,
+    )
+
+    with pytest.raises(PackageError, match="below 2\\^31"):
+        await import_run_bundle(config=config, archive=doc_changed, public=True)
+    await _assert_nothing_written(config, "run-1")
+
+
+async def test_import_rejects_a_non_list_artifacts_container(tmp_path) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+    doc_changed = _rewrite_run_document(
+        tmp_path, archive, lambda document: document.pop("artifacts")
+    )
+
+    with pytest.raises(PackageError, match="artifacts must be a list"):
+        await import_run_bundle(config=config, archive=doc_changed, public=True)
+    await _assert_nothing_written(config, "run-1")
+
+
+@pytest.mark.parametrize("name", ["report.json", "REPORT.JSON"])
+async def test_import_rejects_artifact_names_that_shadow_run_files(tmp_path, name) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+    doc_changed = _rewrite_run_document(
+        tmp_path,
+        archive,
+        lambda document: document.__setitem__(
+            "artifacts", [{"name": name, "content_type": "application/json"}]
+        ),
+    )
+
+    with pytest.raises(PackageError, match="shadows a run file"):
+        await import_run_bundle(config=config, archive=doc_changed, public=True)
+    await _assert_nothing_written(config, "run-1")
+
+
+async def test_import_rejects_a_traversal_artifact_name_without_writing(tmp_path) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+    doc_changed = _rewrite_run_document(
+        tmp_path,
+        archive,
+        lambda document: document.__setitem__(
+            "artifacts", [{"name": "../escape.txt", "content_type": "text/plain"}]
+        ),
+    )
+
+    with pytest.raises(PackageError, match="unsafe artifact name"):
+        await import_run_bundle(config=config, archive=doc_changed, public=True)
+    await _assert_nothing_written(config, "run-1")
+
+
+async def test_import_rejects_a_missing_artifact_member_without_writing(tmp_path) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+    doc_changed = _rewrite_run_document(
+        tmp_path,
+        archive,
+        lambda document: document.__setitem__(
+            "artifacts", [{"name": "missing.txt", "content_type": "text/plain"}]
+        ),
+    )
+
+    with pytest.raises(PackageError, match="missing artifacts/missing.txt"):
+        await import_run_bundle(config=config, archive=doc_changed, public=True)
+    await _assert_nothing_written(config, "run-1")
+
+
+async def test_import_does_not_overwrite_an_existing_run(tmp_path) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+    first = await import_run_bundle(config=config, archive=archive, public=True)
+    assert first.status == "imported"
+    await ReportRepository(_factory).upsert(
+        "run-1", REPORT_VERSION, {"version": REPORT_VERSION, "changed": True}, "# changed\n"
+    )
+    await RunRepository(_factory).set_status("run-1", RunStatus.FAILED)
+
+    second = await import_run_bundle(config=config, archive=archive, public=True)
+
+    assert second.status == "skipped"
+    stored = await ReportRepository(_factory).get("run-1")
+    assert stored is not None and stored.payload.get("changed") is True
+    restored = await RunRepository(_factory).get("run-1")
+    assert restored is not None and restored.status == RunStatus.FAILED.value
+
+
+async def test_import_with_public_false_keeps_the_run_private(tmp_path) -> None:
+    config, archive = await _archive_for_completed_run(tmp_path)
+
+    result = await import_run_bundle(config=config, archive=archive, public=False)
+
+    assert result.status == "imported"
+    restored = await RunRepository(_factory).get("run-1")
+    assert restored is not None
+    assert restored.is_public is False
+    assert restored.published_at is None
+
+
+async def test_dataset_bundle_round_trips_with_a_basename(tmp_path) -> None:
+    config, archive = await _archive_for_dataset_run(tmp_path)
+    with zipfile.ZipFile(archive) as bundle:
+        document = json.loads(bundle.read("run.json"))
+    assert document["input"]["dataset"]["path"] == "data.csv"
+    await _reset_run(config, "run-ds")
+
+    result = await import_run_bundle(config=config, archive=archive, public=True)
+
+    assert result.status == "imported"
+    restored = await RunRepository(_factory).get("run-ds")
+    assert restored is not None
+    assert restored.input_json["dataset"]["path"] == "data.csv"
+
+
+async def test_import_rejects_an_absolute_dataset_path(tmp_path) -> None:
+    config, archive = await _archive_for_dataset_run(tmp_path)
+    doc_changed = _rewrite_run_document(
+        tmp_path,
+        archive,
+        lambda document: document["input"]["dataset"].__setitem__(
+            "path", "C:\\secret\\x.csv"
+        ),
+    )
+    await _reset_run(config, "run-ds")
+
+    with pytest.raises(PackageError, match="plain file name"):
+        await import_run_bundle(config=config, archive=doc_changed, public=True)
+    await _assert_nothing_written(config, "run-ds")

@@ -1,4 +1,6 @@
+import errno
 import json
+import re
 import zipfile
 from pathlib import Path
 from typing import IO, Any
@@ -103,6 +105,53 @@ def test_verify_tree_rejects_an_extra_member(tmp_path) -> None:
 def test_read_manifest_rejects_a_missing_manifest(tmp_path) -> None:
     with pytest.raises(PackageError, match="cannot read"):
         read_manifest(tmp_path)
+
+
+def _assert_path_free(message: str) -> None:
+    assert re.search(r"[A-Za-z]:\\", message) is None, message
+    assert "eva-import-" not in message, message
+    assert "eva-bundle-" not in message, message
+    assert "Traceback" not in message, message
+
+
+def test_missing_manifest_error_does_not_leak_the_host_path(tmp_path) -> None:
+    with pytest.raises(PackageError) as caught:
+        read_manifest(tmp_path)
+    _assert_path_free(str(caught.value))
+
+
+def test_missing_archive_error_does_not_leak_the_host_path(tmp_path) -> None:
+    source = tmp_path / "nope.zip"
+    with pytest.raises(PackageError) as caught:
+        extract_zip(source, tmp_path / "out")
+    _assert_path_free(str(caught.value))
+
+
+def test_write_zip_error_does_not_leak_the_destination_path(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "package"
+    manifest = _tree(source)
+    destination = tmp_path / "out" / "package.zip"
+
+    class _FailingZip:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise PermissionError(errno.EACCES, "Permission denied", str(destination))
+
+    monkeypatch.setattr(zipfile, "ZipFile", _FailingZip)
+    with pytest.raises(PackageError) as caught:
+        write_zip(source, destination, manifest=manifest)
+    message = str(caught.value)
+    assert "Permission denied" in message
+    assert str(destination) not in message
+    _assert_path_free(message)
+
+
+def test_invalid_manifest_error_does_not_echo_hostile_values(tmp_path) -> None:
+    (tmp_path / MANIFEST_NAME).write_text(
+        json.dumps({"kind": "C:\\secret\\evil.json"}), encoding="utf-8"
+    )
+    with pytest.raises(PackageError) as caught:
+        read_manifest(tmp_path)
+    _assert_path_free(str(caught.value))
 
 
 def test_zip_round_trip_verifies(tmp_path) -> None:
@@ -334,7 +383,9 @@ def test_write_zip_translates_a_write_failure(tmp_path, monkeypatch) -> None:
     manifest = _tree(source)
 
     def failing_write(self: zipfile.ZipFile, filename: Any, *args: Any, **kwargs: Any) -> None:
-        raise OSError("disk full")
+        # A real OS failure carries ``errno``/``strerror``; ``_reason`` reports only
+        # that text so no filesystem path can reach the message.
+        raise OSError(errno.ENOSPC, "disk full")
 
     monkeypatch.setattr(zipfile.ZipFile, "write", failing_write)
     with pytest.raises(PackageError, match="cannot write package member: disk full"):

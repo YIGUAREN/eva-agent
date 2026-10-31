@@ -26,6 +26,13 @@ class PackageError(ValueError):
     """A package failed its integrity or layout check."""
 
 
+def _reason(exc: BaseException) -> str:
+    """A path-free detail; ``str(OSError)`` embeds the absolute path."""
+    if isinstance(exc, OSError):
+        return exc.strerror or type(exc).__name__
+    return str(exc) or type(exc).__name__
+
+
 def canonical_json(payload: Any) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -77,11 +84,15 @@ def read_manifest(root: Path) -> PackageManifest:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise PackageError(f"cannot read {MANIFEST_NAME}: {exc}") from None
+        raise PackageError(f"cannot read {MANIFEST_NAME}: {_reason(exc)}") from None
     try:
         manifest = PackageManifest.model_validate(raw)
     except ValidationError as exc:
-        raise PackageError(f"invalid {MANIFEST_NAME}: {exc}") from None
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or '<root>'}: {error['msg']}"
+            for error in exc.errors()
+        )
+        raise PackageError(f"invalid {MANIFEST_NAME}: {details}") from None
     _validated_member_names(manifest.files)
     return manifest
 
@@ -112,13 +123,13 @@ def verify_tree(root: Path, manifest: PackageManifest) -> None:
         try:
             size = path.stat().st_size
         except OSError as exc:
-            raise PackageError(f"cannot read member {name}: {exc}") from None
+            raise PackageError(f"cannot read member {name}: {_reason(exc)}") from None
         if size != entry.size:
             raise PackageError(f"size mismatch for {name}")
         try:
             digest = sha256_file(path)
         except OSError as exc:
-            raise PackageError(f"cannot read member {name}: {exc}") from None
+            raise PackageError(f"cannot read member {name}: {_reason(exc)}") from None
         if digest != entry.sha256:
             raise PackageError(f"hash mismatch for {name}")
 
@@ -158,7 +169,7 @@ def write_zip(root: Path, destination: Path, *, manifest: PackageManifest) -> Pa
         try:
             info = path.stat()
         except OSError as exc:
-            raise PackageError(f"cannot read package member: {exc}") from None
+            raise PackageError(f"cannot read package member: {_reason(exc)}") from None
         if not path.is_file():
             # A directory would be written as a ``dir/`` member that
             # ``extract_zip`` rejects, so refuse it here instead.
@@ -172,7 +183,7 @@ def write_zip(root: Path, destination: Path, *, manifest: PackageManifest) -> Pa
             for name in names:
                 archive.write(root / name, arcname=name)
     except OSError as exc:
-        raise PackageError(f"cannot write package member: {exc}") from None
+        raise PackageError(f"cannot write package member: {_reason(exc)}") from None
     return destination
 
 
@@ -184,7 +195,7 @@ def _open_zip(source: Path) -> zipfile.ZipFile:
         # A malformed central directory (bad signature, bad CRC, invalid UTF-8
         # filename under flag 0x800, ...) surfaces raw exceptions; fail closed so
         # callers only ever see ``PackageError``.
-        raise PackageError(f"not a zip package: {exc}") from None
+        raise PackageError(f"not a zip package: {_reason(exc)}") from None
 
 
 def _extract_zip_into(archive: zipfile.ZipFile, staging: Path) -> PackageManifest:
@@ -226,7 +237,7 @@ def _extract_zip_into(archive: zipfile.ZipFile, staging: Path) -> PackageManifes
     except Exception as exc:
         # Corrupt, encrypted or unsupported archives surface raw exceptions from
         # ``zipfile``/``zlib``; fail closed so callers only see ``PackageError``.
-        raise PackageError(f"not a zip package: {exc}") from None
+        raise PackageError(f"not a zip package: {_reason(exc)}") from None
     # Kept outside the translation above so their own ``PackageError``s (hash
     # and layout failures) keep their precise messages.
     manifest = read_manifest(staging)

@@ -14,7 +14,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +23,8 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pydantic import ValidationError
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.config.settings import AppConfig
@@ -41,14 +43,14 @@ from eva_agent.packages.manifest import (
     write_manifest,
     write_zip,
 )
-from eva_agent.runtime.artifacts import artifact_file
+from eva_agent.runtime.artifacts import artifact_file, run_paths
 from eva_agent.server.schemas import (
     public_run_detail,
     sanitize_public_markdown,
     sanitize_public_payload,
 )
 from eva_agent.storage.db import create_engine, create_session_factory
-from eva_agent.storage.models import ArtifactRow, RunRow
+from eva_agent.storage.models import ArtifactRow, ReportRow, RunEventCounterRow, RunRow
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository, ReportSnapshot
 from eva_agent.storage.repository import RunRepository
 
@@ -85,6 +87,19 @@ def _safe_input(payload: dict) -> dict:
     return data
 
 
+def _dataset_basename(payload: dict) -> str | None:
+    dataset = payload.get("dataset")
+    if not isinstance(dataset, dict):
+        return None
+    path = dataset.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    name = Path(path).name
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        return None
+    return name
+
+
 def _run_document(
     run_row: RunRow,
     report: ReportSnapshot,
@@ -93,14 +108,24 @@ def _run_document(
     internal_hosts: tuple[str, ...] = (),
 ) -> dict:
     detail = public_run_detail(run_row, internal_hosts=internal_hosts)
+    public_input = sanitize_public_payload(
+        _safe_input(run_row.input_json or {}), internal_hosts=internal_hosts
+    )
+    dataset_name = _dataset_basename(run_row.input_json or {})
+    if dataset_name is not None and isinstance(public_input.get("dataset"), dict):
+        # The sanitizer drops every ``path`` key to stop absolute-path leaks. The
+        # dataset *basename* is required for ``RunInput`` to validate on import and
+        # is not an absolute path, so re-attach it after sanitizing.
+        public_input = {
+            **public_input,
+            "dataset": {**public_input["dataset"], "path": dataset_name},
+        }
     return {
         "run_id": run_row.id,
         "status": run_row.status,
         "created_at": detail["created_at"],
         "objective": detail["objective"],
-        "input": sanitize_public_payload(
-            _safe_input(run_row.input_json or {}), internal_hosts=internal_hosts
-        ),
+        "input": public_input,
         "budget": sanitize_public_payload(run_row.budget_json, internal_hosts=internal_hosts),
         "plan": sanitize_public_payload(run_row.plan_json, internal_hosts=internal_hosts),
         "report_version": report.version,
@@ -216,6 +241,10 @@ class _RestoreArtifact:
 
 _ARTIFACT_SAFE = re.compile(r"[A-Za-z0-9._-]{1,255}")
 _MAX_CONTENT_TYPE = 128
+# Names that live in the run root and would be read as the run's own files.
+_RUN_FILE_NAMES = frozenset(
+    {"report.json", "report.md", "plan.draft.yaml", "plan.approved.yaml", "target_probe.jsonl"}
+)
 
 
 def _reason(exc: BaseException) -> str:
@@ -261,9 +290,28 @@ def _payload(document: dict, key: str) -> dict:
 
 def _report_version(document: dict) -> int:
     value = document.get("report_version")
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise PackageError("report_version must be a non-negative integer")
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 2**31 - 1:
+        raise PackageError("report_version must be a non-negative integer below 2^31")
     return value
+
+
+def _validate_dataset_path(run_input: dict) -> None:
+    """Reject a dataset path that is not a plain file name before it is resolved."""
+    dataset = run_input.get("dataset")
+    if dataset is None:
+        return
+    if not isinstance(dataset, dict):
+        raise PackageError("run.json input.dataset must be an object")
+    path = dataset.get("path")
+    if (
+        not isinstance(path, str)
+        or not path
+        or path in {".", ".."}
+        or "/" in path
+        or "\\" in path
+        or Path(path).name != path
+    ):
+        raise PackageError("run.json input.dataset.path must be a plain file name")
 
 
 def _read_report(workdir: Path) -> tuple[dict, str]:
@@ -285,6 +333,9 @@ def _artifact_name(name: object) -> str:
     if _ARTIFACT_SAFE.fullmatch(name) is not None:
         if name in {".", ".."}:
             raise PackageError("unsafe artifact name")
+        # Case-insensitive so ``REPORT.JSON`` is also caught on Windows.
+        if name.casefold() in _RUN_FILE_NAMES:
+            raise PackageError("artifact name shadows a run file")
         return name
     if name.startswith("aig/"):
         # ``artifact_file`` applies the stricter ``aig/<id>.json|csv`` shape.
@@ -296,7 +347,7 @@ def _restore_artifacts(
     config: AppConfig, run_id: str, document: dict, workdir: Path
 ) -> list[_RestoreArtifact]:
     """Validate every artifact entry and member before the import writes anything."""
-    raw = document.get("artifacts") or []
+    raw = document.get("artifacts")
     if not isinstance(raw, list):
         raise PackageError("artifacts must be a list")
     if len(raw) > MAX_PACKAGE_FILES:
@@ -358,14 +409,41 @@ async def _write_artifacts(
     return len(entries)
 
 
+async def _discard_import(
+    factory: async_sessionmaker[AsyncSession], config: AppConfig, run_id: str
+) -> None:
+    """Remove the rows and files written by a failed import of a new run."""
+    async with factory() as session:
+        await session.execute(delete(ArtifactRow).where(ArtifactRow.run_id == run_id))
+        await session.execute(delete(ReportRow).where(ReportRow.run_id == run_id))
+        await session.execute(
+            delete(RunEventCounterRow).where(RunEventCounterRow.run_id == run_id)
+        )
+        await session.execute(delete(RunRow).where(RunRow.id == run_id))
+        await session.commit()
+    shutil.rmtree(run_paths(config.storage.data_dir, run_id).root, ignore_errors=True)
+
+
 @asynccontextmanager
 async def _storage(
     config: AppConfig,
-) -> AsyncIterator[tuple[RunRepository, ReportRepository, ArtifactRepository]]:
+) -> AsyncIterator[
+    tuple[
+        async_sessionmaker[AsyncSession],
+        RunRepository,
+        ReportRepository,
+        ArtifactRepository,
+    ]
+]:
     engine = create_engine(config.storage.url)
     try:
         factory: async_sessionmaker[AsyncSession] = create_session_factory(engine)
-        yield RunRepository(factory), ReportRepository(factory), ArtifactRepository(factory)
+        yield (
+            factory,
+            RunRepository(factory),
+            ReportRepository(factory),
+            ArtifactRepository(factory),
+        )
     finally:
         await engine.dispose()
 
@@ -391,8 +469,12 @@ async def import_run_bundle(*, config: AppConfig, archive: Path, public: bool) -
         # the plan we wrote can validate again.
         raw_plan = dict(_payload(document, "plan"))
         raw_plan.setdefault("budget", raw_budget)
+        raw_input = _payload(document, "input")
+        # The bundle is untrusted: reject anything that is not a bare basename
+        # before ``_safe_input`` could quietly reduce it to one.
+        _validate_dataset_path(raw_input)
         try:
-            run_input = RunInput.model_validate(_safe_input(_payload(document, "input")))
+            run_input = RunInput.model_validate(_safe_input(raw_input))
             budget = Budget.model_validate(raw_budget)
             plan = EvalPlan.model_validate(raw_plan)
         except ValidationError as exc:
@@ -402,16 +484,31 @@ async def import_run_bundle(*, config: AppConfig, archive: Path, public: bool) -
             raise PackageError("report_version does not match the manifest")
         report_payload, report_markdown = _read_report(workdir)
         entries = _restore_artifacts(config, run_id, document, workdir)
-        async with _storage(config) as (runs, reports, artifacts):
+        async with _storage(config) as (factory, runs, reports, artifacts):
             if await runs.get(run_id) is not None:
                 return ImportResult(run_id=run_id, status="skipped")
-            await runs.create(run_id, run_input, budget)
-            await runs.set_plan(run_id, plan)
-            await reports.upsert(run_id, report_version, report_payload, report_markdown)
-            restored = await _write_artifacts(artifacts, run_id, entries)
-            await runs.set_status(run_id, RunStatus.COMPLETED)
-            if public:
-                await runs.set_public(run_id, True)
+            try:
+                await runs.create(run_id, run_input, budget)
+            except IntegrityError:
+                # A concurrent import won the insert race; its rows are not ours
+                # to remove, so treat it exactly like an idempotent skip.
+                return ImportResult(run_id=run_id, status="skipped")
+            created = True
+            try:
+                await runs.set_plan(run_id, plan)
+                await reports.upsert(
+                    run_id, report_version, report_payload, report_markdown
+                )
+                restored = await _write_artifacts(artifacts, run_id, entries)
+                await runs.set_status(run_id, RunStatus.COMPLETED)
+                if public:
+                    await runs.set_public(run_id, True)
+            except BaseException:
+                if created:
+                    # Best effort: never mask the original failure.
+                    with suppress(Exception):
+                        await _discard_import(factory, config, run_id)
+                raise
         return ImportResult(run_id=run_id, status="imported", artifacts=restored)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
