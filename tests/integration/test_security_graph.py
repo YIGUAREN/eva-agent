@@ -70,6 +70,9 @@ class FakeAigClient:
     async def upload(self, filename: str, content: bytes) -> str:
         return "uploaded.zip"
 
+    async def download(self, session_id: str, file_url: str) -> bytes:
+        return b"\xef\xbb\xbfstatus,modelName\ncompleted,demo\n"
+
 
 class RecordingAudit:
     def __init__(self) -> None:

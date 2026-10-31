@@ -2,9 +2,11 @@ import io
 import json
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from eva_agent.adapters.aig.client import AigScanClient
 from eva_agent.adapters.aig.errors import AigError, AigTimeout, AigUnavailable
 from eva_agent.config.settings import AigSettings, AigSkillScanSettings, MissingSecretError, ModelConfig
 from eva_agent.domain.target import TargetKind, TargetSpec
@@ -53,6 +55,7 @@ SKILL_RESULT = {
 }
 
 ATTACHMENT = "attachment_0123456789abcdef0123456789abcdef_1793422813849140825_1793422813.csv"
+ATTACHMENT_2 = "attachment_0123456789abcdef0123456789abcdef_1793422813849140826_1793422814.csv"
 CSV_BYTES = b"\xef\xbb\xbfstatus,modelName\ncompleted,demo\n"
 MODEL_RESULT = {
     "result": {
@@ -65,6 +68,16 @@ MODEL_RESULT = {
                 "score": 50.0,
                 "attachment": ATTACHMENT,
             }
+        ],
+    }
+}
+TWO_MODEL_RESULT = {
+    "result": {
+        "msgType": "json",
+        "content": [
+            {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT},
+            {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT_2},
+            {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT},
         ],
     }
 }
@@ -114,6 +127,25 @@ class FakeClient:
         return CSV_BYTES
 
 
+class NoDownloadClient:
+    """A scan client that predates the download capability."""
+
+    def __init__(self, inner: FakeClient) -> None:
+        self._inner = inner
+
+    async def create(self, body: dict) -> str:
+        return await self._inner.create(body)
+
+    async def wait(self, session_id: str, *, max_wait_s: float) -> str:
+        return await self._inner.wait(session_id, max_wait_s=max_wait_s)
+
+    async def result(self, session_id: str) -> dict:
+        return await self._inner.result(session_id)
+
+    async def upload(self, filename: str, content: bytes) -> str:
+        return await self._inner.upload(filename, content)
+
+
 class RecordingAudit:
     def __init__(self) -> None:
         self.events = []
@@ -144,6 +176,16 @@ def model_target() -> TargetSpec:
         provider="demo",
         model="demo-echo",
         base_url="http://demo:8100/v1",
+    )
+
+
+def model_input() -> AigScanInput:
+    return AigScanInput(
+        run_id="run-1",
+        target=model_target(),
+        scan_base_url="http://demo:8100/v1",
+        authorization_ref="demo",
+        max_wait_s=30.0,
     )
 
 
@@ -480,7 +522,91 @@ async def test_attachment_failure_keeps_the_scan_result(tmp_path: Path) -> None:
     assert "boom" not in json.dumps([event.detail for event in audit.events])
 
 
-def test_skill_tool_budget_covers_four_http_timeouts(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_every_distinct_attachment_is_saved_with_the_first_name_unchanged(tmp_path: Path) -> None:
+    client = FakeClient(TWO_MODEL_RESULT)
+    audit = RecordingAudit()
+
+    output = await model_tool(client, data_dir=tmp_path, audit=audit).handler(model_input())
+
+    aig_dir = tmp_path / "runs" / "run-1" / "aig"
+    assert client.downloaded == [
+        (output.session_id, ATTACHMENT),
+        (output.session_id, ATTACHMENT_2),
+    ]
+    assert (aig_dir / f"{output.session_id}.csv").read_bytes() == CSV_BYTES
+    assert (aig_dir / f"{output.session_id}-2.csv").read_bytes() == CSV_BYTES
+    assert [event.action for event in audit.events] == ["active_scan.started", "active_scan.completed"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_result_audits_and_completes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = Path.read_text
+
+    def fail_json(self: Path, *args: object, **kwargs: object) -> str:
+        if self.suffix == ".json":
+            raise OSError("unreadable")
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", fail_json)
+    audit = RecordingAudit()
+
+    output = await model_tool(FakeClient(MODEL_RESULT), data_dir=tmp_path, audit=audit).handler(model_input())
+
+    assert output.reports
+    assert [event.action for event in audit.events] == [
+        "active_scan.started",
+        "active_scan.attachment_failed",
+        "active_scan.completed",
+    ]
+    assert audit.events[1].detail == {"reason": "unreadable_result"}
+
+
+@pytest.mark.asyncio
+async def test_csv_write_failure_audits_and_completes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_write(self: Path, data: bytes) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_bytes", fail_write)
+    audit = RecordingAudit()
+
+    output = await model_tool(FakeClient(MODEL_RESULT), data_dir=tmp_path, audit=audit).handler(model_input())
+
+    assert output.reports
+    assert [event.action for event in audit.events] == [
+        "active_scan.started",
+        "active_scan.attachment_failed",
+        "active_scan.completed",
+    ]
+    assert audit.events[1].detail == {"reason": "OSError"}
+
+
+@pytest.mark.asyncio
+async def test_client_without_download_degrades_instead_of_crashing(tmp_path: Path) -> None:
+    inner = FakeClient(MODEL_RESULT)
+    audit = RecordingAudit()
+    tool = build_run_aig_scan_tool(
+        client=cast(AigScanClient, NoDownloadClient(inner)),
+        settings=AigSettings(),
+        eval_model=EVAL,
+        env={"JUDGE_KEY": "judge-token"},
+        audit=audit,
+        data_dir=str(tmp_path),
+    )
+
+    output = await tool.handler(model_input())
+
+    assert output.reports
+    assert not (tmp_path / "runs" / "run-1" / "aig" / f"{output.session_id}.csv").exists()
+    assert [event.action for event in audit.events] == [
+        "active_scan.started",
+        "active_scan.attachment_failed",
+        "active_scan.completed",
+    ]
+    assert audit.events[1].detail == {"reason": "download_unsupported"}
+
+
+def test_model_and_skill_budgets_cover_four_http_timeouts(tmp_path: Path) -> None:
     settings = AigSettings()
     skill = build_run_aig_skill_scan_tool(
         client=FakeClient(SKILL_RESULT),
@@ -491,22 +617,21 @@ def test_skill_tool_budget_covers_four_http_timeouts(tmp_path: Path) -> None:
         data_dir=str(tmp_path),
     )
     assert skill.timeout_s == settings.max_wait_s + 4 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
-    for tool in (
-        build_run_aig_scan_tool(
-            client=FakeClient(SKILL_RESULT),
-            settings=settings,
-            eval_model=EVAL,
-            env={"JUDGE_KEY": "judge-token"},
-            audit=noop_audit_sink,
-            data_dir=str(tmp_path),
-        ),
-        build_run_aig_agent_scan_tool(
-            client=FakeClient(SKILL_RESULT),
-            settings=settings,
-            eval_model=EVAL,
-            env={"JUDGE_KEY": "judge-token"},
-            audit=noop_audit_sink,
-            data_dir=str(tmp_path),
-        ),
-    ):
-        assert tool.timeout_s == settings.max_wait_s + 3 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
+    model = build_run_aig_scan_tool(
+        client=FakeClient(SKILL_RESULT),
+        settings=settings,
+        eval_model=EVAL,
+        env={"JUDGE_KEY": "judge-token"},
+        audit=noop_audit_sink,
+        data_dir=str(tmp_path),
+    )
+    assert model.timeout_s == settings.max_wait_s + 4 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
+    agent = build_run_aig_agent_scan_tool(
+        client=FakeClient(SKILL_RESULT),
+        settings=settings,
+        eval_model=EVAL,
+        env={"JUDGE_KEY": "judge-token"},
+        audit=noop_audit_sink,
+        data_dir=str(tmp_path),
+    )
+    assert agent.timeout_s == settings.max_wait_s + 3 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S

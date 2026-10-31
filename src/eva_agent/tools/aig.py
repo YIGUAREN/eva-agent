@@ -8,7 +8,7 @@ import json
 import zipfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -40,8 +40,8 @@ SCAN_KIND = "model_redteam_report"
 AGENT_SCAN_KIND = "agent_scan"
 SKILL_SCAN_KIND = "skill_scan"
 # Extra wall-clock room on top of a tool's HTTP timeouts (create, wait, result,
-# plus upload for the skill tool) so the registry deadline never undercuts the
-# configured scan wait window.
+# plus upload for the skill tool and download for the model-redteam tool) so the
+# registry deadline never undercuts the configured scan wait window.
 AIG_TOOL_TIMEOUT_MARGIN_S = 30.0
 # AIG's CLI refuses an empty model token. A target without api_key_env accepts
 # anonymous access (our probe sends no Authorization header for it, see
@@ -212,20 +212,14 @@ async def _run_lifecycle(
     return session_id, parsed, raw_path
 
 
-class _AttachmentClient(Protocol):
-    """The download capability the attachment step needs from the scan client."""
-
-    async def download(self, session_id: str, file_url: str) -> bytes: ...
-
-
 async def _save_attachment(
     *,
     auditor: _Auditor,
-    client: _AttachmentClient,
+    client: AigScanClient,
     paths: RunPaths,
     raw_path: Path,
 ) -> None:
-    """Fetch AIG's model-redteam CSV; a failure never fails the scan."""
+    """Fetch AIG's model-redteam CSVs; a failure never fails the scan."""
     try:
         payload = json.loads(raw_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -234,12 +228,24 @@ async def _save_attachment(
     names = attachment_names(payload if isinstance(payload, dict) else {})
     if not names:
         return
+    if not callable(getattr(client, "download", None)):
+        # A structurally compatible client that predates the download contract must
+        # degrade (and be audited) instead of raising AttributeError after the scan
+        # already succeeded.
+        await auditor.attachment_failed("download_unsupported")
+        return
     session_id = raw_path.stem
-    try:
-        content = await client.download(session_id, names[0])
-        (paths.aig_dir / f"{session_id}.csv").write_bytes(content)
-    except (AigError, OSError) as exc:
-        await auditor.attachment_failed(type(exc).__name__)
+    # AIG can report several attachments; download each distinct name once. The
+    # first keeps the acceptance-tested "<session_id>.csv" name, later ones are
+    # numbered from 2 so Task 7's aig/*.csv glob picks them up too.
+    distinct = list(dict.fromkeys(names))
+    for index, name in enumerate(distinct, start=1):
+        filename = f"{session_id}.csv" if index == 1 else f"{session_id}-{index}.csv"
+        try:
+            content = await client.download(session_id, name)
+            (paths.aig_dir / filename).write_bytes(content)
+        except (AigError, OSError) as exc:
+            await auditor.attachment_failed(type(exc).__name__)
 
 
 def _package_archive(root: str, files: list[str], *, limit: int) -> bytes:
@@ -320,7 +326,7 @@ def build_run_aig_scan_tool(
             )
             await _save_attachment(
                 auditor=auditor,
-                client=cast(_AttachmentClient, client),
+                client=client,
                 paths=paths,
                 raw_path=raw_path,
             )
@@ -372,7 +378,8 @@ def build_run_aig_scan_tool(
         input_model=AigScanInput,
         output_model=AigScanOutput,
         permission="admin",
-        timeout_s=settings.max_wait_s + 3 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S,
+        # Create + last wait poll + result + download consume one timeout each.
+        timeout_s=settings.max_wait_s + 4 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S,
         side_effects=True,
         idempotent=False,
         handler=handler,

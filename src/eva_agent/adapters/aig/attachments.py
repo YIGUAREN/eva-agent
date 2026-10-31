@@ -8,7 +8,7 @@ from typing import Any
 DOWNLOAD_PATH = "/api/v1/app/tasks/{session_id}/downloadFile"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
-ATTACHMENT_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}\.csv")
+ATTACHMENT_NAME = re.compile(r"(?!\.)[A-Za-z0-9._-]{1,255}\.csv")
 
 
 def attachment_names(payload: dict[str, Any]) -> list[str]:

@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from eva_agent.adapters.aig.attachments import attachment_names
+from eva_agent.adapters.aig.attachments import MAX_ATTACHMENT_BYTES, attachment_names
 from eva_agent.adapters.aig.client import AigClient
 from eva_agent.adapters.aig.errors import AigUnavailable
 from eva_agent.config.settings import AigSettings
@@ -24,6 +24,12 @@ def test_attachment_names_ignores_missing_and_unsafe_names() -> None:
     assert attachment_names({"result": {"content": [{"attachment": "notes.txt"}]}}) == []
     assert attachment_names({"result": "nope"}) == []
     assert attachment_names({}) == []
+
+
+def test_attachment_names_rejects_a_leading_dot() -> None:
+    assert attachment_names(payload(attachment="..csv")) == []
+    assert attachment_names(payload(attachment=".hidden.csv")) == []
+    assert attachment_names(payload(attachment="results.v2.csv")) == ["results.v2.csv"]
 
 
 def client(handler) -> AigClient:
@@ -72,3 +78,56 @@ async def test_download_rejects_an_html_error_page() -> None:
 
     with pytest.raises(AigUnavailable):
         await client(handler).download("session-1", "attachment_1_2_3.csv")
+
+
+async def test_download_rejects_a_non_success_status() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"internal error")
+
+    with pytest.raises(AigUnavailable):
+        await client(handler).download("session-1", "attachment_1_2_3.csv")
+
+
+async def test_download_rejects_an_empty_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"", headers={"content-type": "text/csv"})
+
+    with pytest.raises(AigUnavailable):
+        await client(handler).download("session-1", "attachment_1_2_3.csv")
+
+
+async def test_download_rejects_an_oversized_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"x" * (MAX_ATTACHMENT_BYTES + 1),
+            headers={"content-type": "text/csv"},
+        )
+
+    with pytest.raises(AigUnavailable):
+        await client(handler).download("session-1", "attachment_1_2_3.csv")
+
+
+@pytest.mark.parametrize("media_type", ["text/html", "application/json"])
+async def test_download_rejects_document_content_types(media_type: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=CSV, headers={"content-type": media_type})
+
+    with pytest.raises(AigUnavailable):
+        await client(handler).download("session-1", "attachment_1_2_3.csv")
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"content-type": "text/csv"},
+        {"content-type": "text/csv; charset=utf-8"},
+        {"content-type": "application/octet-stream"},
+    ],
+)
+async def test_download_accepts_csv_like_content_types(headers: dict[str, str]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=CSV, headers=headers)
+
+    assert await client(handler).download("session-1", "attachment_1_2_3.csv") == CSV

@@ -38,6 +38,9 @@ class FakeClient:
     async def upload(self, filename: str, content: bytes) -> str:
         return "uploaded.zip"
 
+    async def download(self, session_id: str, file_url: str) -> bytes:
+        return b"\xef\xbb\xbfstatus,modelName\ncompleted,demo\n"
+
 
 class FakeAudit:
     def __init__(self) -> None:
@@ -86,7 +89,7 @@ def test_tool_timeout_covers_configurable_max_wait(tmp_path: Path) -> None:
         data_dir=str(tmp_path / "data"),
     )
     assert tool.timeout_s > aig.max_wait_s
-    assert tool.timeout_s == aig.max_wait_s + 3 * aig.timeout_s + 30.0
+    assert tool.timeout_s == aig.max_wait_s + 4 * aig.timeout_s + 30.0
 
 
 async def test_raw_result_write_oserror_audits_terminal(tmp_path: Path) -> None:
