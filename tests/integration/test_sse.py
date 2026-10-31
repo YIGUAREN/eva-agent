@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from httpx import ASGITransport, AsyncClient
 
@@ -21,7 +22,7 @@ async def _completed_run(client: AsyncClient, state: AppState) -> str:
     return run_id
 
 
-def _events(body: str) -> list[dict[str, object]]:
+def _events(body: str) -> list[dict[str, Any]]:
     parsed = []
     for block in body.strip().split("\n\n"):
         data = [line[5:].strip() for line in block.splitlines() if line.startswith("data:")]
@@ -70,6 +71,41 @@ async def test_public_sse_strips_paths_and_requires_publishing(
 
     await state.runs.set_public(run_id, False, now=state.now())
     assert (await client.get(f"/api/public/runs/{run_id}/events")).status_code == 404
+
+
+async def test_public_sse_redacts_budget_money_but_admin_keeps_it(
+    client: AsyncClient, state: AppState
+) -> None:
+    run_id = await _completed_run(client, state)
+    await state.runs.append_event(
+        run_id,
+        "budget.exhausted",
+        {"spent_usd": 12.345678, "remaining_usd": 0.5, "dimension": "quality"},
+    )
+    await state.runs.append_event(
+        run_id,
+        "budget.gate",
+        {
+            "finalize_estimate": 0.25,
+            "remaining": 0.1,
+            "spent": 12.345678,
+            "truncated_dimensions": ["quality"],
+        },
+    )
+
+    response = await client.get(f"/api/public/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    assert "12.345678" not in response.text
+    by_type = {event["type"]: event for event in _events(response.text)}
+    assert by_type["budget.exhausted"]["payload"] == {"dimension": "quality"}
+    assert by_type["budget.gate"]["payload"] == {"truncated_dimensions": ["quality"]}
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/events", headers=csrf_headers(csrf))
+    admin_by_type = {event["type"]: event for event in _events(admin.text)}
+    assert admin_by_type["budget.exhausted"]["payload"]["spent_usd"] == 12.345678
+    assert admin_by_type["budget.gate"]["payload"]["spent"] == 12.345678
 
 
 async def test_public_sse_redacts_the_configured_internal_host(tmp_path: Path) -> None:

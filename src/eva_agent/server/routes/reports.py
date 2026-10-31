@@ -36,12 +36,26 @@ _HIDDEN_LINE_PREFIXES = ("- 预算：", "- 已花费：")
 
 _PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
 
+_PUBLIC_SAMPLE_COUNT_KEYS = ("dimension", "sample_count", "completed_samples", "missing_samples")
+
 
 def public_report_usage(payload: dict[str, object]) -> dict[str, object]:
     raw = payload.get("usage")
     if not isinstance(raw, dict):
         return {}
     return {key: raw[key] for key in _PUBLIC_USAGE_KEYS if key in raw}
+
+
+def public_truncated_sample_counts(payload: dict[str, object]) -> list[dict[str, object]]:
+    """Whitelist each truncation entry so hostile extra keys never go public."""
+    raw = payload.get("truncated_sample_counts")
+    if not isinstance(raw, list):
+        return []
+    return [
+        {key: item[key] for key in _PUBLIC_SAMPLE_COUNT_KEYS if key in item}
+        for item in raw
+        if isinstance(item, dict)
+    ]
 
 
 def _redact_data_dir(text: str, data_dir: str) -> str:
@@ -74,10 +88,16 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
     if public:
         internal_hosts = _internal_hosts(state)
         payload = sanitize_public_payload(snapshot.payload, internal_hosts=internal_hosts)
-        # Only rewrite an existing usage object; injecting one would change the
-        # shape and digest of legacy v2/v3 reports.
-        if isinstance(snapshot.payload.get("usage"), dict):
+        # Only rewrite keys the stored payload already has; injecting them would
+        # change the shape and digest of legacy v2/v3 reports. Key presence (not
+        # type) gates the whitelist so malformed non-mapping usage is neutralized.
+        if "usage" in snapshot.payload:
             payload = {**payload, "usage": public_report_usage(payload)}
+        if "truncated_sample_counts" in snapshot.payload:
+            payload = {
+                **payload,
+                "truncated_sample_counts": public_truncated_sample_counts(payload),
+            }
         # The stored digest covers the unsanitized payload, so recompute it with
         # the same canonicalization used by ReportRepository.upsert.
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")

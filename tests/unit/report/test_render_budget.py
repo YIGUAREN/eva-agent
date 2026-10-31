@@ -127,6 +127,20 @@ def test_malformed_usage_fields_are_coerced() -> None:
     }
 
 
+def test_non_boolean_usage_flags_coerce_to_false() -> None:
+    payload = _payload(
+        {
+            "estimated": "false",
+            "cached": 1,
+            "fresh": 1,
+            "budget_enforced": "false",
+            "spent_usd": 0,
+        }
+    )
+    assert payload["usage"]["estimated"] is False
+    assert payload["usage"]["budget_enforced"] is False
+
+
 def test_decimal_spend_stays_json_serializable() -> None:
     payload = _payload(
         {
@@ -220,6 +234,54 @@ def test_truncated_sample_counts_are_null_for_unrecorded_security_active() -> No
             "completed_samples": None,
             "missing_samples": None,
         }
+    ]
+
+
+def test_truncated_latency_and_cost_counts_stay_na() -> None:
+    merged = MergedResult(
+        status=RunStatus.COMPLETED,
+        results=[
+            DimensionResult(
+                dimension=Dimension.LATENCY,
+                status="partial",
+                score=1.0,
+                confidence=1.0,
+                summary="latency",
+                usage=Usage(),
+                truncated_reason="budget",
+                metrics={"count": 2, "success_count": 2},
+            ),
+            DimensionResult(
+                dimension=Dimension.COST,
+                status="partial",
+                score=1.0,
+                confidence=1.0,
+                summary="cost",
+                usage=Usage(),
+                truncated_reason="budget",
+                metrics={"count": 2, "priced_samples": 2},
+            ),
+        ],
+        skipped=[],
+        metrics={},
+    )
+    payload = _payload(
+        {"estimated": False, "cached": 0, "fresh": 0, "budget_enforced": True},
+        merged=merged,
+    )
+    assert payload["truncated_sample_counts"] == [
+        {
+            "dimension": "cost",
+            "sample_count": None,
+            "completed_samples": None,
+            "missing_samples": None,
+        },
+        {
+            "dimension": "latency",
+            "sample_count": None,
+            "completed_samples": None,
+            "missing_samples": None,
+        },
     ]
 
 

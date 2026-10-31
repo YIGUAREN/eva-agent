@@ -29,6 +29,32 @@ _HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+# Budget money keys that must never reach the public event stream:
+# ``budget.exhausted`` carries spent_usd/remaining_usd and ``budget.gate``
+# carries spent/remaining/finalize_estimate. Admin streams keep them unchanged.
+_PUBLIC_BUDGET_MONEY_KEYS = frozenset(
+    {
+        "spent_usd",
+        "remaining_usd",
+        "spent",
+        "remaining",
+        "finalize_estimate",
+        "finalize_estimate_usd",
+    }
+)
+
+
+def _without_budget_money(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_budget_money(item)
+            for key, item in value.items()
+            if key not in _PUBLIC_BUDGET_MONEY_KEYS
+        }
+    if isinstance(value, list):
+        return [_without_budget_money(item) for item in value]
+    return value
+
 
 def _cursor(raw: str | None) -> int:
     if not raw:
@@ -57,11 +83,12 @@ async def _stream(
         events = await state.runs.list_events(run_id, after_seq=cursor)
         for event in events:
             cursor = event.seq
-            payload = (
-                sanitize_public_payload(event.payload_json, internal_hosts=internal_hosts)
-                if public
-                else event.payload_json
-            )
+            if public:
+                payload = _without_budget_money(
+                    sanitize_public_payload(event.payload_json, internal_hosts=internal_hosts)
+                )
+            else:
+                payload = event.payload_json
             yield _format(event.seq, event.type, payload)
         if events:
             elapsed = 0.0

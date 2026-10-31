@@ -1,3 +1,4 @@
+import pytest
 from httpx import AsyncClient
 
 from eva_agent.domain.run import RunStatus
@@ -103,6 +104,67 @@ async def test_public_report_strips_spend_and_keeps_admin_usage(
     assert admin.status_code == 200
     assert admin.json()["report"]["usage"] == stored_usage
     assert "- 已花费：12.345678 USD" in admin.json()["markdown"]
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        ["spent_usd", 12.345678],
+        "spent_usd=12.345678",
+    ],
+)
+async def test_public_report_neutralizes_non_mapping_usage(
+    client: AsyncClient, state: AppState, usage: object
+) -> None:
+    run_id = await _create(client)
+    await state.reports.upsert(
+        run_id, 4, {"run_id": run_id, "version": 4, "usage": usage}, "# report"
+    )
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert response.json()["report"]["usage"] == {}
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
+
+
+async def test_public_report_whitelists_truncated_sample_count_entries(
+    client: AsyncClient, state: AppState
+) -> None:
+    run_id = await _create(client)
+    payload = {
+        "run_id": run_id,
+        "version": 4,
+        "truncated_dimensions": ["quality"],
+        "truncated_sample_counts": [
+            {
+                "dimension": "quality",
+                "sample_count": 5,
+                "completed_samples": 2,
+                "missing_samples": 3,
+                "spent_usd": 12.345678,
+                "raw_result_path": "/srv/aig/x.json",
+            }
+        ],
+    }
+    await state.reports.upsert(run_id, 4, payload, "# report")
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert response.json()["report"]["truncated_sample_counts"] == [
+        {
+            "dimension": "quality",
+            "sample_count": 5,
+            "completed_samples": 2,
+            "missing_samples": 3,
+        }
+    ]
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
 
 
 async def test_public_report_does_not_inject_usage_into_legacy_payloads(

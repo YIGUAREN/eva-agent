@@ -79,12 +79,9 @@ def _truncated_sample_counts(result: DimensionResult) -> dict[str, Any]:
             if recorded is not None and recorded > 0:
                 sample_count = recorded
                 completed_samples = _count(passive.get("scored_rows"))
-    elif result.dimension is Dimension.LATENCY:
-        sample_count = _count(metrics.get("count"))
-        completed_samples = _count(metrics.get("success_count"))
-    elif result.dimension is Dimension.COST:
-        sample_count = _count(metrics.get("count"))
-        completed_samples = _count(metrics.get("priced_samples"))
+    # Latency and cost only record attempted target requests, not a planned
+    # total, so a budget stop before the first sample must stay ``n/a`` rather
+    # than claim zero missing samples.
     missing_samples = (
         max(0, sample_count - completed_samples)
         if sample_count is not None and completed_samples is not None
@@ -119,11 +116,13 @@ def build_report_payload(
     ]
     usage_data = usage or {}
     usage_payload = {
-        "estimated": bool(usage_data.get("estimated", False)),
+        # Only a real boolean counts; a truthy string such as "false" must not
+        # turn into True.
+        "estimated": usage_data.get("estimated") is True,
         # Coerce defensively: malformed provenance must not break the report.
         "cached": int(usage_data.get("cached") or 0),
         "fresh": int(usage_data.get("fresh") or 0),
-        "budget_enforced": bool(usage_data.get("budget_enforced", False)),
+        "budget_enforced": usage_data.get("budget_enforced") is True,
         "spent_usd": float(usage_data.get("spent_usd") or 0),
     }
     return {
