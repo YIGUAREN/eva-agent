@@ -8,6 +8,9 @@ from eva_agent.config.settings import ModelConfig
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan
+from eva_agent.domain.probe import ProbeSummary
+from eva_agent.domain.result import DimensionResult, Finding, MergedResult, Usage
+from eva_agent.domain.run import RunStatus
 from eva_agent.pricing import ModelPrice, PricingTable
 
 
@@ -47,11 +50,52 @@ def estimator() -> CostEstimator:
     )
 
 
+def merged() -> MergedResult:
+    return MergedResult(
+        status=RunStatus.COMPLETED,
+        results=[
+            DimensionResult(
+                dimension=Dimension.QUALITY,
+                status="ok",
+                score=0.9,
+                confidence=0.8,
+                summary="distinctive-merged-summary-marker",
+                findings=[
+                    Finding(
+                        id="finding-1",
+                        severity="low",
+                        category="quality",
+                        title="distinctive-finding-title-marker",
+                        description="a finding description",
+                    )
+                ],
+                usage=Usage(samples=1),
+            )
+        ],
+        skipped=[],
+    )
+
+
+def probe() -> ProbeSummary:
+    return ProbeSummary(path="probe/distinctive-probe-path.jsonl", total=2, succeeded=1, failed=1)
+
+
 def test_finalize_estimate_is_positive_and_reads_the_plan() -> None:
     text = finalize_input(plan=plan(), merged=None, probe=None)
     assert "评估回答" in text
     estimate = estimate_finalize(estimator(), model(), plan=plan())
     assert isinstance(estimate, Decimal) and estimate > 0
+
+
+def test_merged_results_and_probe_reach_the_estimate() -> None:
+    text = finalize_input(plan=plan(), merged=merged(), probe=probe())
+    assert "distinctive-merged-summary-marker" in text
+    assert "distinctive-finding-title-marker" in text
+    assert "distinctive-probe-path" in text
+
+    without_tail = estimate_finalize(estimator(), model(), plan=plan())
+    with_tail = estimate_finalize(estimator(), model(), plan=plan(), merged=merged(), probe=probe())
+    assert with_tail > without_tail
 
 
 def test_a_missing_plan_needs_no_finalize_budget() -> None:
