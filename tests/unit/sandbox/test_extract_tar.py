@@ -152,6 +152,18 @@ def test_rejects_truncated_gzip_as_corrupt(tmp_path: Path, payload: bytes) -> No
     assert not (tmp_path / "out").exists()
 
 
+def test_rejects_pax_header_chain_as_corrupt(tmp_path: Path) -> None:
+    """A chain of pax pseudo-headers recurses inside tarfile; reject it."""
+    package = tmp_path / "p.tar"
+    package.write_bytes(_tar_header("pax", 0, b"x") * 2000 + b"\x00" * 1024)
+
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+
+    assert caught.value.reason == "corrupt"
+    assert not (tmp_path / "out").exists()
+
+
 def test_rejects_tar_depth(tmp_path: Path) -> None:
     package = _tar(tmp_path / "p.tar", {"a/b/c": b"x"})
     with pytest.raises(ExtractionError) as caught:

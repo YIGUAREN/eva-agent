@@ -376,6 +376,10 @@ def _extract_tar(package: Path, staging: Path, limits: ExtractionLimits) -> dict
         raise ExtractionError("corrupt") from exc
     except OSError as exc:
         raise ExtractionError("corrupt") from exc
+    except RecursionError as exc:
+        # A chain of pax pseudo-headers recurses one level per header inside
+        # tarfile; reject it instead of letting it escape as a server error.
+        raise ExtractionError("corrupt") from exc
     return {
         "format": "tar",
         "files": sorted(files, key=lambda item: str(item["path"])),
