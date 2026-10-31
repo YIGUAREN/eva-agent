@@ -227,7 +227,14 @@ class RunManager:
         return RunStatus(row.status)
 
     @staticmethod
-    def _initial_state(run_id: str, run_input: RunInput, budget: Budget) -> dict[str, Any]:
+    def _initial_state(
+        run_id: str,
+        run_input: RunInput,
+        budget: Budget,
+        *,
+        authorization_ref: str | None = None,
+        requester_is_admin: bool | None = None,
+    ) -> dict[str, Any]:
         return {
             "run_id": run_id,
             "input": run_input,
@@ -241,6 +248,8 @@ class RunManager:
             "expert_results": [],
             "merged": None,
             "report": None,
+            "authorization_ref": authorization_ref,
+            "requester_is_admin": requester_is_admin,
         }
 
     async def create_run(
@@ -269,7 +278,15 @@ class RunManager:
         await self._event_sink(run_id, "run.created", {"kind": run_input.kind.value})
         return run_id
 
-    async def _invoke_initial(self, run_id: str, run_input: RunInput, budget: Budget) -> None:
+    async def _invoke_initial(
+        self,
+        run_id: str,
+        run_input: RunInput,
+        budget: Budget,
+        *,
+        authorization_ref: str | None = None,
+        requester_is_admin: bool | None = None,
+    ) -> None:
         repo = self._require_repo()
         graph = self._require_graph()
         if not await repo.claim(run_id, from_statuses=(RunStatus.QUEUED,), to_status=RunStatus.RUNNING):
@@ -283,7 +300,13 @@ class RunManager:
             raise RunStateError(f"run '{run_id}' is not queued (status '{status.value}')")
         try:
             values = await graph.ainvoke(
-                self._initial_state(run_id, run_input, budget),
+                self._initial_state(
+                    run_id,
+                    run_input,
+                    budget,
+                    authorization_ref=authorization_ref,
+                    requester_is_admin=requester_is_admin,
+                ),
                 self._thread(run_id),
             )
         except Exception as exc:
@@ -298,9 +321,23 @@ class RunManager:
         budget: Budget,
         *,
         run_id: str | None = None,
+        authorization_ref: str | None = None,
+        created_by: str | None = None,
     ) -> str:
-        created = await self.create_run(run_input, budget, run_id=run_id)
-        await self._invoke_initial(created, run_input, budget)
+        created = await self.create_run(
+            run_input,
+            budget,
+            run_id=run_id,
+            authorization_ref=authorization_ref,
+            created_by=created_by,
+        )
+        await self._invoke_initial(
+            created,
+            run_input,
+            budget,
+            authorization_ref=authorization_ref,
+            requester_is_admin=True if created_by == "admin" else None,
+        )
         return created
 
     async def start_existing(self, run_id: str) -> RunStatusView:
@@ -316,6 +353,8 @@ class RunManager:
             run_id,
             RunInput.model_validate(row.input_json),
             Budget.model_validate(row.budget_json),
+            authorization_ref=row.authorization_ref,
+            requester_is_admin=True if row.created_by == "admin" else None,
         )
         return await self.status(run_id)
 

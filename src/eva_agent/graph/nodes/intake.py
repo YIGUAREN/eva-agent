@@ -62,7 +62,9 @@ async def intake_node(state: EvalState, deps: GraphDependencies) -> dict:
 
     summary: dict = {"kind": evidence.kind.value, "manifest_sha256": evidence.manifest_sha256}
     if evidence.kind is InputKind.UPLOAD:
-        # The planner decides whether to skip quality from the root qa.jsonl flag.
+        # The planner decides whether to skip quality from the root qa.jsonl flag
+        # and whether security runs from the skill manifest flag.
         summary["qa"] = any(item.path == "qa.jsonl" for item in evidence.files)
+        summary["skill"] = evidence.has_skill_manifest()
     await deps.event_sink(run_id, "evidence.ready", summary)
     return {"evidence": evidence, "status": RunStatus.RUNNING}

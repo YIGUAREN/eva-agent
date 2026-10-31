@@ -65,6 +65,8 @@ class SecurityExpert:
         evidence: EvidenceBundle,
         probe: ProbeSummary | None,
         budget: Budget,
+        authorization_ref: str | None = None,
+        requester_is_admin: bool | None = None,
     ) -> DimensionResult:
         if plan.dimension is not Dimension.SECURITY:
             raise ValueError("security expert received a non-security plan")
