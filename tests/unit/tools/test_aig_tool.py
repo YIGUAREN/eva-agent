@@ -35,6 +35,9 @@ class FakeClient:
     async def result(self, session_id: str) -> dict:
         return RAW
 
+    async def upload(self, filename: str, content: bytes) -> str:
+        return "uploaded.zip"
+
 
 class FakeAudit:
     def __init__(self) -> None:

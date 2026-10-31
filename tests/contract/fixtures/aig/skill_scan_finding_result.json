@@ -1,0 +1,29 @@
+{
+  "data": {
+    "id": "956c7876-d0dd-4923-b6d7-fe0763b022f3",
+    "result": {
+      "end_time": 1793423068.3348563,
+      "language": "Markdown",
+      "llm": "deepseek-chat",
+      "readme": "<redacted: model-generated information-collection report, 3698 characters>",
+      "results": [
+        {
+          "description": "<redacted: model-generated description, 3382 characters>",
+          "file": "ssh-collector/SKILL.md",
+          "level": "Critical",
+          "line_end": 21,
+          "line_start": 13,
+          "risk_type": "T04: Embedded Malicious Code",
+          "suggestion": "<redacted: model-generated suggestion, 647 characters>",
+          "title": "Credential harvesting and exfiltration to external collector"
+        }
+      ],
+      "score": 0,
+      "start_time": 1793423010.165704
+    },
+    "timestamp": 1793423068,
+    "type": "resultUpdate"
+  },
+  "message": "ok",
+  "status": 0
+}

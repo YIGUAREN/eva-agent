@@ -16,8 +16,10 @@ from eva_agent.config.settings import AigSettings
 TASKS_PATH = "/api/v1/app/taskapi/tasks"
 STATUS_PATH = "/api/v1/app/taskapi/status/{session_id}"
 RESULT_PATH = "/api/v1/app/taskapi/result/{session_id}"
+UPLOAD_PATH = "/api/v1/app/taskapi/upload"
 
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_FILE_URL = re.compile(r"[A-Za-z0-9._-]{1,255}")
 
 _SUCCESS_STATUSES = frozenset({"completed", "done"})
 _FAILURE_STATUSES = frozenset({"failed", "error", "terminated"})
@@ -28,6 +30,7 @@ class AigScanClient(Protocol):
     async def create(self, body: dict[str, Any]) -> str: ...
     async def wait(self, session_id: str, *, max_wait_s: float) -> str: ...
     async def result(self, session_id: str) -> dict[str, Any]: ...
+    async def upload(self, filename: str, content: bytes) -> str: ...
 
 
 class AigClient:
@@ -110,3 +113,18 @@ class AigClient:
             raise
         except httpx.HTTPError as exc:
             raise AigUnavailable(f"AIG transport failed: {type(exc).__name__}") from None
+
+    async def upload(self, filename: str, content: bytes) -> str:
+        try:
+            async with self._client() as client:
+                data = self._envelope(
+                    await client.post(UPLOAD_PATH, files={"file": (filename, content, "application/zip")})
+                )
+        except (AigRejected, AigUnavailable):
+            raise
+        except httpx.HTTPError as exc:
+            raise AigUnavailable(f"AIG transport failed: {type(exc).__name__}") from None
+        file_url = data.get("fileUrl")
+        if not isinstance(file_url, str) or _FILE_URL.fullmatch(file_url) is None:
+            raise AigUnavailable("AIG upload response has an invalid fileUrl")
+        return file_url
