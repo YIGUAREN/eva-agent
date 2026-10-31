@@ -15,6 +15,7 @@ from eva_agent.adapters.target.http import HttpCoreTransport
 from eva_agent.config.settings import AppConfig
 from eva_agent.config.targets import load_targets
 from eva_agent.graph.dependencies import GraphDependencies
+from eva_agent.graph.experts.rows import QUALITY_DEFAULT_SAMPLE_SIZE
 from eva_agent.graph.planner import LlmPlanner
 from eva_agent.llm.factory import build_agent_chat_model, structured_output_method
 from eva_agent.pricing import PricingTable
@@ -23,7 +24,7 @@ from eva_agent.security.scan_policy import ScanPolicy
 from eva_agent.security.target_policy import TargetPolicy, load_security_policy
 from eva_agent.tools.bundle import ToolDependencies, build_tool_registry
 
-QUALITY_DEFAULT_SAMPLE_SIZE = 50
+__all__ = ["QUALITY_DEFAULT_SAMPLE_SIZE", "build_runtime_dependencies"]
 
 
 def build_runtime_dependencies(

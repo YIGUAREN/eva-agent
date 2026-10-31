@@ -18,7 +18,7 @@ from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.domain.run import GraderSelection, InputKind
 from eva_agent.domain.target import TargetKind, scan_kind_for
-from eva_agent.graph.experts.rows import read_qa_rows
+from eva_agent.graph.experts.rows import QUALITY_DEFAULT_SAMPLE_SIZE, read_qa_rows
 from eva_agent.graph.plan_validation import PlanValidationError, validate_plan
 from eva_agent.security.passive import passive_specs
 from eva_agent.tools.dataset import SampleDatasetInput
@@ -410,7 +410,10 @@ class LlmPlanner:
                     "reference": "",
                 }
             ]
-        _, _, rows = await self._read_evidence(evidence)
+        # The experts grade up to their default sample size, so the selection
+        # must inspect the same rows: a response or reference beyond the
+        # planner's shorter prompt sample must not disable a checked grader.
+        _, _, rows = await self._read_evidence(evidence, limit=QUALITY_DEFAULT_SAMPLE_SIZE)
         return rows
 
     def _apply_target_selection(
@@ -423,7 +426,9 @@ class LlmPlanner:
 
         Target quality supports relevance only, and an explicit selection must
         not fall back to an llm_rubric grader the user did not check. Security
-        runs only when at least one security grader was checked.
+        runs only when at least one security grader was checked, and a checked
+        security grader overrides an llm skip: the security expert decides at
+        run time whether the dimension applies.
         """
         current = next(
             (item for item in plan.dimensions if item.dimension is Dimension.QUALITY),
@@ -432,7 +437,9 @@ class LlmPlanner:
         agent_target = evidence.target is not None and evidence.target.kind is TargetKind.AGENT_HTTP
         default_sample = 1 if agent_target else plan.budget.max_target_requests
         sample_size = current.sample_size if current is not None and current.sample_size else default_sample
-        enabled = "relevance" in selection.quality
+        # An agent scan runs inside AIG and produces no local probe rows, so
+        # the quality expert would fail on an empty row set.
+        enabled = "relevance" in selection.quality and not agent_target
         quality = DimensionPlan(
             dimension=Dimension.QUALITY,
             enabled=enabled,
@@ -452,13 +459,15 @@ class LlmPlanner:
             dimensions.insert(0, quality)
         skipped = [item for item in plan.skipped if item.dimension is not Dimension.QUALITY]
         if not enabled:
-            reason = (
-                "未选择质量评分器"
-                if not selection.quality
-                else "目标输入仅支持 relevance 质量评分器"
-            )
+            if not selection.quality:
+                reason = "未选择质量评分器"
+            elif agent_target:
+                reason = "agent 目标不产生本地问答样本，无法评估质量"
+            else:
+                reason = "目标输入仅支持 relevance 质量评分器"
             skipped.append(SkippedDimension(dimension=Dimension.QUALITY, reason=reason))
 
+        skipped = [item for item in skipped if item.dimension is not Dimension.SECURITY]
         if not selection.security:
             # The active scan belongs to the security dimension, so an empty
             # selection must turn the whole dimension off.
@@ -469,18 +478,49 @@ class LlmPlanner:
                     else item
                     for item in dimensions
                 ]
-            skipped = [item for item in skipped if item.dimension is not Dimension.SECURITY]
             skipped.append(SkippedDimension(dimension=Dimension.SECURITY, reason="未选择安全评分器"))
+        else:
+            # The llm's skip cannot override a checked security grader. The
+            # dimension stays enabled with no graders; the expert decides at
+            # run time whether a passive or active check applies.
+            security = next(
+                (item for item in dimensions if item.dimension is Dimension.SECURITY),
+                None,
+            )
+            if security is None:
+                dimensions.append(
+                    DimensionPlan(
+                        dimension=Dimension.SECURITY,
+                        enabled=True,
+                        sample_size=sample_size,
+                        graders=[],
+                    )
+                )
+            else:
+                dimensions = [
+                    item.model_copy(
+                        update={
+                            "enabled": True,
+                            "sample_size": item.sample_size or sample_size,
+                            "graders": [],
+                        }
+                    )
+                    if item.dimension is Dimension.SECURITY
+                    else item
+                    for item in dimensions
+                ]
         return plan.model_copy(update={"dimensions": dimensions, "skipped": skipped})
 
-    async def _read_evidence(self, evidence: EvidenceBundle) -> tuple[str, list[str], list[dict[str, str]]]:
+    async def _read_evidence(
+        self, evidence: EvidenceBundle, *, limit: int | None = None
+    ) -> tuple[str, list[str], list[dict[str, str]]]:
         if evidence.kind is InputKind.DATASET and evidence.root and evidence.dataset:
             sample = await self._tools.call(
                 "sample_dataset",
                 SampleDatasetInput(
                     root=evidence.root,
                     path=evidence.dataset.path,
-                    limit=self._sample_rows,
+                    limit=self._sample_rows if limit is None else limit,
                     column_map=dict(evidence.dataset.column_map),
                 ),
             )

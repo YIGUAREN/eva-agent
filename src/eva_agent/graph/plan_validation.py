@@ -61,6 +61,11 @@ def validate_plan(
             raise PlanValidationError(f"{path}.sample_size", "target dimensions require sample_size")
 
         if item.dimension is Dimension.SECURITY:
+            if allowed_ids is not None and not allowed_ids.security:
+                raise PlanValidationError(
+                    f"{path}.enabled",
+                    "security was not selected for this run",
+                )
             if item.graders:
                 raise PlanValidationError(
                     f"{path}.graders",

@@ -14,6 +14,9 @@ from eva_agent.tools.target import ReadTargetProbeInput
 
 PASTE_READ_LIMIT = 1_000_000
 UPLOAD_QA_READ_LIMIT = 8 * 1024 * 1024
+# Rows a dimension grades when its plan sets no sample_size. The planner's
+# selection check must read the same rows the expert will grade.
+QUALITY_DEFAULT_SAMPLE_SIZE = 50
 _QA_MISSING = "upload evidence has no qa.jsonl"
 _QA_TOO_LARGE = "qa.jsonl is too large"
 _QA_MALFORMED = "qa.jsonl is malformed"

@@ -3,12 +3,14 @@ from pathlib import Path
 import pytest
 
 from eva_agent.domain.budget import Budget
+from eva_agent.domain.dataset import DatasetSample
 from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, SkippedDimension
-from eva_agent.domain.run import GraderSelection, InputKind, PastedInput
+from eva_agent.domain.run import DatasetRef, GraderSelection, InputKind, PastedInput
 from eva_agent.graph.plan_validation import PlanValidationError
 from eva_agent.graph.planner import LlmPlanner, PlannerOutput
+from eva_agent.tools.dataset import SampleDatasetInput
 from eva_agent.tools.evidence import build_read_evidence_tool
 from eva_agent.tools.graders import ListGradersInput, ListGradersOutput
 from eva_agent.tools.registry import ToolRegistry, ToolSpec
@@ -467,6 +469,61 @@ async def test_selection_plan_keeps_code_security_when_the_response_has_code() -
     )
 
     security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert security.enabled is True
+
+
+async def test_selection_plan_reads_a_dataset_beyond_the_planner_prompt_sample(
+    tmp_path: Path,
+) -> None:
+    """The experts grade up to their default sample size, so the selection must
+    see those same rows: a response past the 5-row prompt sample still enables
+    the checked graders."""
+    rows = [{"query": f"q{index}", "response": ""} for index in range(5)] + [
+        {"query": "q5", "response": "a5"}
+    ]
+    registry = build_registry()
+
+    async def sample_handler(payload: SampleDatasetInput) -> DatasetSample:
+        return DatasetSample(columns=["query", "response"], rows=rows[: payload.limit])
+
+    registry.register(
+        ToolSpec(
+            name="sample_dataset",
+            description="",
+            input_model=SampleDatasetInput,
+            output_model=DatasetSample,
+            permission="internal",
+            timeout_s=1.0,
+            side_effects=False,
+            idempotent=True,
+            handler=sample_handler,
+        )
+    )
+    planner = LlmPlanner(
+        None,
+        registry,
+        structured_runner=FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness"))),
+    )
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    dataset = EvidenceBundle(
+        kind=InputKind.DATASET,
+        root=str(evidence_dir),
+        files=[EvidenceFile(path="dataset.csv", size=1, sha256="a" * 64)],
+        dataset=DatasetRef(path="dataset.csv", format="csv"),
+        manifest_sha256="a" * 64,
+    )
+
+    plan = await planner.plan(
+        dataset,
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1),
+        selected_graders=GraderSelection(quality=["relevance"], security=["harmfulness"]),
+    )
+
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert quality.enabled is True
+    assert [spec.builtin_id for spec in quality.graders] == ["relevance"]
     assert security.enabled is True
 
 
