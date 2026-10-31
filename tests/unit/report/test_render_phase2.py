@@ -74,7 +74,7 @@ def probe() -> ProbeSummary:
     )
 
 
-def test_payload_is_version_two_and_includes_probe() -> None:
+def test_payload_is_version_four_and_includes_probe() -> None:
     payload = build_report_payload(
         run_id="run-1",
         plan=plan(),

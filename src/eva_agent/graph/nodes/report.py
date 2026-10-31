@@ -15,16 +15,18 @@ async def report_node(state: EvalState, deps: GraphDependencies) -> dict:
     if plan is None or merged is None:
         return {"status": RunStatus.FAILED, "errors": ["缺少计划或合并结果，无法生成报告"]}
 
-    context = budget_context()
-    snapshot = context.ledger.snapshot() if context is not None else None
-    usage = {
-        "estimated": snapshot.estimated if snapshot is not None else False,
-        "cached": sum(result.usage.cached for result in merged.results),
-        "fresh": sum(result.usage.fresh for result in merged.results),
-        "budget_enforced": context.ledger.enforced if context is not None else False,
-    }
-
     try:
+        # Usage provenance is computed inside the try so a malformed snapshot
+        # fails the report event instead of escaping as an unhandled error.
+        context = budget_context()
+        snapshot = context.ledger.snapshot() if context is not None else None
+        usage = {
+            "estimated": snapshot.estimated if snapshot is not None else False,
+            "cached": sum(result.usage.cached for result in merged.results),
+            "fresh": sum(result.usage.fresh for result in merged.results),
+            "budget_enforced": context.ledger.enforced if context is not None else False,
+            "spent_usd": snapshot.spent_usd if snapshot is not None else 0,
+        }
         report = write_report(
             data_dir=deps.data_dir,
             run_id=state["run_id"],

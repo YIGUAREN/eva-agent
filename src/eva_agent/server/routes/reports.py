@@ -31,7 +31,8 @@ router = APIRouter(prefix="/api", tags=["reports"])
 _SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}")
 _AIG_NAME = re.compile(r"aig/([A-Za-z0-9_-]{1,128})\.(json|csv)")
 
-_BUDGET_LINE_PREFIX = "- 预算："
+# Public Markdown never carries budget or spend figures.
+_HIDDEN_LINE_PREFIXES = ("- 预算：", "- 已花费：")
 
 _PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
 
@@ -60,7 +61,7 @@ def _sanitize_public_markdown(markdown: str, data_dir: str, *, internal_hosts: t
     # addresses and secrets are still scrubbed token by token.
     text = redact_markdown_paths(_redact_data_dir(markdown, data_dir))
     text = redact_internal_addresses_and_secrets(text, internal_hosts=internal_hosts)
-    return "\n".join(line for line in text.split("\n") if not line.startswith(_BUDGET_LINE_PREFIX))
+    return "\n".join(line for line in text.split("\n") if not line.startswith(_HIDDEN_LINE_PREFIXES))
 
 
 async def _report(state, run_id: str, *, public: bool = False) -> dict[str, object]:
@@ -73,7 +74,10 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
     if public:
         internal_hosts = _internal_hosts(state)
         payload = sanitize_public_payload(snapshot.payload, internal_hosts=internal_hosts)
-        payload = {**payload, "usage": public_report_usage(payload)}
+        # Only rewrite an existing usage object; injecting one would change the
+        # shape and digest of legacy v2/v3 reports.
+        if isinstance(snapshot.payload.get("usage"), dict):
+            payload = {**payload, "usage": public_report_usage(payload)}
         # The stored digest covers the unsanitized payload, so recompute it with
         # the same canonicalization used by ReportRepository.upsert.
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
