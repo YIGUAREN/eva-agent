@@ -20,6 +20,8 @@ class EvalState(TypedDict):
     run_id: str
     input: RunInput
     budget: Budget
+    authorization_ref: NotRequired[str | None]
+    requester_is_admin: NotRequired[bool | None]
     evidence: EvidenceBundle | None
     plan: EvalPlan | None
     approval: Approval | None
@@ -44,6 +46,8 @@ class ExpertState(TypedDict):
     evidence: EvidenceBundle
     probe: ProbeSummary | None
     budget: Budget
+    authorization_ref: NotRequired[str | None]
+    requester_is_admin: NotRequired[bool | None]
     status: NotRequired[RunStatus]
     errors: NotRequired[Annotated[list[str], operator.add]]
     expert_results: NotRequired[Annotated[list[DimensionResult], operator.add]]

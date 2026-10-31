@@ -8,6 +8,7 @@ from langgraph.types import Send
 
 from eva_agent.domain.plan import Dimension
 from eva_agent.domain.run import InputKind, RunStatus
+from eva_agent.domain.target import TargetKind
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.nodes.analyze import analyze_node
 from eva_agent.graph.nodes.approve import approve_node
@@ -41,7 +42,15 @@ def _route_after_approve(state: EvalState) -> str:
     # An all-skipped plan has nothing to probe; probe_node would reject it.
     if plan is None or not any(item.enabled for item in plan.dimensions):
         return "dispatch"
-    return "probe" if state["input"].kind is InputKind.TARGET else "dispatch"
+    if state["input"].kind is not InputKind.TARGET:
+        return "dispatch"
+    evidence = state.get("evidence")
+    target = evidence.target if evidence is not None else None
+    # agent_scan runs entirely inside AIG; a local probe would bill the target
+    # twice and would produce rows no expert consumes.
+    if target is not None and target.kind is TargetKind.AGENT_HTTP:
+        return "dispatch"
+    return "probe"
 
 
 def route_experts(state: EvalState) -> list[Send] | str:
@@ -56,6 +65,8 @@ def route_experts(state: EvalState) -> list[Send] | str:
                 "evidence": state["evidence"],
                 "probe": state.get("probe"),
                 "budget": state["budget"],
+                "authorization_ref": state.get("authorization_ref"),
+                "requester_is_admin": state.get("requester_is_admin"),
             },
         )
         for item in state["plan"].dimensions

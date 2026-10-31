@@ -1,0 +1,18 @@
+{
+  "data": {
+    "id": "7e0997eb-73fb-4d3a-a073-239de0af456a",
+    "result": {
+      "end_time": 1793422956.8776326,
+      "language": "YAML",
+      "llm": "deepseek-chat",
+      "readme": "<redacted: model-generated information-collection report, 3571 characters>",
+      "results": [],
+      "score": 100,
+      "start_time": 1793422905.4621387
+    },
+    "timestamp": 1793422956,
+    "type": "resultUpdate"
+  },
+  "message": "ok",
+  "status": 0
+}

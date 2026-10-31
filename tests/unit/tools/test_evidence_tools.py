@@ -59,6 +59,43 @@ async def test_read_evidence_enforces_size_limit(tmp_path: Path) -> None:
         await tool.handler(ReadEvidenceInput(root=str(root), path="big.txt"))
 
 
+async def test_truncate_drops_a_split_multi_byte_tail(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir()
+    # "é" is two bytes; cutting after the first byte leaves an incomplete tail.
+    (root / "big.txt").write_bytes(b"a" * 20 + "é".encode() + b"tail")
+    tool = build_read_evidence_tool(default_max_bytes=1024)
+
+    text = await tool.handler(
+        ReadEvidenceInput(root=str(root), path="big.txt", max_bytes=21, truncate=True, strict_truncate=True)
+    )
+
+    assert text == "a" * 20
+
+
+async def test_strict_truncate_rejects_binary_before_the_tail(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir()
+    (root / "blob.bin").write_bytes(b"a" * 20 + b"\xff\xfe" + b"b" * 20)
+    tool = build_read_evidence_tool(default_max_bytes=1024)
+
+    with pytest.raises(EvidenceAccessError, match="not valid UTF-8"):
+        await tool.handler(
+            ReadEvidenceInput(root=str(root), path="blob.bin", max_bytes=30, truncate=True, strict_truncate=True)
+        )
+
+
+async def test_lenient_truncate_is_the_default(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir()
+    (root / "blob.bin").write_bytes(b"a" * 20 + b"\xff\xfe" + b"b" * 20)
+    tool = build_read_evidence_tool(default_max_bytes=1024)
+
+    text = await tool.handler(ReadEvidenceInput(root=str(root), path="blob.bin", max_bytes=30, truncate=True))
+
+    assert text == "a" * 20 + "b" * 8
+
+
 async def test_sample_dataset_limits_rows(tmp_path: Path) -> None:
     root = tmp_path / "evidence"
     root.mkdir()

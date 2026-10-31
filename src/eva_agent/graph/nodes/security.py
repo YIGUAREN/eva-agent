@@ -26,6 +26,8 @@ async def security_node(state: ExpertState, deps: GraphDependencies) -> dict:
             evidence=evidence,
             probe=state.get("probe"),
             budget=state["budget"],
+            authorization_ref=state.get("authorization_ref"),
+            requester_is_admin=state.get("requester_is_admin"),
         )
     except Exception as exc:
         result = DimensionResult(

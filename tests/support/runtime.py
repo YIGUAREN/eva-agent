@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from eva_agent.config.settings import (
     AgentSettings,
@@ -106,7 +106,7 @@ class FakeRunner:
         self._unscored = unscored
         self.calls = 0
 
-    async def run(self, specs: list[GraderSpec], rows: list[dict[str, str]]) -> GraderRunOutput:
+    async def run(self, specs: list[GraderSpec], rows: list[dict[str, Any]]) -> GraderRunOutput:
         self.calls += 1
         if self._error is not None:
             raise RuntimeError(self._error)

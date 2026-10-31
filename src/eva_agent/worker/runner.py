@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
@@ -62,13 +63,22 @@ def _report_version(payload: dict, run_id: str) -> int:
         return 0
 
 
+_AIG_FILE = re.compile(r"[A-Za-z0-9_-]{1,128}\.(json|csv)")
+
+
 def _artifact_specs(paths: RunPaths) -> list[tuple[str, Path, str, str]]:
-    return [
+    specs = [
         ("report.json", paths.report_json, "admin", "application/json"),
         ("report.md", paths.report_markdown, "admin", "text/markdown; charset=utf-8"),
         ("plan.approved.yaml", paths.plan_approved, "admin", "application/yaml"),
         ("target_probe.jsonl", paths.target_probe, "admin", "application/x-ndjson"),
     ]
+    for path in sorted(paths.aig_dir.glob("*")):
+        if not path.is_file() or _AIG_FILE.fullmatch(path.name) is None:
+            continue
+        content_type = "application/json" if path.suffix == ".json" else "text/csv; charset=utf-8"
+        specs.append((f"aig/{path.name}", path, "admin", content_type))
+    return specs
 
 
 class RunWorker:

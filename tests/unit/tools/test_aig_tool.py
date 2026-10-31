@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from eva_agent.adapters.aig.attachments import MAX_ATTACHMENTS
 from eva_agent.adapters.aig.errors import AigTimeout
 from eva_agent.config.settings import AigScanSettings, AigSettings, MissingSecretError, ModelConfig
 from eva_agent.domain.audit import AuditEvent
@@ -34,6 +35,12 @@ class FakeClient:
 
     async def result(self, session_id: str) -> dict:
         return RAW
+
+    async def upload(self, filename: str, content: bytes) -> str:
+        return "uploaded.zip"
+
+    async def download(self, session_id: str, file_url: str) -> bytes:
+        return b"\xef\xbb\xbfstatus,modelName\ncompleted,demo\n"
 
 
 class FakeAudit:
@@ -83,7 +90,7 @@ def test_tool_timeout_covers_configurable_max_wait(tmp_path: Path) -> None:
         data_dir=str(tmp_path / "data"),
     )
     assert tool.timeout_s > aig.max_wait_s
-    assert tool.timeout_s == aig.max_wait_s + 3 * aig.timeout_s + 30.0
+    assert tool.timeout_s == aig.max_wait_s + (3 + MAX_ATTACHMENTS) * aig.timeout_s + 30.0
 
 
 async def test_raw_result_write_oserror_audits_terminal(tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ from eva_agent.storage.models import AdminSessionRow
 router = APIRouter(prefix="/api", tags=["reports"])
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}")
+_AIG_NAME = re.compile(r"aig/([A-Za-z0-9_-]{1,128})\.(json|csv)")
 
 _BUDGET_LINE_PREFIX = "- 预算："
 
@@ -81,16 +82,30 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
     }
 
 
-async def _artifact(state, run_id: str, name: str, *, public: bool) -> FileResponse:
-    if _SAFE_NAME.fullmatch(name) is None:
+def _artifact_path(state, run_id: str, name: str) -> Path:
+    """Resolve a stored artifact name to a file, refusing anything outside the run."""
+    paths = run_paths(state.config.storage.data_dir, run_id)
+    if _SAFE_NAME.fullmatch(name) is not None:
+        base, relative = paths.root, name
+    elif (match := _AIG_NAME.fullmatch(name)) is not None:
+        base, relative = paths.aig_dir, f"{match.group(1)}.{match.group(2)}"
+    else:
         raise ApiError(404, "not_found", "artifact not found")
+    root = base.resolve()
+    path = (base / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ApiError(404, "not_found", "artifact not found")
+    return path
+
+
+async def _artifact(state, run_id: str, name: str, *, public: bool) -> FileResponse:
     row = await state.artifacts.get(run_id, name)
     if row is None or (public and row.visibility != "public"):
         raise ApiError(404, "not_found", "artifact not found")
-    path = run_paths(state.config.storage.data_dir, run_id).root / row.name
+    path = _artifact_path(state, run_id, row.name)
     if not path.is_file():
         raise ApiError(404, "not_found", "artifact not found")
-    return FileResponse(path, media_type=row.content_type, filename=row.name)
+    return FileResponse(path, media_type=row.content_type, filename=Path(row.name).name)
 
 
 @router.get("/runs/{run_id}/report")
@@ -104,7 +119,7 @@ async def admin_report(
     return await _report(state, run_id)
 
 
-@router.get("/runs/{run_id}/artifacts/{name}")
+@router.get("/runs/{run_id}/artifacts/{name:path}")
 async def admin_artifact(
     run_id: str,
     name: str,

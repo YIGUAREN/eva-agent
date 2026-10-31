@@ -90,7 +90,7 @@ class OpenJudgeRunner:
                 mapping[name] = name
         return mapping
 
-    async def run(self, specs: list[GraderSpec], rows: list[dict[str, str]]) -> GraderRunOutput:
+    async def run(self, specs: list[GraderSpec], rows: list[dict[str, Any]]) -> GraderRunOutput:
         started = time.perf_counter()
         configs: dict[str, Any] = {}
         outcomes: list[GraderSampleOutcome] = []

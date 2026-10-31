@@ -26,6 +26,7 @@ def test_catalog_loads_all_phase_one_graders() -> None:
         "similarity",
         "harmfulness",
         "code_security",
+        "threat_analysis",
     }
 
 

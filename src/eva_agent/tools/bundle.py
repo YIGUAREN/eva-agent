@@ -10,7 +10,11 @@ from eva_agent.config.settings import AigSettings, ModelConfig
 from eva_agent.pricing import PricingTable
 from eva_agent.security.audit import AuditSink, noop_audit_sink
 from eva_agent.security.target_policy import TargetPolicy
-from eva_agent.tools.aig import build_run_aig_scan_tool
+from eva_agent.tools.aig import (
+    build_run_aig_agent_scan_tool,
+    build_run_aig_scan_tool,
+    build_run_aig_skill_scan_tool,
+)
 from eva_agent.tools.dataset import build_sample_dataset_tool
 from eva_agent.tools.declarative import build_run_declarative_checks_tool
 from eva_agent.tools.evidence import build_read_evidence_tool
@@ -72,6 +76,26 @@ def build_tool_registry(dependencies: ToolDependencies) -> ToolRegistry:
     ):
         registry.register(
             build_run_aig_scan_tool(
+                client=dependencies.aig_client,
+                settings=dependencies.aig_settings,
+                eval_model=dependencies.eval_model,
+                env=dependencies.env,
+                audit=dependencies.audit,
+                data_dir=dependencies.data_dir,
+            )
+        )
+        registry.register(
+            build_run_aig_agent_scan_tool(
+                client=dependencies.aig_client,
+                settings=dependencies.aig_settings,
+                eval_model=dependencies.eval_model,
+                env=dependencies.env,
+                audit=dependencies.audit,
+                data_dir=dependencies.data_dir,
+            )
+        )
+        registry.register(
+            build_run_aig_skill_scan_tool(
                 client=dependencies.aig_client,
                 settings=dependencies.aig_settings,
                 eval_model=dependencies.eval_model,
