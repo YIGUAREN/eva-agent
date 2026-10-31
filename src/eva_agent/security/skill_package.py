@@ -20,6 +20,7 @@ GRADER_ID = "threat_analysis"
 GRADER_NAME = "threat_analysis"
 SKILL_FILE_READ_LIMIT = 128 * 1024
 MAX_PACKAGE_CHARS = 200_000
+MAX_PACKAGES = 50
 MAX_SCRIPTS = 20
 MAX_REFERENCES = 20
 _SCRIPT_SUFFIXES = frozenset({".py", ".sh", ".js", ".mjs", ".ts", ".ps1", ".bat", ".rb", ".pl"})
@@ -41,16 +42,20 @@ def _package_roots(paths: list[str]) -> list[str]:
     )
 
 
-def _owner(path: str, roots: list[str]) -> str | None:
-    """Return the deepest package root that contains ``path``."""
-    best: str | None = None
-    best_depth = -1
-    for root in roots:
-        prefix = "" if root == "." else f"{root}/"
-        if path.startswith(prefix) and len(prefix) > best_depth:
-            best = root
-            best_depth = len(prefix)
-    return best
+def _owner(path: str, roots: frozenset[str]) -> str | None:
+    """Return the deepest package root that contains ``path``.
+
+    Walking the path's ancestors against a precomputed root set keeps ownership
+    linear in path depth instead of rescanning every root for every path.
+    """
+    parent = PurePosixPath(path).parent
+    while True:
+        key = parent.as_posix()
+        if key in roots:
+            return key
+        if parent == PurePosixPath("."):
+            return None
+        parent = parent.parent
 
 
 def _relative(path: str, root: str) -> str:
@@ -77,11 +82,30 @@ async def _read(
     *,
     run_id: str,
 ) -> str | None:
+    if not evidence.root:
+        # No readable root: fail the dimension rather than the whole run.
+        return None
     try:
         return await tools.call(
             "read_evidence",
             ReadEvidenceInput(
-                root=evidence.root or "",
+                root=evidence.root,
+                path=path,
+                max_bytes=SKILL_FILE_READ_LIMIT,
+                run_id=run_id,
+            ),
+        )
+    except EvidenceAccessError as exc:
+        if exc.reason != "too_large":
+            # Binary or unreadable members carry no graded text; skip them.
+            return None
+    try:
+        # The member was cut at the read limit, so a split multi-byte tail is
+        # expected; only this truncated case decodes leniently.
+        return await tools.call(
+            "read_evidence",
+            ReadEvidenceInput(
+                root=evidence.root,
                 path=path,
                 max_bytes=SKILL_FILE_READ_LIMIT,
                 truncate=True,
@@ -100,13 +124,25 @@ async def build_skill_rows(
     run_id: str,
 ) -> list[dict[str, Any]]:
     """Return one package-level row per skill package in the evidence workspace."""
-    if evidence.root is None:
+    if not evidence.root:
+        # No readable root: fail the dimension rather than the whole run.
         return []
     paths = [item.path for item in evidence.files]
     roots = _package_roots(paths)
+    if len(roots) > MAX_PACKAGES:
+        raise EvidenceAccessError(
+            f"too many skill packages: {len(roots)} exceeds MAX_PACKAGES={MAX_PACKAGES}",
+            reason="too_many_packages",
+        )
+    root_set = frozenset(roots)
+    owned: dict[str, list[str]] = {root: [] for root in roots}
+    for path in paths:
+        owner = _owner(path, root_set)
+        if owner is not None:
+            owned[owner].append(path)
     rows: list[dict[str, Any]] = []
     for root in roots:
-        members = sorted(path for path in paths if _owner(path, roots) == root)
+        members = sorted(owned[root])
         manifest_path: str | None = None
         for candidate in _MANIFEST_PRIORITY:
             manifest_path = next(
@@ -128,6 +164,10 @@ async def build_skill_rows(
             if path in {manifest_path, instruction_path}:
                 continue
             relative = _relative(path, root)
+            if relative in SKILL_MANIFEST_NAMES:
+                # Only one manifest is graded; a second root-level variant is
+                # not a reference document.
+                continue
             if _is_script(relative):
                 if len(scripts) >= MAX_SCRIPTS:
                     continue
