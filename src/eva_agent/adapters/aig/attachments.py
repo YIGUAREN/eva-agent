@@ -7,6 +7,9 @@ from typing import Any
 
 DOWNLOAD_PATH = "/api/v1/app/tasks/{session_id}/downloadFile"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+# Status and result envelopes carry untrusted JSON (the status body embeds an
+# AIG log string), so they are read under a hard cap just like attachments.
+MAX_RESULT_BYTES = 8 * 1024 * 1024
 # The live result carries one attachment; two distinct names covers the observed
 # naming while keeping the tool budget honest.
 MAX_ATTACHMENTS = 2

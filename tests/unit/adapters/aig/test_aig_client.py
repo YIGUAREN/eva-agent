@@ -1,8 +1,10 @@
 import json
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 
+from eva_agent.adapters.aig.attachments import MAX_RESULT_BYTES
 from eva_agent.adapters.aig.client import AigClient
 from eva_agent.adapters.aig.errors import AigRejected, AigTimeout, AigUnavailable
 from eva_agent.config.settings import AigSettings
@@ -143,6 +145,46 @@ async def test_transport_error_is_unavailable() -> None:
 
     with pytest.raises(AigUnavailable):
         await make_client(handler).create({"type": "model_redteam_report", "content": {}})
+
+
+class CountingStream(httpx.AsyncByteStream):
+    """Yield pre-built chunks one at a time and count how many were pulled."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.pulled = 0
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            self.pulled += 1
+            yield chunk
+
+
+@pytest.mark.parametrize("method", ["wait", "result"])
+async def test_status_and_result_bodies_stop_at_the_size_cap_mid_stream(method: str) -> None:
+    # A distinctive marker proves the raised message never carries body content.
+    marker = b"SECRET-LOG-LINE"
+    per_chunk = 1024 * 1024
+    chunk = marker + b"x" * (per_chunk - len(marker))
+    chunk_count = 2 * (MAX_RESULT_BYTES // per_chunk)  # twice the cap, in many chunks
+    stream = CountingStream([chunk] * chunk_count)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream, headers={"content-type": "application/json"})
+
+    client = make_client(handler)
+    with pytest.raises(AigUnavailable) as excinfo:
+        if method == "wait":
+            await client.wait("s1", max_wait_s=5.0)
+        else:
+            await client.result("s1")
+
+    # The guard fires during the read, not after every chunk was buffered.
+    assert 0 < stream.pulled < chunk_count
+    message = str(excinfo.value)
+    assert marker.decode() not in message
+    assert "200" not in message
+    assert "OK" not in message
 
 
 async def test_invalid_session_id_is_rejected() -> None:
