@@ -7,6 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from eva_agent.domain.run import DatasetRef, InputKind
 from eva_agent.domain.target import TargetSpec
 
+# A skill package is identified by a manifest at the evidence root only; a
+# nested example manifest must not turn an ordinary upload into a skill.
+SKILL_MANIFEST_NAMES = ("SKILL.md", "skill.yaml", "skill.yml")
+
 
 class EvidenceFile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -35,3 +39,6 @@ class EvidenceBundle(BaseModel):
         if self.kind is not InputKind.TARGET and self.target is not None:
             raise ValueError("target is only valid for target evidence")
         return self
+
+    def has_skill_manifest(self) -> bool:
+        return any(item.path in SKILL_MANIFEST_NAMES for item in self.files)

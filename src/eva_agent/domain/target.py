@@ -7,10 +7,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+ScanKind = Literal["model_redteam_report", "agent_scan", "skill_scan"]
+
 
 class TargetKind(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
     HTTP_JSON = "http_json"
+    AGENT_HTTP = "agent_http"
 
 
 class UsagePaths(BaseModel):
@@ -44,6 +47,7 @@ class TargetSpec(BaseModel):
     request_template: dict[str, Any] | None = None
     response_path: str | None = None
     usage_paths: UsagePaths | None = None
+    scan_kind: Literal["model_redteam_report", "agent_scan"] | None = None
 
     @model_validator(mode="after")
     def _validate_kind_fields(self) -> TargetSpec:
@@ -62,24 +66,41 @@ class TargetSpec(BaseModel):
                 )
             ):
                 raise ValueError("openai_compatible target must not set http_json fields")
+            if self.scan_kind not in (None, "model_redteam_report"):
+                raise ValueError("openai_compatible target only supports model_redteam_report")
         else:
             if not self.url or not self.request_template or not self.response_path:
-                raise ValueError("http_json target requires url, request_template, response_path")
+                raise ValueError(f"{self.kind.value} target requires url, request_template, response_path")
             if not self.method:
-                raise ValueError("http_json target requires method (GET or POST)")
+                raise ValueError(f"{self.kind.value} target requires method (GET or POST)")
             if self.base_url or self.api_key_env:
-                raise ValueError("http_json target must not set openai_compatible fields")
+                raise ValueError(f"{self.kind.value} target must not set openai_compatible fields")
             if not _contains_prompt(self.request_template):
                 raise ValueError("request_template must contain a {{prompt}} placeholder")
             if self.method == "GET":
                 for value in self.request_template.values():
                     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
                         raise ValueError("GET request_template values must be strings or numbers")
+            if self.kind is TargetKind.HTTP_JSON and self.scan_kind is not None:
+                raise ValueError("http_json target must not set scan_kind")
+            if self.kind is TargetKind.AGENT_HTTP and self.scan_kind not in (None, "agent_scan"):
+                raise ValueError("agent_http target only supports agent_scan")
 
         if set(self.headers) & set(self.header_env):
             raise ValueError("headers and header_env must not share a key")
         _reject_credential_headers(self.headers)
         return self
+
+
+_DEFAULT_SCAN_KIND: dict[TargetKind, ScanKind] = {
+    TargetKind.OPENAI_COMPATIBLE: "model_redteam_report",
+    TargetKind.AGENT_HTTP: "agent_scan",
+}
+
+
+def scan_kind_for(target: TargetSpec) -> ScanKind | None:
+    """Return the AIG scan kind a target implies, or None when it has none."""
+    return target.scan_kind or _DEFAULT_SCAN_KIND.get(target.kind)
 
 
 _CREDENTIAL_HEADER_SEGMENTS = frozenset(

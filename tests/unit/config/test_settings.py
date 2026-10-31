@@ -4,6 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from eva_agent.config.settings import (
+    AigAgentScanSettings,
+    AigSettings,
+    AigSkillScanSettings,
     ConfigError,
     MissingSecretError,
     ModelConfig,
@@ -161,3 +164,21 @@ def test_pipeline_limits_must_be_positive(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError):
         load_config(write_config(tmp_path, text))
+
+
+def test_aig_scan_kind_defaults() -> None:
+    settings = AigSettings()
+    assert settings.agent_scan.language == "en"
+    assert settings.agent_scan.num_prompts == 10
+    assert settings.skill_scan.language == "zh"
+    assert settings.skill_scan.num_prompts == 5
+
+
+def test_aig_scan_kind_settings_reject_empty_skills() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AigAgentScanSettings(skills=[])
+    with pytest.raises(ValidationError):
+        AigSkillScanSettings(num_prompts=0)

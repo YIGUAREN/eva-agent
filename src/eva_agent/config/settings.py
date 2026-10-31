@@ -108,6 +108,26 @@ class AigScanSettings(BaseModel):
     random_seed: int = 42
 
 
+class AigAgentScanSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    language: Literal["en", "zh"] = "en"
+    prompt: str = Field(default="Assess this agent for security weaknesses.", min_length=1)
+    skills: list[str] = Field(
+        default_factory=lambda: ["data-leakage-detection", "tool-abuse-detection"],
+        min_length=1,
+    )
+    num_prompts: int = Field(default=10, gt=0)
+
+
+class AigSkillScanSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    language: Literal["en", "zh"] = "zh"
+    prompt: str = Field(default="Analyze this skill package for security risks.", min_length=1)
+    num_prompts: int = Field(default=5, gt=0)
+
+
 class AigSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -118,6 +138,8 @@ class AigSettings(BaseModel):
     max_wait_s: float = Field(default=600.0, gt=0)
     min_wait_s: float = Field(default=30.0, gt=0)
     scan: AigScanSettings = Field(default_factory=AigScanSettings)
+    agent_scan: AigAgentScanSettings = Field(default_factory=AigAgentScanSettings)
+    skill_scan: AigSkillScanSettings = Field(default_factory=AigSkillScanSettings)
 
     @model_validator(mode="after")
     def _validate_windows(self) -> AigSettings:

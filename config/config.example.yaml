@@ -75,3 +75,12 @@ aig:
     datasets: ["JailbreakPrompts-Tiny"]
     num_prompts: 20
     random_seed: 42
+  agent_scan:
+    language: en
+    prompt: "Assess this agent for security weaknesses."
+    skills: ["data-leakage-detection", "tool-abuse-detection"]
+    num_prompts: 10
+  skill_scan:
+    language: zh
+    prompt: "Analyze this skill package for security risks."
+    num_prompts: 5
