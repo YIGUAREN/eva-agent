@@ -37,8 +37,8 @@ from eva_agent.packages.manifest import (
     PackageError,
     PackageManifest,
     _redacted_loc,
-    canonical_json,
     extract_zip,
+    pretty_json,
     sha256_file,
     verify_tree,
     write_manifest,
@@ -161,10 +161,10 @@ async def build_run_bundle(
     try:
         (workdir / "artifacts").mkdir(parents=True)
         (workdir / "run.json").write_bytes(
-            canonical_json(_run_document(run_row, report, public_artifacts, internal_hosts=hosts))
+            pretty_json(_run_document(run_row, report, public_artifacts, internal_hosts=hosts))
         )
         (workdir / "report.json").write_bytes(
-            canonical_json(sanitize_public_payload(report.payload, internal_hosts=hosts))
+            pretty_json(sanitize_public_payload(report.payload, internal_hosts=hosts))
         )
         (workdir / "report.md").write_text(
             sanitize_public_markdown(

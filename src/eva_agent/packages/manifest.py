@@ -46,6 +46,16 @@ def canonical_json(payload: Any) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def pretty_json(payload: Any) -> bytes:
+    """Serialize a package member for humans: sorted keys, two-space indent, trailing newline.
+
+    Members are read by both replay and people; JSON has no comment syntax, so
+    field notes live in the package README while the data itself stays readable.
+    """
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+    return (text + "\n").encode("utf-8")
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -84,7 +94,7 @@ def write_manifest(root: Path, manifest: PackageManifest) -> Path:
     _validated_member_names(manifest.files)
     root.mkdir(parents=True, exist_ok=True)
     path = root / MANIFEST_NAME
-    path.write_bytes(canonical_json(manifest.model_dump(mode="json")))
+    path.write_bytes(pretty_json(manifest.model_dump(mode="json")))
     return path
 
 
