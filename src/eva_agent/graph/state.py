@@ -31,6 +31,10 @@ class EvalState(TypedDict):
     expert_results: Annotated[list[DimensionResult], operator.add]
     merged: MergedResult | None
     report: Report | None
+    finalize_estimate_usd: NotRequired[float]
+    finalize_overrun: NotRequired[bool]
+    budget_gate: NotRequired[dict[str, object] | None]
+    budget_gate_seq: NotRequired[int | None]
 
 
 class ExpertState(TypedDict):

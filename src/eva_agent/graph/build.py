@@ -12,6 +12,7 @@ from eva_agent.domain.target import TargetKind
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.nodes.analyze import analyze_node
 from eva_agent.graph.nodes.approve import approve_node
+from eva_agent.graph.nodes.budget_gate import budget_gate_node
 from eva_agent.graph.nodes.cost import cost_node
 from eva_agent.graph.nodes.dispatch import dispatch_node
 from eva_agent.graph.nodes.intake import intake_node
@@ -53,6 +54,10 @@ def _route_after_approve(state: EvalState) -> str:
     return "probe"
 
 
+def _route_after_budget_gate(state: EvalState) -> str:
+    return "merge" if state["status"] is RunStatus.RUNNING else END
+
+
 def route_experts(state: EvalState) -> list[Send] | str:
     if state["status"] is not RunStatus.RUNNING or state["plan"] is None:
         return END
@@ -86,6 +91,7 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
     graph.add_node("latency", partial(latency_node, deps=dependencies))
     graph.add_node("cost", partial(cost_node, deps=dependencies))
     graph.add_node("security", partial(security_node, deps=dependencies))
+    graph.add_node("budget_gate", partial(budget_gate_node, deps=dependencies))
     graph.add_node("merge", partial(merge_node, deps=dependencies))
     graph.add_node("analyze", partial(analyze_node, deps=dependencies))
     graph.add_node("report", partial(report_node, deps=dependencies))
@@ -111,10 +117,15 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
             END: END,
         },
     )
-    graph.add_edge("quality", "merge")
-    graph.add_edge("latency", "merge")
-    graph.add_edge("cost", "merge")
-    graph.add_edge("security", "merge")
+    graph.add_edge("quality", "budget_gate")
+    graph.add_edge("latency", "budget_gate")
+    graph.add_edge("cost", "budget_gate")
+    graph.add_edge("security", "budget_gate")
+    graph.add_conditional_edges(
+        "budget_gate",
+        _route_after_budget_gate,
+        {"merge": "merge", END: END},
+    )
     graph.add_edge("merge", "analyze")
     graph.add_edge("analyze", "report")
     graph.add_edge("report", END)

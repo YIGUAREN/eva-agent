@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any, Protocol
 
 from eva_agent.domain.target import TargetSpec
 from eva_agent.graph.events import EventSink, noop_event_sink
@@ -12,6 +14,14 @@ from eva_agent.security.audit import AuditSink, noop_audit_sink
 from eva_agent.security.scan_policy import ScanPolicy
 from eva_agent.security.target_policy import TargetPolicy
 from eva_agent.tools.registry import ToolRegistry
+
+
+class GateStore(Protocol):
+    async def next_seq(self, run_id: str) -> int: ...
+
+    async def record(self, run_id: str, seq: int, action: str, payload: dict[str, Any]) -> bool: ...
+
+    async def latest_gate(self, run_id: str) -> Any | None: ...
 
 
 @dataclass(frozen=True)
@@ -33,3 +43,5 @@ class GraphDependencies:
     scan_policy: ScanPolicy | None = None
     audit: AuditSink = field(default=noop_audit_sink)
     aig_configured: bool = False
+    finalize_estimator: Callable[[Mapping[str, Any]], Decimal] | None = None
+    gate_store: GateStore | None = None
