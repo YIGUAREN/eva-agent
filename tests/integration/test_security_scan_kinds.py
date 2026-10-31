@@ -87,8 +87,13 @@ def register(
     )
 
 
-def register_graders(registry: ToolRegistry) -> None:
+def register_graders(registry: ToolRegistry, *, fail_on: str | None = None) -> None:
     async def graders(payload: RunGradersInput) -> GraderRunOutput:
+        names = {spec.name for spec in payload.specs}
+        if fail_on == "threat_analysis" and "threat_analysis" in names:
+            raise RuntimeError("threat grader failed")
+        if fail_on == "passive" and names - {"threat_analysis"}:
+            raise RuntimeError("passive grader failed")
         return GraderRunOutput(
             outcomes=[
                 GraderSampleOutcome(
@@ -159,6 +164,7 @@ def scan_policy() -> RecordingPolicy:
         SecurityPolicy(
             active_scan_enabled=True,
             requester_is_admin=False,
+            authorization_ref="policy-static-ref",
             demo_targets=[],
             allowlist=["http://127.0.0.1:8100"],
         ),
@@ -169,7 +175,14 @@ def scan_policy() -> RecordingPolicy:
     )
 
 
-def dependencies(tmp_path: Path, *, tools: ToolRegistry, policy: ScanPolicy) -> GraphDependencies:
+def dependencies(
+    tmp_path: Path,
+    *,
+    tools: ToolRegistry,
+    policy: ScanPolicy,
+    audit: RecordingAudit | None = None,
+    aig_configured: bool = True,
+) -> GraphDependencies:
     return GraphDependencies(
         planner=FakePlanner(),
         tools=tools,
@@ -179,8 +192,8 @@ def dependencies(tmp_path: Path, *, tools: ToolRegistry, policy: ScanPolicy) -> 
         max_dataset_rows=100,
         default_sample_size=5,
         scan_policy=policy,
-        audit=RecordingAudit(),
-        aig_configured=True,
+        audit=audit if audit is not None else RecordingAudit(),
+        aig_configured=aig_configured,
         event_sink=noop_event_sink,
     )
 
@@ -227,12 +240,12 @@ def upload_evidence(root: Path, *paths: str) -> EvidenceBundle:
     )
 
 
-def agent_output() -> AigAgentScanOutput:
+def agent_output(*, score: int = 40) -> AigAgentScanOutput:
     report = AigAgentReport.model_validate(
         {
             "schema_version": "agent-security-report@1",
             "agent_name": "agent",
-            "score": 40,
+            "score": score,
             "risk_type": "high",
             "total_tests": 4,
             "vulnerable_tests": 1,
@@ -312,7 +325,8 @@ async def test_agent_target_runs_agent_scan_with_the_run_authorization(tmp_path:
     register(tools, "run_aig_agent_scan", AigAgentScanInput, AigAgentScanOutput, agent_tool)
     register(tools, "run_aig_scan", AigScanInput, AigScanOutput, model_tool)
     policy = scan_policy()
-    deps = dependencies(tmp_path, tools=tools, policy=policy)
+    audit = RecordingAudit()
+    deps = dependencies(tmp_path, tools=tools, policy=policy, audit=audit)
 
     result = await SecurityExpert(deps).run(
         run_id="run-1",
@@ -333,23 +347,63 @@ async def test_agent_target_runs_agent_scan_with_the_run_authorization(tmp_path:
     assert call["probe_count"] == 0
     assert model_tool.calls == []
     assert agent_tool.calls[0].authorization_ref == "ticket-42"
+    requested = next(event for event in audit.events if event.action == "active_scan.requested")
+    assert requested.scan_kind == "agent_scan"
+    assert requested.authorization_ref == "ticket-42"
 
 
-async def test_skill_upload_runs_threat_analysis_and_a_skill_scan(tmp_path: Path) -> None:
+async def test_agent_scan_high_finding_caps_the_score(tmp_path: Path) -> None:
+    tools = ToolRegistry()
+    tools.register(build_read_evidence_tool(1_000_000))
+    agent_tool = FakeScanTool(agent_output(score=95))
+    register(tools, "run_aig_agent_scan", AigAgentScanInput, AigAgentScanOutput, agent_tool)
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=target_evidence(tmp_path, agent_target()),
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    assert result.metrics["active"]["severity_counts"] == {"high": 1}
+    assert result.metrics["score_cap"] == 0.5
+    assert result.score == 0.5
+    assert result.status == "ok"
+
+
+def skill_upload(tmp_path: Path, *, qa: str | None = None) -> tuple[Path, EvidenceBundle]:
     root = tmp_path / "evidence"
     root.mkdir()
     (root / "SKILL.md").write_text("# Greeter\n\nSay hello.\n", encoding="utf-8")
     (root / "scripts").mkdir()
     (root / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
-    bundle = upload_evidence(root, "SKILL.md", "scripts/run.py")
+    paths = ["SKILL.md", "scripts/run.py"]
+    if qa is not None:
+        (root / "qa.jsonl").write_text(qa, encoding="utf-8")
+        paths.append("qa.jsonl")
+    return root, upload_evidence(root, *paths)
 
+
+def skill_tools(*, fail_on: str | None = None) -> tuple[ToolRegistry, FakeScanTool]:
     tools = ToolRegistry()
     tools.register(build_read_evidence_tool(1_000_000))
-    register_graders(tools)
+    register_graders(tools, fail_on=fail_on)
     skill_tool = FakeScanTool(skill_output())
     register(tools, "run_aig_skill_scan", AigSkillScanInput, AigSkillScanOutput, skill_tool)
+    return tools, skill_tool
+
+
+async def test_skill_upload_runs_threat_analysis_and_a_skill_scan(tmp_path: Path) -> None:
+    _, bundle = skill_upload(tmp_path)
+
+    tools, skill_tool = skill_tools()
     policy = scan_policy()
-    deps = dependencies(tmp_path, tools=tools, policy=policy)
+    audit = RecordingAudit()
+    deps = dependencies(tmp_path, tools=tools, policy=policy, audit=audit)
 
     result = await SecurityExpert(deps).run(
         run_id="run-1",
@@ -365,6 +419,122 @@ async def test_skill_upload_runs_threat_analysis_and_a_skill_scan(tmp_path: Path
     assert result.metrics["active"]["kind"] == "skill_scan"
     assert policy.calls[0]["scan_kind"] == "skill_scan"
     assert skill_tool.calls[0].files == [item.path for item in bundle.files]
+    requested = next(event for event in audit.events if event.action == "active_scan.requested")
+    assert requested.scan_kind == "skill_scan"
+    assert requested.authorization_ref == "ticket-42"
+
+
+async def test_skill_upload_with_malformed_qa_records_the_failure(tmp_path: Path) -> None:
+    _, bundle = skill_upload(tmp_path, qa="{not json}\n")
+    tools, _ = skill_tools()
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    assert result.status == "partial"
+    assert result.metrics["passive"]["errors"] == ["ValueError"]
+    assert result.metrics["active"]["kind"] == "skill_scan"
+
+
+async def test_threat_grading_failure_is_recorded_on_a_skill_upload(tmp_path: Path) -> None:
+    _, bundle = skill_upload(tmp_path, qa='{"query": "q", "response": "safe answer"}\n')
+    tools, _ = skill_tools(fail_on="threat_analysis")
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    passive = result.metrics["passive"]
+    assert result.status == "partial"
+    assert passive["errors"] == ["RuntimeError"]
+    assert passive["expected_outcomes"] > passive["scored_outcomes"]
+
+
+async def test_passive_grading_failure_is_recorded_on_a_skill_upload(tmp_path: Path) -> None:
+    _, bundle = skill_upload(tmp_path, qa='{"query": "q", "response": "safe answer"}\n')
+    tools, _ = skill_tools(fail_on="passive")
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    passive = result.metrics["passive"]
+    assert result.status == "partial"
+    assert passive["errors"] == ["RuntimeError"]
+    assert passive["by_grader"] == {"threat_analysis": 0.0}
+    assert passive["expected_outcomes"] > passive["scored_outcomes"]
+
+
+async def test_too_many_packages_does_not_erase_the_dimension(tmp_path: Path) -> None:
+    files = [EvidenceFile(path="SKILL.md", size=1, sha256=_DIGEST)]
+    files.extend(EvidenceFile(path=f"pkg-{index}/SKILL.md", size=1, sha256=_DIGEST) for index in range(50))
+    bundle = EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=str(tmp_path / "evidence"),
+        files=files,
+        manifest_sha256=_DIGEST,
+    )
+    tools, skill_tool = skill_tools()
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    assert result.status != "failed"
+    assert result.score is not None
+    assert result.metrics["active"]["kind"] == "skill_scan"
+    assert result.metrics["passive"]["errors"] == ["too_many_packages"]
+    assert len(skill_tool.calls) == 1
+
+
+async def test_not_configured_audit_row_carries_the_run_authorization(tmp_path: Path) -> None:
+    tools = ToolRegistry()
+    tools.register(build_read_evidence_tool(1_000_000))
+    audit = RecordingAudit()
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy(), audit=audit, aig_configured=False)
+
+    await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=target_evidence(tmp_path, agent_target()),
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    failed = next(event for event in audit.events if event.action == "active_scan.failed")
+    assert failed.scan_kind == "agent_scan"
+    assert failed.authorization_ref == "ticket-42"
 
 
 async def test_scan_kind_reaches_the_policy_for_a_model_target(tmp_path: Path) -> None:

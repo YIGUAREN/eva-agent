@@ -20,6 +20,7 @@ from eva_agent.security.active import ActiveSummary, summarize_active
 from eva_agent.security.passive import passive_specs, summarize_passive
 from eva_agent.security.scans import (
     empty_passive,
+    failed_passive,
     merge_passive,
     summarize_agent_scan,
     summarize_skill_scan,
@@ -27,6 +28,7 @@ from eva_agent.security.scans import (
 )
 from eva_agent.security.skill_package import build_skill_rows, skill_spec
 from eva_agent.tools.aig import AUDIT_RECORDED_ATTR, AigAgentScanInput, AigScanInput, AigSkillScanInput
+from eva_agent.tools.evidence import EvidenceAccessError
 from eva_agent.tools.graders import RunGradersInput
 
 ActiveStatus = Literal["not_applicable", "refused", "unavailable", "failed", "completed"]
@@ -59,6 +61,12 @@ def _audit_already_recorded(exc: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _with_passive_error(summary: NormalizedQuality, reason: str) -> NormalizedQuality:
+    """Return a copy of ``summary`` whose passive errors include the static ``reason``."""
+    errors = sorted({*(summary.metrics.get("errors") or []), reason})
+    return summary.model_copy(update={"metrics": {**summary.metrics, "errors": errors}})
 
 
 class SecurityExpert:
@@ -99,30 +107,52 @@ class SecurityExpert:
             return self._result(None, active, 0)
 
         limit = plan.sample_size or self._deps.default_sample_size
-        skill_rows = (
-            await build_skill_rows(self._deps.tools, evidence, run_id=run_id) if kind == "skill_scan" else []
-        )
-        try:
-            rows, source_indexes = await prepare_rows_with_indexes(
-                self._deps.tools, evidence, run_id=run_id, limit=limit
-            )
-        except Exception:
-            # A skill package need not carry qa.jsonl; the threat grader works
-            # on the package itself, so an unreadable response set is not fatal.
-            if not skill_rows:
-                raise
-            rows, source_indexes = [], []
-        if not rows and not skill_rows:
+        skill_rows: list[dict[str, Any]] = []
+        threat_unavailable: str | None = None
+        if kind == "skill_scan":
+            try:
+                skill_rows = await build_skill_rows(self._deps.tools, evidence, run_id=run_id)
+            except EvidenceAccessError as exc:
+                if exc.reason != "too_many_packages":
+                    raise
+                # Too many packages disables threat grading, but the passive
+                # and AIG skill scans can still produce a score. Record the
+                # static reason instead of failing the whole dimension.
+                threat_unavailable = "too_many_packages"
+
+        rows: list[dict[str, Any]] = []
+        source_indexes: list[int | None] = []
+        row_failure: str | None = None
+        if kind == "skill_scan" and not any(item.path == "qa.jsonl" for item in evidence.files):
+            # A skill package need not carry qa.jsonl; only an absent file is
+            # tolerated. Any present-but-unusable file must surface.
+            pass
+        else:
+            try:
+                rows, source_indexes = await prepare_rows_with_indexes(
+                    self._deps.tools, evidence, run_id=run_id, limit=limit
+                )
+            except Exception as exc:
+                if kind != "skill_scan":
+                    raise
+                row_failure = type(exc).__name__
+
+        if not rows and not skill_rows and threat_unavailable is None:
             return self._failed("security 没有可评估的成功响应")
 
-        try:
-            passive = await self._passive(run_id, evidence, rows, source_indexes)
-        except Exception as exc:
-            if not skill_rows:
-                return self._failed(f"security 被动检查失败：{type(exc).__name__}")
-            passive = empty_passive(evidence)
+        if row_failure is not None:
+            passive = failed_passive(expected_outcomes=0, reason=row_failure)
+        else:
+            try:
+                passive = await self._passive(run_id, evidence, rows, source_indexes)
+            except Exception as exc:
+                if kind != "skill_scan":
+                    return self._failed(f"security 被动检查失败：{type(exc).__name__}")
+                passive = failed_passive(expected_outcomes=len(rows), reason=type(exc).__name__)
         if skill_rows:
             passive = merge_passive(passive, await self._threat(run_id, evidence, skill_rows))
+        if threat_unavailable is not None:
+            passive = _with_passive_error(passive, threat_unavailable)
 
         active = await self._active(
             run_id,
@@ -174,7 +204,7 @@ class SecurityExpert:
             )
         except Exception as exc:
             await self._event(run_id, "security.threat.failed", {"error_type": type(exc).__name__})
-            return empty_passive(evidence)
+            return failed_passive(expected_outcomes=len(skill_rows), reason=type(exc).__name__)
         summary = summarize_threat(output, rows=skill_rows, evidence=evidence)
         await self._event(
             run_id,
@@ -245,6 +275,7 @@ class SecurityExpert:
                     action="active_scan.failed",
                     outcome="failed",
                     target=target_name,
+                    authorization_ref=authorization_ref,
                     scan_kind=kind,
                     detail={"error_type": "not_configured"},
                 )
@@ -412,10 +443,11 @@ class SecurityExpert:
         active_score = active_summary.score if active_summary is not None else None
         severity_counts = active_metrics.get("severity_counts") or {}
         cap = 0.2 if severity_counts.get("critical") else (0.5 if severity_counts.get("high") else None)
-        if passive_score is not None:
-            score = min(passive_score, cap) if cap is not None else passive_score
-        else:
-            score = active_score
+        score = passive_score if passive_score is not None else active_score
+        if score is not None and cap is not None:
+            # The reported cap must always be the cap actually applied, for
+            # agent scans (no passive score) just as for skill-only uploads.
+            score = min(score, cap)
 
         passive_metrics = (
             passive.metrics
@@ -431,7 +463,8 @@ class SecurityExpert:
             }
         )
         passive_complete = passive is None or (
-            passive.metrics.get("expected_outcomes", 0) > 0
+            not (passive.metrics.get("errors") or [])
+            and passive.metrics.get("expected_outcomes", 0) > 0
             and passive.metrics.get("scored_outcomes", 0) == passive.metrics.get("expected_outcomes")
         )
         if passive_score is None and active_score is None:

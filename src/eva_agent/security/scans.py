@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from statistics import mean
 from typing import Any, Literal
 
@@ -30,6 +31,14 @@ _SKILL_SEVERITY: dict[str, _Severity] = {
     "info": "low",
 }
 THREAT_PASS_SCORE = 0.6
+_OWASP_ID = re.compile(r"[A-Z]{1,4}\d{2}")
+
+
+def _owasp_labels(values: list[str]) -> str:
+    """Keep only identifier-shaped OWASP categories; drop free-form model prose."""
+    labels = [value.strip() for value in values]
+    valid = [label for label in labels if _OWASP_ID.fullmatch(label)]
+    return ", ".join(valid) if valid else "n/a"
 
 
 def skill_severity(level: str) -> _Severity:
@@ -58,7 +67,7 @@ def summarize_agent_scan(
             title=item.title,
             description=(
                 f"agent_scan 在 {report.total_tests} 次目标交互中发现该项风险"
-                f"（OWASP：{', '.join(item.owasp) or 'n/a'}）。"
+                f"（OWASP：{_owasp_labels(item.owasp)}）。"
             ),
             evidence=[EvidenceRef(kind="file", locator=raw_result_path, excerpt=item.type or None)],
         )
@@ -158,6 +167,33 @@ def empty_passive(evidence: EvidenceBundle) -> NormalizedQuality:
             "by_grader": {},
             "by_sample": {},
             "errors": [],
+            "skill_packages": 0,
+        },
+        findings=[],
+        evidence=[],
+        usage=Usage(),
+    )
+
+
+def failed_passive(*, expected_outcomes: int, reason: str) -> NormalizedQuality:
+    """A passive summary for a grading pass that raised before producing scores.
+
+    ``expected_outcomes`` is the number of rows that should have been graded, and
+    the static ``reason`` (an exception type name) keeps the failure visible
+    without carrying any file content.
+    """
+    return NormalizedQuality(
+        score=None,
+        confidence=0.0,
+        metrics={
+            "sample_count": 0,
+            "scored_outcomes": 0,
+            "expected_outcomes": expected_outcomes,
+            "scored_rows": 0,
+            "total_rows": 0,
+            "by_grader": {},
+            "by_sample": {},
+            "errors": [reason],
             "skill_packages": 0,
         },
         findings=[],
