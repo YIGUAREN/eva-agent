@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
@@ -16,12 +17,12 @@ from eva_agent.domain.result import MergedResult, Report
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.probe import ProbeStore
 
-REPORT_VERSION = 3
+REPORT_VERSION = 4
 
 DEFERRED_CAPABILITIES = [
     "证据包上传与 zip/tar 解压、沙箱执行（阶段 4）",
     "L3 Python grader（v1.5）",
-    "预算预扣、结算与 429/5xx 重试（阶段 5）",
+    "429/5xx 重试（阶段 5）",
     "流式响应、首 token 延迟与并发探测（v1.5）",
 ]
 
@@ -51,8 +52,19 @@ def build_report_payload(
     merged: MergedResult,
     generated_at: datetime,
     probe: ProbeSummary | None = None,
+    usage: Mapping[str, Any] | None = None,
+    finalize_overrun: bool = False,
 ) -> dict[str, Any]:
     metrics = to_jsonable_python(merged.metrics)
+    truncated = sorted(
+        {result.dimension.value for result in merged.results if result.truncated_reason == "budget"}
+    )
+    usage_payload = {
+        "estimated": bool((usage or {}).get("estimated", False)),
+        "cached": int((usage or {}).get("cached", 0)),
+        "fresh": int((usage or {}).get("fresh", 0)),
+        "budget_enforced": bool((usage or {}).get("budget_enforced", False)),
+    }
     return {
         "version": REPORT_VERSION,
         "run_id": run_id,
@@ -66,6 +78,9 @@ def build_report_payload(
         "dimensions": [item.model_dump(mode="json") for item in merged.results],
         "skipped": [item.model_dump(mode="json") for item in merged.skipped],
         "metrics": metrics,
+        "truncated_dimensions": truncated,
+        "usage": usage_payload,
+        "finalize_overrun": bool(finalize_overrun),
         "findings": [finding.model_dump(mode="json") for result in merged.results for finding in result.findings],
         "deferred": list(DEFERRED_CAPABILITIES),
     }
@@ -151,6 +166,8 @@ def _security_lines(metrics: dict[str, Any]) -> list[str]:
     )
     if active.get("risk_type"):
         lines.extend(["", f"风险类型：`{_cell(active['risk_type'])}`"])
+    if active.get("raw_result_path"):
+        lines.extend(["", f"原始结果：`{_cell(active['raw_result_path'])}`"])
     lines.append("")
     if active.get("refused_reason"):
         lines.extend([f"拒绝原因：`{_cell(active['refused_reason'])}`", ""])
@@ -200,11 +217,19 @@ def render_markdown(
             f"- 预算：cost ≤ {payload['budget']['max_cost_usd']} 美元，"
             f"时长 ≤ {payload['budget']['max_wall_clock_s']} 秒，"
             f"目标请求 ≤ {payload['budget']['max_target_requests']}",
-            "",
-            "## 目标探测",
-            "",
         ]
     )
+    usage = payload.get("usage") or {}
+    truncated = payload.get("truncated_dimensions") or []
+    lines.extend(
+        [
+            f"- 预算执行：{'已强制' if usage.get('budget_enforced') else '未强制'}",
+            f"- 截断维度：{', '.join(truncated) or '无'}",
+            f"- 收尾超支：{'是' if payload.get('finalize_overrun') else '否'}",
+            f"- 评分来源：缓存 {usage.get('cached', 0)}，新评分 {usage.get('fresh', 0)}",
+        ]
+    )
+    lines.extend(["", "## 目标探测", ""])
 
     probe = payload.get("probe")
     if probe is None:
@@ -297,6 +322,8 @@ def write_report(
     merged: MergedResult,
     generated_at: datetime,
     probe: ProbeSummary | None = None,
+    usage: Mapping[str, Any] | None = None,
+    finalize_overrun: bool = False,
 ) -> Report:
     generated_at = _as_utc(generated_at)
     paths = run_paths(data_dir, run_id)
@@ -312,6 +339,8 @@ def write_report(
         merged=merged,
         probe=probe,
         generated_at=generated_at,
+        usage=usage,
+        finalize_overrun=finalize_overrun,
     )
     markdown = render_markdown(payload, probe_mean_latency_ms=probe_mean_latency_ms)
     paths.report_json.write_text(

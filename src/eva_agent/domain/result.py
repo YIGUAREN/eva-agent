@@ -37,6 +37,8 @@ class Usage(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     duration_ms: int = Field(default=0, ge=0)
+    cached: int = Field(default=0, ge=0)
+    fresh: int = Field(default=0, ge=0)
 
 
 class GraderSampleOutcome(BaseModel):

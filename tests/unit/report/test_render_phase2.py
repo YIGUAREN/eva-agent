@@ -83,13 +83,13 @@ def test_payload_is_version_two_and_includes_probe() -> None:
         generated_at=datetime(2026, 10, 28, 12, 0, tzinfo=UTC),
     )
 
-    assert payload["version"] == 3
+    assert payload["version"] == 4
     assert payload["probe"]["total"] == 2
     assert payload["probe"]["succeeded"] == 2
     assert payload["deferred"] == [
         "证据包上传与 zip/tar 解压、沙箱执行（阶段 4）",
         "L3 Python grader（v1.5）",
-        "预算预扣、结算与 429/5xx 重试（阶段 5）",
+        "429/5xx 重试（阶段 5）",
         "流式响应、首 token 延迟与并发探测（v1.5）",
     ]
 

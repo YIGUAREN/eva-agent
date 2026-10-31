@@ -90,7 +90,7 @@ def payload() -> dict:
 
 def test_report_version_is_three_and_deferrals_drop_phase_three() -> None:
     data = payload()
-    assert data["version"] == 3
+    assert data["version"] == 4
     assert all("阶段 3" not in item for item in data["deferred"])
 
 

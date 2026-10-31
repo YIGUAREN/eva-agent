@@ -33,6 +33,15 @@ _AIG_NAME = re.compile(r"aig/([A-Za-z0-9_-]{1,128})\.(json|csv)")
 
 _BUDGET_LINE_PREFIX = "- 预算："
 
+_PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
+
+
+def public_report_usage(payload: dict[str, object]) -> dict[str, object]:
+    raw = payload.get("usage")
+    if not isinstance(raw, dict):
+        return {}
+    return {key: raw[key] for key in _PUBLIC_USAGE_KEYS if key in raw}
+
 
 def _redact_data_dir(text: str, data_dir: str) -> str:
     resolved = str(Path(data_dir).resolve())
@@ -64,6 +73,7 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
     if public:
         internal_hosts = _internal_hosts(state)
         payload = sanitize_public_payload(snapshot.payload, internal_hosts=internal_hosts)
+        payload = {**payload, "usage": public_report_usage(payload)}
         # The stored digest covers the unsanitized payload, so recompute it with
         # the same canonicalization used by ReportRepository.upsert.
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
