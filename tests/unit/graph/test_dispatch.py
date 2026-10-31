@@ -1,4 +1,5 @@
-from typing import cast
+from dataclasses import replace
+from typing import Any, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -8,12 +9,13 @@ from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.domain.probe import ProbeSummary
-from eva_agent.domain.run import InputKind, RunStatus
+from eva_agent.domain.run import InputKind, RunInput, RunStatus
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.graph.build import build_graph, route_experts
 from eva_agent.graph.nodes.dispatch import dispatch_node
 from eva_agent.graph.state import EvalState
 from eva_agent.runtime.artifacts import run_paths
+from eva_agent.security.target_policy import ValidatedTarget
 from tests.support.runtime import (
     FakePlanner,
     dependencies,
@@ -133,6 +135,57 @@ async def test_all_skipped_run_completes_with_skipped_annotations(tmp_path) -> N
     assert snapshot.values["expert_results"] == []
     assert run_paths(tmp_path / "data", "run-1").report_json.is_file()
     assert {"dispatch.ready", "run.merged", "report.ready"} <= set(events)
+
+
+def target_input() -> RunInput:
+    return RunInput(kind=InputKind.TARGET, target_ref="demo", target_prompts=["q"])
+
+
+def demo_target() -> TargetSpec:
+    return TargetSpec(
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="demo-echo",
+        base_url="http://127.0.0.1:8100/v1",
+    )
+
+
+class AllowedTargetPolicy:
+    async def validate(self, target: TargetSpec) -> ValidatedTarget:
+        return ValidatedTarget(
+            url=target.base_url or "",
+            scheme="http",
+            host="127.0.0.1",
+            port=8100,
+            addresses=("127.0.0.1",),
+            demo=True,
+        )
+
+
+async def test_all_skipped_target_run_completes_without_probing(tmp_path) -> None:
+    events: list[str] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict | None = None) -> None:
+        events.append(event_type)
+
+    deps = replace(
+        dependencies(tmp_path, planner=FakePlanner(plan=all_skipped_plan()), event_sink=sink),
+        targets={"demo": demo_target()},
+        policy=cast(Any, AllowedTargetPolicy()),
+        env={},
+    )
+    app = build_graph(deps, MemorySaver())
+    await app.ainvoke(initial_state(target_input()), CONFIG)
+
+    await app.ainvoke(Command(resume={"approved": True}), CONFIG)
+    snapshot = await app.aget_state(CONFIG)
+
+    assert snapshot.values["status"] is RunStatus.COMPLETED
+    assert snapshot.values["merged"].status is RunStatus.COMPLETED
+    assert {item.dimension for item in snapshot.values["merged"].skipped} == set(Dimension)
+    assert snapshot.values["probe"] is None
+    assert "probe.started" not in events
 
 
 def test_route_experts_sends_one_payload_per_dimension() -> None:

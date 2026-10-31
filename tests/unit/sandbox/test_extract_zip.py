@@ -220,6 +220,39 @@ def test_rejects_file_count_and_depth(tmp_path: Path) -> None:
     assert caught.value.reason == "too_deep"
 
 
+def test_rejects_directory_only_zip_with_too_many_members(tmp_path: Path) -> None:
+    """Directory entries count toward max_files even though nothing is written."""
+    package = _zip(tmp_path / "p.bin", {f"d{index}/": b"" for index in range(5)})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out", limits=ExtractionLimits(max_files=2))
+    assert caught.value.reason == "too_many_files"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_many_entry_zip_before_opening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The EOCD entry count must reject before ZipFile builds any ZipInfo."""
+    package = _zip(tmp_path / "p.bin", {f"{index}.txt": b"x" for index in range(5)})
+
+    def _unexpected(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ZipFile must not be constructed for an oversized manifest")
+
+    monkeypatch.setattr("eva_agent.sandbox.extract.zipfile.ZipFile", _unexpected)
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out", limits=ExtractionLimits(max_files=2))
+    assert caught.value.reason == "too_many_files"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_empty_zip(tmp_path: Path) -> None:
+    package = tmp_path / "p.bin"
+    with zipfile.ZipFile(package, "w"):
+        pass
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "rejected"
+    assert not (tmp_path / "out").exists()
+
+
 def test_rejects_unsupported_magic(tmp_path: Path) -> None:
     package = tmp_path / "p.bin"
     package.write_bytes(b"not an archive")

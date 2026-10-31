@@ -300,6 +300,30 @@ async def test_upload_prompt_documents_qa_rule_and_rows(tmp_path: Path) -> None:
     assert str(tmp_path) not in prompt
 
 
+async def test_upload_quality_is_allowed_when_a_later_row_has_a_response(tmp_path: Path) -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(
+        '{"query": "q0", "response": ""}\n'
+        '{"query": "q1", "response": "a1"}\n',
+        encoding="utf-8",
+    )
+    upload = EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=str(evidence_dir),
+        files=[EvidenceFile(path="qa.jsonl", size=1, sha256="a" * 64)],
+        manifest_sha256="a" * 64,
+    )
+
+    plan = await planner.plan(upload, budget)
+
+    assert plan.dimensions[0].dimension is Dimension.QUALITY
+    assert plan.dimensions[0].enabled is True
+
+
 async def test_prompt_documents_the_full_planner_schema() -> None:
     structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
     planner = LlmPlanner(None, build_registry(), structured_runner=structured)

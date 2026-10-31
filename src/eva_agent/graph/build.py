@@ -37,6 +37,10 @@ def _route_after_plan(state: EvalState) -> str:
 def _route_after_approve(state: EvalState) -> str:
     if state["status"] is not RunStatus.RUNNING:
         return END
+    plan = state["plan"]
+    # An all-skipped plan has nothing to probe; probe_node would reject it.
+    if plan is None or not any(item.enabled for item in plan.dimensions):
+        return "dispatch"
     return "probe" if state["input"].kind is InputKind.TARGET else "dispatch"
 
 

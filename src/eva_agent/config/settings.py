@@ -210,7 +210,9 @@ def require_sandbox_token(env: Mapping[str, str] | None = None) -> str:
     """Return SANDBOX_TOKEN from the environment; never accept it from YAML."""
     source = os.environ if env is None else env
     value = source.get("SANDBOX_TOKEN", "")
-    if not value:
+    # A whitespace-only token is as unusable as a missing one; keep the
+    # returned value unmodified (only the emptiness check ignores whitespace).
+    if not value or not value.strip():
         raise ConfigError("environment variable SANDBOX_TOKEN is not set")
     return value
 

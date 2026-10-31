@@ -18,7 +18,7 @@ from eva_agent.graph.experts.quality import (
     aggregate_outcomes,
     summarize_quality,
 )
-from eva_agent.graph.experts.rows import prepare_rows_with_indexes
+from eva_agent.graph.experts.rows import UPLOAD_QA_READ_LIMIT, prepare_rows_with_indexes
 from eva_agent.tools.evidence import build_read_evidence_tool
 from eva_agent.tools.graders import RunGradersInput
 from eva_agent.tools.registry import ToolRegistry, ToolSpec
@@ -219,7 +219,53 @@ async def test_upload_rows_are_parsed_from_qa_jsonl(tmp_path: Path) -> None:
         {"query": "q1", "response": "a1", "context": "ctx", "reference": "ref"},
         {"query": "q2", "response": "a2", "context": "", "reference": ""},
     ]
-    assert indexes == [None, None]
+    assert indexes == [0, 1]
+
+
+async def test_upload_citation_keeps_the_original_line_after_filtering(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(
+        '{"query": "q0", "response": ""}\n'
+        '{"query": "q1", "response": "a1"}\n',
+        encoding="utf-8",
+    )
+    tools = build_tools([GraderSampleOutcome(grader="relevance", sample_index=0, score=0.2)])
+    expert = QualityExpert(tools, default_sample_size=5)
+
+    result = await expert.run(
+        run_id="run-1",
+        plan=quality_plan(),
+        evidence=upload_evidence(str(evidence_dir)),
+    )
+
+    assert result.findings[0].evidence[0].locator == "qa.jsonl#1"
+
+
+async def test_upload_rows_report_oversized_qa_jsonl(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_bytes(b"x" * (UPLOAD_QA_READ_LIMIT + 1))
+
+    with pytest.raises(ValueError, match="qa.jsonl is too large") as exc:
+        await prepare_rows_with_indexes(
+            build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+        )
+
+    assert str(tmp_path) not in str(exc.value)
+
+
+async def test_upload_rows_report_undecodable_qa_jsonl(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_bytes(b"\xff\xfe\xff")
+
+    with pytest.raises(ValueError, match="qa.jsonl is malformed") as exc:
+        await prepare_rows_with_indexes(
+            build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+        )
+
+    assert str(tmp_path) not in str(exc.value)
 
 
 async def test_upload_rows_require_qa_jsonl(tmp_path: Path) -> None:
@@ -282,7 +328,7 @@ async def test_upload_rows_honor_the_row_limit(tmp_path: Path) -> None:
     )
 
     assert [row["query"] for row in rows] == ["q1", "q2"]
-    assert indexes == [None, None]
+    assert indexes == [0, 1]
 
 
 def test_upload_refs_cite_qa_jsonl() -> None:

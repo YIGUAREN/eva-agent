@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import os
 import shutil
@@ -10,7 +11,7 @@ import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import IO, Any, Literal, cast
 from uuid import uuid4
 
 _CHUNK = 1024 * 1024
@@ -40,6 +41,36 @@ class ExtractionError(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class _LimitedReader:
+    """Fail closed when a single read asks for more bytes than a header may hold.
+
+    ``tarfile`` reads a pax/GNU extended header's whole declared block in one
+    call, so a tiny crafted archive can request an absurd buffer and surface as
+    ``MemoryError``/``OverflowError`` (HTTP 500) instead of a rejection.
+    Legitimate member data is streamed in ``_CHUNK`` reads, so a single read
+    above ``max(max_file_bytes, _CHUNK)`` can only be header parsing; capping
+    there keeps every valid member readable while bounding header reads.
+    """
+
+    def __init__(self, stream: IO[bytes], limit: int) -> None:
+        self._stream = stream
+        self._limit = limit
+
+    def read(self, size: int | None = -1) -> bytes:
+        if size is not None and size > self._limit:
+            raise ExtractionError("file_too_large")
+        return self._stream.read(-1 if size is None else size)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._stream.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._stream.tell()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 
 @dataclass(frozen=True)
@@ -129,7 +160,7 @@ def _reject_unsafe_unicode_path_extra(info: zipfile.ZipInfo) -> None:
         offset = data_end
 
 
-def _reject_multi_volume(package: Path) -> None:
+def _reject_multi_volume(package: Path) -> tuple[int, bytes]:
     """Reject a zip whose end-of-central-directory declares another disk.
 
     Like ``zipfile``, only the last EOCD signature inside the window a valid
@@ -139,6 +170,9 @@ def _reject_multi_volume(package: Path) -> None:
     disk 0 for both the archive and the central directory. A missing or
     malformed candidate fails closed as ``unsupported_format``, so appended
     bytes cannot desynchronize this check from ``zipfile``.
+
+    Returns the EOCD offset within the returned tail so callers can bound the
+    declared entry count and central-directory size without re-reading.
     """
     with package.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
@@ -158,6 +192,7 @@ def _reject_multi_volume(package: Path) -> None:
     central_disk = int.from_bytes(tail[start + 6 : start + 8], "little")
     if disk_number != 0 or central_disk != 0:
         raise ExtractionError("unsupported_format")
+    return start, tail
 
 
 def _write_member(source, target: Path, *, limits: ExtractionLimits, total_written: int) -> tuple[int, str, int]:
@@ -183,9 +218,22 @@ def _extract_zip(package: Path, staging: Path, limits: ExtractionLimits) -> dict
     declared_total = 0
     total = 0
     try:
-        _reject_multi_volume(package)
+        eocd_start, eocd_tail = _reject_multi_volume(package)
+        # Bound the central directory before ``ZipFile`` materialises one
+        # ``ZipInfo`` per entry: a small archive can declare ~1M entries.
+        declared_entries = int.from_bytes(eocd_tail[eocd_start + 10 : eocd_start + 12], "little")
+        central_directory_size = int.from_bytes(eocd_tail[eocd_start + 12 : eocd_start + 16], "little")
+        if declared_entries == 0xFFFF or declared_entries > limits.max_files:
+            raise ExtractionError("too_many_files")
+        if central_directory_size > limits.max_files * 4096:
+            raise ExtractionError("too_many_files")
         with zipfile.ZipFile(package) as archive:
+            member_count = 0
             for info in archive.infolist():
+                member_count += 1
+                # Directory entries are members too; count them before skipping.
+                if member_count > limits.max_files:
+                    raise ExtractionError("too_many_files")
                 if info.flag_bits & 0x1:
                     raise ExtractionError("encrypted")
                 # ``ZipInfo.filename`` is already sanitized (NUL truncated,
@@ -213,8 +261,6 @@ def _extract_zip(package: Path, staging: Path, limits: ExtractionLimits) -> dict
                 declared_total += info.file_size
                 if declared_total > limits.max_total_bytes:
                     raise ExtractionError("total_too_large")
-                if len(files) >= limits.max_files:
-                    raise ExtractionError("too_many_files")
                 manifest_path = "/".join(parts)
                 folded_path = manifest_path.casefold()
                 if folded_path in seen:
@@ -225,6 +271,10 @@ def _extract_zip(package: Path, staging: Path, limits: ExtractionLimits) -> dict
                         source, staging.joinpath(*parts), limits=limits, total_written=total
                     )
                 files.append({"path": manifest_path, "size": size, "sha256": digest})
+        if not files:
+            raise ExtractionError("rejected")
+    except (MemoryError, OverflowError) as exc:
+        raise ExtractionError("corrupt") from exc
     except zipfile.BadZipFile as exc:
         raise ExtractionError("corrupt") from exc
     except RuntimeError as exc:
@@ -244,40 +294,55 @@ def _extract_tar(package: Path, staging: Path, limits: ExtractionLimits) -> dict
     declared_total = 0
     total = 0
     try:
-        with tarfile.open(package, mode="r:*") as archive:
-            for member in archive:
-                if member.isdir():
-                    # A root entry named "." / "./" (``tar -cf pkg.tar .``)
-                    # normalizes to no parts and is a harmless no-op.
-                    _safe_parts(member.name, limits, allow_empty=True)
-                    continue
-                parts = _safe_parts(member.name, limits)
-                if member.issym():
-                    raise ExtractionError("symlink")
-                if member.islnk():
-                    raise ExtractionError("hardlink")
-                if not member.isreg():
-                    raise ExtractionError("special_file")
-                if member.size > limits.max_file_bytes:
-                    raise ExtractionError("file_too_large")
-                declared_total += member.size
-                if declared_total > limits.max_total_bytes:
-                    raise ExtractionError("total_too_large")
-                if len(files) >= limits.max_files:
-                    raise ExtractionError("too_many_files")
-                manifest_path = "/".join(parts)
-                folded_path = manifest_path.casefold()
-                if folded_path in seen:
-                    raise ExtractionError("invalid_path")
-                seen.add(folded_path)
-                source = archive.extractfile(member)
-                if source is None:
-                    raise ExtractionError("corrupt")
-                with source:
-                    size, digest, total = _write_member(
-                        source, staging.joinpath(*parts), limits=limits, total_written=total
-                    )
-                files.append({"path": manifest_path, "size": size, "sha256": digest})
+        with package.open("rb") as raw:
+            is_gzip = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+            raw.seek(0)
+            # Wrap the decompressed stream so the header-read cap applies to
+            # what ``tarfile`` actually parses (plain or gzip, the only formats
+            # ``detect_format`` accepts).
+            stream = cast(IO[bytes], gzip.GzipFile(fileobj=raw) if is_gzip else raw)
+            guarded = _LimitedReader(stream, max(limits.max_file_bytes, _CHUNK))
+            with tarfile.open(fileobj=cast(IO[bytes], guarded), mode="r:") as archive:
+                member_count = 0
+                for member in archive:
+                    member_count += 1
+                    # Directory entries are members too; count them before skipping.
+                    if member_count > limits.max_files:
+                        raise ExtractionError("too_many_files")
+                    if member.isdir():
+                        # A root entry named "." / "./" (``tar -cf pkg.tar .``)
+                        # normalizes to no parts and is a harmless no-op.
+                        _safe_parts(member.name, limits, allow_empty=True)
+                        continue
+                    parts = _safe_parts(member.name, limits)
+                    if member.issym():
+                        raise ExtractionError("symlink")
+                    if member.islnk():
+                        raise ExtractionError("hardlink")
+                    if not member.isreg():
+                        raise ExtractionError("special_file")
+                    if member.size > limits.max_file_bytes:
+                        raise ExtractionError("file_too_large")
+                    declared_total += member.size
+                    if declared_total > limits.max_total_bytes:
+                        raise ExtractionError("total_too_large")
+                    manifest_path = "/".join(parts)
+                    folded_path = manifest_path.casefold()
+                    if folded_path in seen:
+                        raise ExtractionError("invalid_path")
+                    seen.add(folded_path)
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise ExtractionError("corrupt")
+                    with source:
+                        size, digest, total = _write_member(
+                            source, staging.joinpath(*parts), limits=limits, total_written=total
+                        )
+                    files.append({"path": manifest_path, "size": size, "sha256": digest})
+        if not files:
+            raise ExtractionError("rejected")
+    except (MemoryError, OverflowError) as exc:
+        raise ExtractionError("corrupt") from exc
     except tarfile.TarError as exc:
         raise ExtractionError("corrupt") from exc
     except OSError as exc:

@@ -82,6 +82,19 @@ def test_require_sandbox_token(monkeypatch) -> None:
     assert require_sandbox_token() == "t" * 32
 
 
+def test_require_sandbox_token_rejects_a_whitespace_only_token(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_TOKEN", " \t ")
+
+    with pytest.raises(ConfigError, match="SANDBOX_TOKEN"):
+        require_sandbox_token()
+
+
+def test_require_sandbox_token_returns_the_value_unchanged(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_TOKEN", " token ")
+
+    assert require_sandbox_token() == " token "
+
+
 @pytest.mark.parametrize(
     "value",
     [

@@ -14,6 +14,8 @@ from eva_agent.tools.target import ReadTargetProbeInput
 
 PASTE_READ_LIMIT = 1_000_000
 UPLOAD_QA_READ_LIMIT = 8 * 1024 * 1024
+_QA_MISSING = "upload evidence has no qa.jsonl"
+_QA_TOO_LARGE = "qa.jsonl is too large"
 _QA_MALFORMED = "qa.jsonl is malformed"
 
 
@@ -57,7 +59,7 @@ async def read_qa_rows(
 ) -> list[dict[str, str]]:
     """Read ``qa.jsonl`` through the evidence tool, hiding the tool's path errors."""
     if evidence.root is None:
-        raise ValueError("upload evidence has no qa.jsonl")
+        raise ValueError(_QA_MISSING)
     try:
         raw = await tools.call(
             "read_evidence",
@@ -68,9 +70,14 @@ async def read_qa_rows(
                 run_id=run_id,
             ),
         )
-    except EvidenceAccessError:
-        # The tool's message embeds the evidence root; never surface it.
-        raise ValueError("upload evidence has no qa.jsonl") from None
+    except EvidenceAccessError as exc:
+        # The tool's message embeds the evidence root; never surface it, but
+        # keep the reason precise so callers can distinguish failure modes.
+        if exc.reason == "too_large":
+            raise ValueError(_QA_TOO_LARGE) from None
+        if exc.reason == "undecodable":
+            raise ValueError(_QA_MALFORMED) from None
+        raise ValueError(_QA_MISSING) from None
     return parse_qa_jsonl(raw)
 
 
@@ -113,7 +120,8 @@ async def _prepare_with_indexes(
         indexes = [None]
     elif evidence.kind is InputKind.UPLOAD:
         rows = await read_qa_rows(tools, evidence, run_id=run_id)
-        indexes = [None] * len(rows)
+        # Cite the parsed-row index the shared usability filter will keep.
+        indexes = list(range(len(rows)))
     elif evidence.kind is InputKind.TARGET:
         if evidence.root is None:
             raise ValueError("target evidence has no workspace")

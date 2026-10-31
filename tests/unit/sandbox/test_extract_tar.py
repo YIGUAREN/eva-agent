@@ -17,6 +17,35 @@ def _tar(path: Path, members: dict[str, bytes], *, compression: str = "") -> Pat
     return path
 
 
+def _tar_directories(path: Path, names: list[str]) -> Path:
+    with tarfile.open(path, "w") as archive:
+        for name in names:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.DIRTYPE
+            archive.addfile(info)
+    return path
+
+
+def _tar_header(name: str, size: int, typeflag: bytes) -> bytes:
+    """Build one 512-byte ustar header with a correct octal size and checksum."""
+    encoded = name.encode("ascii")
+    assert len(encoded) <= 100
+    header = bytearray(512)
+    header[0 : len(encoded)] = encoded
+    header[100:108] = b"0000644\x00"
+    header[108:116] = b"0000000\x00"
+    header[116:124] = b"0000000\x00"
+    header[124:136] = f"{size:011o}\x00".encode("ascii")
+    header[136:148] = b"00000000000\x00"
+    header[148:156] = b" " * 8
+    header[156:157] = typeflag
+    header[257:263] = b"ustar\x00"
+    header[263:265] = b"00"
+    checksum = sum(header)
+    header[148:156] = f"{checksum:06o}\x00 ".encode("ascii")
+    return bytes(header)
+
+
 @pytest.mark.parametrize("compression", ["", "gz"])
 def test_extract_tar_writes_manifest(tmp_path: Path, compression: str) -> None:
     package = _tar(tmp_path / "p.bin", {"a.txt": b"one", "dir/b.txt": b"two"}, compression=compression)
@@ -92,6 +121,36 @@ def test_rejects_tar_file_count(tmp_path: Path) -> None:
     with pytest.raises(ExtractionError) as caught:
         extract_archive(package, tmp_path / "out", limits=ExtractionLimits(max_files=1))
     assert caught.value.reason == "too_many_files"
+
+
+def test_rejects_directory_only_tar_with_too_many_members(tmp_path: Path) -> None:
+    """Directory entries count toward max_files even though nothing is written."""
+    package = _tar_directories(tmp_path / "p.tar", [f"d{index}" for index in range(5)])
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out", limits=ExtractionLimits(max_files=2))
+    assert caught.value.reason == "too_many_files"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_directory_only_tar_without_regular_files(tmp_path: Path) -> None:
+    package = _tar_directories(tmp_path / "p.tar", ["only"])
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "rejected"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_pax_header_with_an_absurd_declared_size(tmp_path: Path) -> None:
+    """A tiny archive declaring a huge pax block must fail closed, not exhaust memory."""
+    package = tmp_path / "p.tar"
+    # typeflag "x" is a pax extended header; declare 2 GiB but ship no payload.
+    package.write_bytes(_tar_header("pax", 2**31, b"x") + b"\x00" * 1024)
+
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+
+    assert caught.value.reason in {"file_too_large", "corrupt"}
+    assert not (tmp_path / "out").exists()
 
 
 @pytest.mark.parametrize("name", ["NUL", "nul.txt", "COM1", "LPT0", "CONIN$"])

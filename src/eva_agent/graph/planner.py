@@ -309,7 +309,7 @@ class LlmPlanner:
     ) -> None:
         if evidence.kind is InputKind.TARGET:
             return
-        has_response = bool(rows and rows[0].get("response"))
+        has_response = any(row.get("response") for row in rows)
         if evidence.kind is InputKind.PASTE:
             has_response = bool((evidence.pasted or {}).get("response"))
         has_reference = any(row.get("reference") for row in rows)
