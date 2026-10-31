@@ -1,4 +1,5 @@
 import type {
+  BudgetDecisionBody,
   CreateRunBody,
   DemoTarget,
   GraderInfo,
@@ -18,6 +19,7 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -43,13 +45,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     return undefined as T;
   }
   const body = (await response.json().catch(() => null)) as
-    | { error?: { code?: string; message?: string } }
+    | { error?: { code?: string; message?: string; details?: Record<string, unknown> } }
     | null;
   if (!response.ok) {
     throw new ApiError(
       response.status,
       body?.error?.code ?? "http_error",
       body?.error?.message ?? "request failed",
+      body?.error?.details,
     );
   }
   return body as T;
@@ -74,6 +77,11 @@ export const api = {
     request<{ run_id: string }>(`/api/runs/${runId}/approve`, {
       method: "POST",
       body: JSON.stringify(plan === undefined ? { approved } : { approved, plan }),
+    }),
+  budgetDecision: (runId: string, body: BudgetDecisionBody) =>
+    request<{ run_id: string; status: string }>(`/api/runs/${runId}/budget/decision`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   cancel: (runId: string) => request<{ run_id: string }>(`/api/runs/${runId}/cancel`, { method: "POST" }),
   publish: (runId: string, published: boolean) =>

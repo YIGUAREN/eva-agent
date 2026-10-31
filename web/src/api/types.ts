@@ -15,13 +15,41 @@ export interface RunSummary {
   published_at: string | null;
 }
 
+export interface Budget {
+  max_cost_usd: number;
+  max_wall_clock_s: number;
+  max_target_requests: number;
+}
+
+export interface RunUsageView {
+  spent_usd: number;
+  reserved_usd: number;
+  spent_wall_clock_s: number;
+  target_requests: number;
+  aig_requests: number;
+}
+
+export interface BudgetGate {
+  finalize_estimate: number;
+  remaining: number;
+  spent: number;
+  truncated_dimensions: string[];
+  seq?: number;
+}
+
+export type BudgetDecisionBody =
+  | { action: "summarize"; confirm_overrun?: boolean }
+  | { action: "extend"; budget: Budget };
+
 export interface RunDetail extends RunSummary {
   input: Record<string, unknown>;
-  budget: { max_cost_usd: number; max_wall_clock_s: number; max_target_requests: number };
+  budget: Budget;
   plan: Record<string, unknown> | null;
   error: string | null;
   is_public: boolean;
   created_by: string | null;
+  usage: RunUsageView | null;
+  budget_gate: BudgetGate | null;
 }
 
 export interface RunEvent {
@@ -60,6 +88,6 @@ export interface DemoTarget {
 
 export interface CreateRunBody {
   input: { kind: "paste"; paste: { query: string; response?: string; context?: string } };
-  budget: { max_cost_usd: number; max_wall_clock_s: number; max_target_requests: number };
+  budget: Budget;
   idempotency_key?: string;
 }
