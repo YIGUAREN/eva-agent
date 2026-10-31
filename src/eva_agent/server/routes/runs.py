@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -15,11 +16,18 @@ from eva_agent.config.settings import ConfigError
 from eva_agent.config.targets import load_targets
 from eva_agent.domain.audit import AuditEvent
 from eva_agent.domain.run import InputKind, RunStatus
+from eva_agent.runtime.budget_decisions import (
+    BudgetOverrunRequired,
+    InvalidBudgetExtension,
+    ensure_summarize_allowed,
+    validate_extension,
+)
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import csrf_protected, current_session
 from eva_agent.server.errors import ApiError
 from eva_agent.server.schemas import (
     ApproveRequest,
+    BudgetDecisionRequest,
     CreateRunRequest,
     PublishRequest,
     decode_cursor,
@@ -30,7 +38,7 @@ from eva_agent.server.schemas import (
 )
 from eva_agent.server.state import AppState
 from eva_agent.storage.commands import ActiveCommandExists
-from eva_agent.storage.models import AdminSessionRow, RunRow
+from eva_agent.storage.models import AdminSessionRow, RunRow, RunUsageRow
 from eva_agent.storage.uploads import UPLOAD_EXTRACTED
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -61,6 +69,18 @@ async def _audit_rejection(state: AppState, row: RunRow, action: str) -> None:
             authorization_ref=row.authorization_ref,
         )
     )
+
+
+def _usage_view(row: RunUsageRow | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    return {
+        "spent_usd": float(row.spent_usd),
+        "reserved_usd": float(row.reserved_usd),
+        "spent_wall_clock_s": float(row.spent_wall_clock_s or 0.0),
+        "target_requests": int(row.target_requests or 0),
+        "aig_requests": int(row.aig_requests or 0),
+    }
 
 
 def _internal_hosts(state: AppState) -> tuple[str, ...]:
@@ -146,7 +166,14 @@ async def get_run(
     request: Request,
     session: Annotated[AdminSessionRow, Depends(current_session)],
 ) -> dict[str, object]:
-    return run_detail(await _load_run(get_state(request), run_id))
+    state = get_state(request)
+    row = await _load_run(state, run_id)
+    gate = await state.decisions.latest_gate(run_id)
+    return run_detail(
+        row,
+        usage=_usage_view(await state.usage.get(run_id)),
+        budget_gate=dict(gate.payload_json) if gate is not None else None,
+    )
 
 
 @router.post("/runs/{run_id}/publish")
@@ -228,6 +255,82 @@ async def approve_run(
         )
     )
     return {"run_id": run_id, "status": row.status, "queued": "approve"}
+
+
+@router.post("/runs/{run_id}/budget/decision", status_code=202)
+async def decide_run_budget(
+    run_id: str,
+    payload: BudgetDecisionRequest,
+    request: Request,
+    session: Annotated[AdminSessionRow, Depends(csrf_protected)],
+) -> dict[str, str]:
+    state = get_state(request)
+    row = await _load_run(state, run_id)
+    action = f"run.budget.{payload.action}"
+    if row.status != RunStatus.WAITING_BUDGET.value:
+        # A repeated submission after the first decision is idempotent: report
+        # the state that already exists instead of applying the decision twice.
+        return {"run_id": run_id, "status": row.status, "queued": ""}
+    gate = await state.decisions.latest_gate(run_id)
+    if gate is None:
+        await _audit_rejection(state, row, action)
+        raise ApiError(409, "invalid_state", "run has no recorded budget gate")
+    gate_payload = dict(gate.payload_json)
+    finalize_estimate = Decimal(str(gate_payload["finalize_estimate"]))
+    remaining = Decimal(str(gate_payload["remaining"]))
+    usage = state.usage.to_usage(await state.usage.get(run_id))
+
+    command_payload: dict[str, object]
+    if payload.action == "summarize":
+        try:
+            ensure_summarize_allowed(
+                finalize_estimate=finalize_estimate,
+                remaining=remaining,
+                confirm_overrun=payload.confirm_overrun,
+            )
+        except BudgetOverrunRequired as exc:
+            await _audit_rejection(state, row, action)
+            raise ApiError(
+                409,
+                "budget_overrun",
+                "预算不足以完成收尾，请确认超支后重试",
+                details={
+                    "finalize_estimate": float(exc.finalize_estimate),
+                    "remaining": float(exc.remaining),
+                },
+            ) from None
+        command_payload = {
+            "action": "summarize",
+            "confirm_overrun": payload.confirm_overrun,
+        }
+    else:
+        try:
+            validate_extension(payload.budget, usage)
+        except InvalidBudgetExtension as exc:
+            await _audit_rejection(state, row, action)
+            raise ApiError(
+                400,
+                "invalid_request",
+                str(exc),
+                details={"field": exc.field},
+            ) from None
+        command_payload = {"action": "extend", "budget": payload.budget.model_dump(mode="json")}
+
+    try:
+        await state.commands.enqueue(run_id, "budget_decision", command_payload)
+    except ActiveCommandExists:
+        await _audit_rejection(state, row, action)
+        raise ApiError(409, "command_pending", "another command is already pending") from None
+    await state.audit.record(
+        AuditEvent(
+            run_id=run_id,
+            actor="admin",
+            action=action,
+            outcome="accepted",
+            authorization_ref=row.authorization_ref,
+        )
+    )
+    return {"run_id": run_id, "status": row.status, "queued": "budget_decision"}
 
 
 @router.post("/runs/{run_id}/cancel", status_code=202)

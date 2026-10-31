@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -111,6 +111,24 @@ class BudgetDecisionRepository:
                 raise
             return True
 
+    async def decide(self, run_id: str, seq: int, action: str, payload: dict[str, Any]) -> bool:
+        """Claim the gate row for one decision; a duplicate returns False."""
+        async with self._session_factory() as session:
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(BudgetDecisionRow)
+                    .where(
+                        BudgetDecisionRow.run_id == run_id,
+                        BudgetDecisionRow.seq == seq,
+                        BudgetDecisionRow.action == "gate",
+                    )
+                    .values(action=action, payload_json=payload)
+                ),
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
     async def get(self, run_id: str, seq: int) -> BudgetDecisionRow | None:
         async with self._session_factory() as session:
             return await session.get(BudgetDecisionRow, (run_id, seq))
@@ -120,6 +138,16 @@ class BudgetDecisionRepository:
             return await session.scalar(
                 select(BudgetDecisionRow)
                 .where(BudgetDecisionRow.run_id == run_id, BudgetDecisionRow.action == "gate")
+                .order_by(BudgetDecisionRow.seq.desc())
+                .limit(1)
+            )
+
+    async def latest_decision(self, run_id: str) -> BudgetDecisionRow | None:
+        """Return the most recent row that already carries an operator decision."""
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(BudgetDecisionRow)
+                .where(BudgetDecisionRow.run_id == run_id, BudgetDecisionRow.action != "gate")
                 .order_by(BudgetDecisionRow.seq.desc())
                 .limit(1)
             )
