@@ -3,7 +3,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from eva_agent.config.settings import ConfigError, WebSettings, load_config
+from eva_agent.config.settings import (
+    ConfigError,
+    UploadsSettings,
+    WebSettings,
+    load_config,
+    require_sandbox_token,
+    validate_sandbox_url,
+)
 
 
 def test_web_settings_defaults() -> None:
@@ -35,3 +42,83 @@ def test_unknown_web_key_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError):
         load_config(bad)
+
+
+def test_web_upload_defaults() -> None:
+    web = WebSettings()
+    assert web.upload_max_bytes == 52_428_800
+    assert web.upload_timeout_s == 120.0
+    assert web.sandbox_runner_url == "http://127.0.0.1:8090"
+    assert web.sandbox_timeout_s == 120.0
+
+
+def test_uploads_defaults() -> None:
+    uploads = UploadsSettings()
+    assert uploads.max_extracted_bytes == 536_870_912
+    assert uploads.max_files == 10_000
+    assert uploads.max_depth == 20
+
+
+def test_upload_settings_reject_unknown_keys(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "public_base_url: http://localhost:8000\n"
+        "retention_days: 30\n"
+        "models: {}\n"
+        "agent: {}\n"
+        "storage: {url: 'sqlite+aiosqlite:///./x.db'}\n"
+        "uploads: {max_files: 5, surprise: 1}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="uploads"):
+        load_config(path)
+
+
+def test_require_sandbox_token(monkeypatch) -> None:
+    monkeypatch.delenv("SANDBOX_TOKEN", raising=False)
+    with pytest.raises(ConfigError, match="SANDBOX_TOKEN"):
+        require_sandbox_token()
+    monkeypatch.setenv("SANDBOX_TOKEN", "t" * 32)
+    assert require_sandbox_token() == "t" * 32
+
+
+def test_require_sandbox_token_rejects_a_whitespace_only_token(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_TOKEN", " \t ")
+
+    with pytest.raises(ConfigError, match="SANDBOX_TOKEN"):
+        require_sandbox_token()
+
+
+def test_require_sandbox_token_returns_the_value_unchanged(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_TOKEN", " token ")
+
+    assert require_sandbox_token() == " token "
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "not-a-url",
+        "ftp://host",
+        "http://",
+        "http://host:abc",
+        "http://host:99999",
+        "http://host:0",
+        "http://host\x00",
+        "http://host name",
+        "http://host\n8090",
+    ],
+)
+def test_validate_sandbox_url_rejects(value: str) -> None:
+    with pytest.raises(ConfigError, match="sandbox_runner_url"):
+        validate_sandbox_url(value)
+
+
+def test_validate_sandbox_url_accepts_http() -> None:
+    assert validate_sandbox_url("http://sandbox-runner:8090") == "http://sandbox-runner:8090"
+
+
+@pytest.mark.parametrize("value", ["http://sandbox-runner", "https://sandbox-runner", "https://host:8443"])
+def test_validate_sandbox_url_accepts_urls_without_a_port(value: str) -> None:
+    assert validate_sandbox_url(value) == value

@@ -13,6 +13,7 @@ from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.domain.run import InputKind
+from eva_agent.graph.experts.rows import read_qa_rows
 from eva_agent.graph.plan_validation import PlanValidationError, validate_plan
 from eva_agent.tools.dataset import SampleDatasetInput
 from eva_agent.tools.evidence import ReadEvidenceInput
@@ -246,6 +247,15 @@ class LlmPlanner:
             text = json.dumps({"kind": "paste", "fields": payload}, ensure_ascii=False)
             return text, [rows[0]["query"]], rows
 
+        if evidence.kind is InputKind.UPLOAD and evidence.root:
+            has_qa = any(item.path == "qa.jsonl" for item in evidence.files)
+            if not has_qa:
+                return json.dumps({"kind": "upload", "qa": False}, ensure_ascii=False), [], []
+            rows = await read_qa_rows(self._tools, evidence)
+            samples = rows[: self._sample_rows]
+            text = json.dumps({"kind": "upload", "qa": True, "rows": samples}, ensure_ascii=False)
+            return text, [row["query"] for row in samples], rows
+
         return str(evidence.model_dump(mode="json")), [], []
 
     async def _fill_rubrics(self, plan: EvalPlan, sample_queries: list[str]) -> EvalPlan:
@@ -299,7 +309,7 @@ class LlmPlanner:
     ) -> None:
         if evidence.kind is InputKind.TARGET:
             return
-        has_response = bool(rows and rows[0].get("response"))
+        has_response = any(row.get("response") for row in rows)
         if evidence.kind is InputKind.PASTE:
             has_response = bool((evidence.pasted or {}).get("response"))
         has_reference = any(row.get("reference") for row in rows)
@@ -423,6 +433,8 @@ Every grader needs a unique non-empty `name`; for builtin graders use the catalo
 Rules:
 - quality and security are available for paste/dataset input.
   latency and cost MUST appear in skipped with a non-empty reason.
+- Upload evidence without a root `qa.jsonl` (its evidence summary reports `qa: false`)
+  MUST put quality in skipped with a non-empty reason.
 - quality must have at least one executable grader.
 - A grader is either level="builtin" with a builtin_id from the catalog,
   or level="llm_rubric" (rubric may be empty; it is generated before approval).

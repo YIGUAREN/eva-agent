@@ -3,6 +3,7 @@
 from eva_agent.adapters.inputs.dataset import write_dataset_workspace
 from eva_agent.adapters.inputs.paste import write_paste_workspace
 from eva_agent.adapters.inputs.target import write_target_workspace
+from eva_agent.adapters.inputs.upload import write_upload_workspace
 from eva_agent.adapters.target.secrets import validate_target_env
 from eva_agent.domain.run import InputKind, RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
@@ -49,15 +50,19 @@ async def intake_node(state: EvalState, deps: GraphDependencies) -> dict:
                 run_input.target_prompts,
                 deps.data_dir,
             )
+        elif run_input.kind is InputKind.UPLOAD:
+            if not run_input.upload_id:
+                raise ValueError("upload input is missing an upload id")
+            evidence = write_upload_workspace(run_id, deps.data_dir)
         else:
             raise ValueError(f"input kind '{run_input.kind.value}' is not supported in phase 1")
     except Exception as exc:
         await deps.event_sink(run_id, "evidence.failed", {"error": str(exc)})
         return {"status": RunStatus.FAILED, "errors": [f"准备证据失败: {exc}"]}
 
-    await deps.event_sink(
-        run_id,
-        "evidence.ready",
-        {"kind": evidence.kind.value, "manifest_sha256": evidence.manifest_sha256},
-    )
+    summary: dict = {"kind": evidence.kind.value, "manifest_sha256": evidence.manifest_sha256}
+    if evidence.kind is InputKind.UPLOAD:
+        # The planner decides whether to skip quality from the root qa.jsonl flag.
+        summary["qa"] = any(item.path == "qa.jsonl" for item in evidence.files)
+    await deps.event_sink(run_id, "evidence.ready", summary)
     return {"evidence": evidence, "status": RunStatus.RUNNING}

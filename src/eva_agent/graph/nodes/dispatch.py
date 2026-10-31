@@ -16,8 +16,6 @@ async def dispatch_node(state: EvalState, deps: GraphDependencies) -> dict:
     enabled = [
         item.dimension.value for item in plan.dimensions if item.enabled and item.dimension in SUPPORTED_DIMENSIONS
     ]
-    if not enabled:
-        return {"status": RunStatus.FAILED, "errors": ["没有可执行的维度"]}
-
+    # An all-skipped plan dispatches nothing and goes straight to merge.
     await deps.event_sink(state["run_id"], "dispatch.ready", {"dimensions": enabled})
     return {"status": RunStatus.RUNNING}

@@ -12,9 +12,88 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from eva_agent.server.errors import ApiError
 from eva_agent.server.state import AppState
+
+_UPLOAD_PATH = "/api/uploads"
+_MULTIPART_ALLOWANCE = 1024 * 1024
+
+
+class _BodyTooLarge(BaseException):
+    """Sentinel raised from ``receive`` once the upload body exceeds the cap.
+
+    It deliberately derives from ``BaseException``: FastAPI wraps multipart
+    parsing in ``except Exception`` and would otherwise turn this abort into a
+    400 response before the middleware can answer with 413.
+    """
+
+
+class UploadSizeLimitMiddleware:
+    """Reject oversized upload bodies before multipart parsing buffers them.
+
+    FastAPI parses ``UploadFile`` parts before the endpoint runs, so a handler
+    only sees the declared size after Starlette has already spooled the whole
+    body. This middleware enforces the cap on the raw request: a too-large
+    ``Content-Length`` is rejected up front, and streamed bodies are counted as
+    chunks arrive.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+        self._app = app
+        self._limit = max_bytes + _MULTIPART_ALLOWANCE
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") != _UPLOAD_PATH:
+            await self._app(scope, receive, send)
+            return
+
+        declared = _content_length(scope)
+        if declared is not None and declared > self._limit:
+            await _too_large_response()(scope, receive, send)
+            return
+
+        received = 0
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self._limit:
+                    raise _BodyTooLarge
+            return message
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self._app(scope, limited_receive, tracking_send)
+        except _BodyTooLarge:
+            if not response_started:
+                await _too_large_response()(scope, receive, send)
+
+
+def _content_length(scope: Scope) -> int | None:
+    for name, value in scope.get("headers", []):
+        if name.lower() == b"content-length":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+def _too_large_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={"error": {"code": "upload_rejected", "message": "上传包超过大小限制"}},
+    )
 
 
 def get_state(request: Request) -> AppState:
@@ -68,18 +147,21 @@ def create_app(state: AppState) -> FastAPI:
     app.add_exception_handler(ApiError, _api_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
+    app.add_middleware(UploadSizeLimitMiddleware, max_bytes=state.config.web.upload_max_bytes)
 
     from eva_agent.server.routes.auth import router as auth_router
     from eva_agent.server.routes.events import router as events_router
     from eva_agent.server.routes.health import router as health_router
     from eva_agent.server.routes.reports import router as reports_router
     from eva_agent.server.routes.runs import router as runs_router
+    from eva_agent.server.routes.uploads import router as uploads_router
 
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(runs_router)
     app.include_router(reports_router)
     app.include_router(events_router)
+    app.include_router(uploads_router)
     _mount_spa(app, state.index_html)
     return app
 

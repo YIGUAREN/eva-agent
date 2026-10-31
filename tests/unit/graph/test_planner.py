@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pytest
 
 from eva_agent.domain.budget import Budget
-from eva_agent.domain.evidence import EvidenceBundle
+from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, SkippedDimension
 from eva_agent.domain.run import InputKind, PastedInput
@@ -272,6 +274,54 @@ async def test_paste_prompt_omits_declarative_fields_for_non_declarative_graders
     await planner.plan(evidence(), budget)
 
     assert "builtin and llm_rubric graders must omit `input_map`, `checks`, and `score`" in structured.prompts[0]
+
+
+async def test_upload_prompt_documents_qa_rule_and_rows(tmp_path: Path) -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text('{"query": "what is 2+2?", "response": "4"}\n', encoding="utf-8")
+    upload = EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=str(evidence_dir),
+        files=[EvidenceFile(path="qa.jsonl", size=1, sha256="a" * 64)],
+        manifest_sha256="a" * 64,
+    )
+
+    await planner.plan(upload, budget)
+
+    prompt = structured.prompts[0]
+    assert "Upload evidence without a root `qa.jsonl`" in prompt
+    assert "MUST put quality in skipped" in prompt
+    assert '"qa": true' in prompt
+    assert "what is 2+2?" in prompt
+    assert str(tmp_path) not in prompt
+
+
+async def test_upload_quality_is_allowed_when_a_later_row_has_a_response(tmp_path: Path) -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(
+        '{"query": "q0", "response": ""}\n'
+        '{"query": "q1", "response": "a1"}\n',
+        encoding="utf-8",
+    )
+    upload = EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=str(evidence_dir),
+        files=[EvidenceFile(path="qa.jsonl", size=1, sha256="a" * 64)],
+        manifest_sha256="a" * 64,
+    )
+
+    plan = await planner.plan(upload, budget)
+
+    assert plan.dimensions[0].dimension is Dimension.QUALITY
+    assert plan.dimensions[0].enabled is True
 
 
 async def test_prompt_documents_the_full_planner_schema() -> None:

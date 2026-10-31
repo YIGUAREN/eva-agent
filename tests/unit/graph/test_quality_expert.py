@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from eva_agent.adapters.inputs.paste import write_paste_workspace
-from eva_agent.domain.evidence import EvidenceBundle
+from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan
 from eva_agent.domain.result import (
@@ -18,6 +18,7 @@ from eva_agent.graph.experts.quality import (
     aggregate_outcomes,
     summarize_quality,
 )
+from eva_agent.graph.experts.rows import UPLOAD_QA_READ_LIMIT, prepare_rows_with_indexes
 from eva_agent.tools.evidence import build_read_evidence_tool
 from eva_agent.tools.graders import RunGradersInput
 from eva_agent.tools.registry import ToolRegistry, ToolSpec
@@ -38,6 +39,15 @@ def dataset_evidence() -> EvidenceBundle:
         root="/tmp/evidence",
         files=[],
         dataset=DatasetRef(path="dataset.csv", format="csv"),
+        manifest_sha256="a" * 64,
+    )
+
+
+def upload_evidence(root: str) -> EvidenceBundle:
+    return EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=root,
+        files=[EvidenceFile(path="qa.jsonl", size=1, sha256="a" * 64)],
         manifest_sha256="a" * 64,
     )
 
@@ -189,3 +199,146 @@ async def test_expert_rejects_missing_response(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="no rows"):
         await expert.run(run_id="run-1", plan=quality_plan(), evidence=evidence)
+
+
+async def test_upload_rows_are_parsed_from_qa_jsonl(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(
+        '{"query": "q1", "response": "a1", "context": "ctx", "reference": "ref"}\n'
+        "\n"
+        '{"query": "q2", "response": "a2"}\n',
+        encoding="utf-8",
+    )
+
+    rows, indexes = await prepare_rows_with_indexes(
+        build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+    )
+
+    assert rows == [
+        {"query": "q1", "response": "a1", "context": "ctx", "reference": "ref"},
+        {"query": "q2", "response": "a2", "context": "", "reference": ""},
+    ]
+    assert indexes == [0, 1]
+
+
+async def test_upload_citation_keeps_the_original_line_after_filtering(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(
+        '{"query": "q0", "response": ""}\n'
+        '{"query": "q1", "response": "a1"}\n',
+        encoding="utf-8",
+    )
+    tools = build_tools([GraderSampleOutcome(grader="relevance", sample_index=0, score=0.2)])
+    expert = QualityExpert(tools, default_sample_size=5)
+
+    result = await expert.run(
+        run_id="run-1",
+        plan=quality_plan(),
+        evidence=upload_evidence(str(evidence_dir)),
+    )
+
+    assert result.findings[0].evidence[0].locator == "qa.jsonl#1"
+
+
+async def test_upload_rows_report_oversized_qa_jsonl(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_bytes(b"x" * (UPLOAD_QA_READ_LIMIT + 1))
+
+    with pytest.raises(ValueError, match="qa.jsonl is too large") as exc:
+        await prepare_rows_with_indexes(
+            build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+        )
+
+    assert str(tmp_path) not in str(exc.value)
+
+
+async def test_upload_rows_report_undecodable_qa_jsonl(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_bytes(b"\xff\xfe\xff")
+
+    with pytest.raises(ValueError, match="qa.jsonl is malformed") as exc:
+        await prepare_rows_with_indexes(
+            build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+        )
+
+    assert str(tmp_path) not in str(exc.value)
+
+
+async def test_upload_rows_require_qa_jsonl(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.txt").write_text("not jsonl", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="upload evidence has no qa.jsonl") as exc:
+        await prepare_rows_with_indexes(
+            build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+        )
+
+    assert str(tmp_path) not in str(exc.value)
+
+
+@pytest.mark.parametrize("line", ["not json", "[]", '{"query": "q"}'])
+async def test_upload_rows_reject_malformed_lines(tmp_path: Path, line: str) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(line + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="qa.jsonl is malformed"):
+        await prepare_rows_with_indexes(
+            build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"query": "q", "response": 4}',
+        '{"query": null, "response": "a"}',
+        '{"query": "q", "response": "a", "context": 1}',
+        '{"query": "q", "response": "a", "reference": null}',
+    ],
+)
+async def test_upload_rows_reject_non_string_fields(tmp_path: Path, payload: str) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(payload + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="qa.jsonl is malformed"):
+        await prepare_rows_with_indexes(
+            build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=10
+        )
+
+
+async def test_upload_rows_honor_the_row_limit(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "qa.jsonl").write_text(
+        '{"query": "q1", "response": "a1"}\n'
+        '{"query": "q2", "response": "a2"}\n'
+        '{"query": "q3", "response": "a3"}\n',
+        encoding="utf-8",
+    )
+
+    rows, indexes = await prepare_rows_with_indexes(
+        build_tools([]), upload_evidence(str(evidence_dir)), run_id="run-1", limit=2
+    )
+
+    assert [row["query"] for row in rows] == ["q1", "q2"]
+    assert indexes == [0, 1]
+
+
+def test_upload_refs_cite_qa_jsonl() -> None:
+    rows = [{"query": "q", "response": "a", "context": "", "reference": ""}]
+    output = GraderRunOutput(outcomes=[GraderSampleOutcome(grader="relevance", sample_index=0, score=0.2)])
+
+    normalized = aggregate_outcomes(
+        output, specs=[quality_spec()], rows=rows, evidence=upload_evidence("/tmp/evidence")
+    )
+
+    assert normalized.findings[0].evidence[0].kind == "upload_row"
+    assert normalized.findings[0].evidence[0].locator == "qa.jsonl#0"
+    assert normalized.evidence[0].locator == "qa.jsonl"

@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.server.ratelimit import LoginRateLimiter
+from eva_agent.server.sandbox import SandboxClient
 from eva_agent.storage.audit import AuditRepository
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
 from eva_agent.storage.sessions import AdminSessionRepository
+from eva_agent.storage.uploads import UploadRepository
 
 
 def _utcnow() -> datetime:
@@ -32,6 +34,8 @@ class AppState:
     sessions: AdminSessionRepository
     reports: ReportRepository
     artifacts: ArtifactRepository
+    uploads: UploadRepository
+    sandbox: SandboxClient
     audit: AuditRepository
     admin_password_hash: str
     login_limiter: LoginRateLimiter

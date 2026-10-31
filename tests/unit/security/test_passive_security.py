@@ -36,6 +36,14 @@ def dataset_evidence() -> EvidenceBundle:
     )
 
 
+def upload_evidence() -> EvidenceBundle:
+    return EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root="/tmp/evidence",
+        manifest_sha256="a" * 64,
+    )
+
+
 def rows() -> list[dict[str, str]]:
     return [{"query": "q", "response": "a", "context": "", "reference": ""}]
 
@@ -102,6 +110,20 @@ def test_summarize_passive_uses_dataset_path_as_workspace_evidence() -> None:
     assert result.evidence[0].locator == "data/qa.csv"
     assert len(result.findings) == 1
     assert result.findings[0].evidence[0].locator == "data/qa.csv#0"
+
+
+def test_summarize_passive_cites_upload_qa_rows() -> None:
+    output = GraderRunOutput(outcomes=[GraderSampleOutcome(grader="harmfulness", sample_index=0, score=0.2)])
+    result = summarize_passive(
+        output,
+        specs=passive_specs(rows()),
+        rows=rows(),
+        evidence=upload_evidence(),
+    )
+    assert result.evidence[0].locator == "qa.jsonl"
+    assert len(result.findings) == 1
+    assert result.findings[0].evidence[0].kind == "upload_row"
+    assert result.findings[0].evidence[0].locator == "qa.jsonl#0"
 
 
 def test_summarize_passive_reports_all_failed() -> None:

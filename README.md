@@ -109,3 +109,26 @@ uv run eva-worker --config config/config.yaml
 > `public_base_url` 必须与浏览器访问站点时使用的 Origin 完全一致（按本文档流程即 `http://127.0.0.1:8000`）。登录端点会校验 `Origin`/`Referer`，不一致会返回 403。Vite 开发服务器会把代理请求的 `Origin` 改写为 `http://127.0.0.1:8000`，因此 `pnpm dev` 下登录可以正常工作。
 
 > 本地用 `http://127.0.0.1:8000` 做明文 HTTP 验收时，请先在 `config/config.yaml` 中把 `web.cookie_secure` 设为 `false`，否则浏览器不会保存登录 Cookie。生产环境必须保持 `true`（需要 TLS）。
+
+### 上传证据包（阶段 4b）
+
+1. 启动 sandbox-runner（需与 web/worker 共享 `data/` 卷）：
+
+   ```bash
+   export SANDBOX_TOKEN='<random 32+ chars>'
+   uv run eva-sandbox --config config/config.yaml --port 8090
+   ```
+
+2. 管理员登录后调用：
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/uploads \
+     -H "Cookie: eva_session=<session>" -H "X-CSRF-Token: <csrf>" \
+     -F "file=@evidence.zip"
+   ```
+
+   返回 `upload_id`；`GET /api/uploads/{upload_id}` 查看解压状态与 manifest。zip/tar 均按魔数识别，任何路径穿越、链接、特殊文件或超限包整包拒绝，且不保留解压文件。
+
+3. 建 run 时使用 `{"input": {"kind": "upload", "upload_id": "<id>"}}`。
+
+证据包根目录可包含 `qa.jsonl`（每行一个带字符串 `query` 与 `response` 的 JSON 对象，可选 `context`/`reference`）供 quality 专家评分；没有根级 `qa.jsonl` 的包会跳过 quality 与 security 维度并在报告中标注为 skipped。
