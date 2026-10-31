@@ -1,6 +1,7 @@
 import json
 import tempfile
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,8 +9,11 @@ import pytest
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.domain.plan import Dimension
+from eva_agent.domain.probe import ProbeRecord
+from eva_agent.domain.run import InputKind, PastedInput, RunInput
 from eva_agent.packages import grader_package as gp
 from eva_agent.packages.grader_package import build_grader_package, read_grader_package
+from eva_agent.packages.inputs import EvidenceSnapshot, PackageInput
 from eva_agent.packages.manifest import PackageError
 
 MEMBERS = (
@@ -66,6 +70,56 @@ async def test_build_grader_package_marks_a_truncated_run_unreplayable(write_run
     _, manifest = await build_grader_package(config=config, run_row=run_row, out_dir=archive_dir)
     assert manifest.replayable is False
     assert any("budget" in blocker for blocker in manifest.replay_blockers)
+
+
+def _package_input(
+    *,
+    rows: list[dict[str, str]] | None = None,
+    probe_records: list[ProbeRecord] | None = None,
+    dimension_limits: dict[str, int],
+) -> PackageInput:
+    return PackageInput(
+        run_input=RunInput(kind=InputKind.PASTE, paste=PastedInput(query="q", response="a")),
+        evidence=EvidenceSnapshot(kind=InputKind.PASTE, manifest_sha256="0" * 64),
+        rows=list(rows or []),
+        probe_records=list(probe_records or []),
+        dimension_limits=dimension_limits,
+    )
+
+
+def _probe(index: int) -> ProbeRecord:
+    return ProbeRecord(
+        index=index,
+        prompt=f"p{index}",
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        status_code=200,
+        latency_ms=10,
+        response_text="a",
+    )
+
+
+def test_replay_blockers_reject_an_empty_quality_slice():
+    "The quality expert never summarizes zero rows, so export must not claim replayability."
+    inputs = _package_input(rows=[], dimension_limits={"quality": 5})
+    evidence = inputs.evidence
+
+    blockers = gp._replay_blockers([], {"dimensions": []}, evidence, inputs)
+
+    # ``build_grader_package`` records ``replayable=not blockers``.
+    assert blockers == ["quality: the dimension has no inputs to replay"]
+
+
+def test_replay_blockers_reject_an_empty_probe_slice():
+    "Cost and latency raise on an empty probe file; an empty graded-row slice is not their input."
+    inputs = _package_input(rows=[], probe_records=[], dimension_limits={"cost": 1})
+    evidence = inputs.evidence
+
+    assert gp._replay_blockers([], {"dimensions": []}, evidence, inputs) == [
+        "cost: the dimension has no inputs to replay"
+    ]
+
+    with_probes = _package_input(rows=[], probe_records=[_probe(0)], dimension_limits={"cost": 1})
+    assert gp._replay_blockers([], {"dimensions": []}, evidence, with_probes) == []
 
 
 def test_read_grader_package_rejects_a_tampered_archive(write_run_archive):

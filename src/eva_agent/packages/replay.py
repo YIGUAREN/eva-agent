@@ -17,7 +17,6 @@ from eva_agent.packages.grader_package import GraderPackage
 from eva_agent.packages.manifest import PackageError
 from eva_agent.pricing import ModelPrice
 from eva_agent.security.passive import passive_specs, summarize_passive
-from eva_agent.security.scans import empty_passive
 
 COMPARED_FIELDS = (
     "status",
@@ -126,11 +125,16 @@ def _quality_values(package: GraderPackage) -> dict[str, Any]:
     dimension = _plan_dimension(package.plan, Dimension.QUALITY)
     if dimension is None:
         raise PackageError("quality is not enabled")
+    rows = _dimension_rows(package, Dimension.QUALITY)
+    if not rows:
+        # The expert refuses to summarize zero rows, so the recorded entry
+        # cannot be re-derived faithfully.
+        raise PackageError("quality: the dimension has no inputs to replay")
     specs = [spec for spec in dimension.graders if spec.mode == "pointwise" and spec.level != "declarative"]
     normalized = aggregate_outcomes(
         _recorded_output(Dimension.QUALITY, specs, package),
         specs=specs,
-        rows=_dimension_rows(package, Dimension.QUALITY),
+        rows=rows,
         evidence=package.inputs.evidence.as_bundle(),
         source_indexes=_dimension_indexes(package, Dimension.QUALITY),
     )
@@ -148,19 +152,17 @@ def _security_values(package: GraderPackage) -> dict[str, Any]:
     if _plan_dimension(package.plan, Dimension.SECURITY) is None:
         raise PackageError("security is not enabled")
     rows = _dimension_rows(package, Dimension.SECURITY)
-    evidence = package.inputs.evidence.as_bundle()
     if not rows:
-        # The expert returns ``empty_passive`` when it has no rows to grade.
-        normalized = empty_passive(evidence)
-    else:
-        specs = passive_specs(rows)
-        normalized = summarize_passive(
-            _recorded_output(Dimension.SECURITY, specs, package),
-            specs=specs,
-            rows=rows,
-            evidence=evidence,
-            source_indexes=_dimension_indexes(package, Dimension.SECURITY),
-        )
+        # The expert fails the dimension instead of summarizing zero rows.
+        raise PackageError("security: the dimension has no inputs to replay")
+    specs = passive_specs(rows)
+    normalized = summarize_passive(
+        _recorded_output(Dimension.SECURITY, specs, package),
+        specs=specs,
+        rows=rows,
+        evidence=package.inputs.evidence.as_bundle(),
+        source_indexes=_dimension_indexes(package, Dimension.SECURITY),
+    )
     return {
         "score": normalized.score,
         "confidence": normalized.confidence,
@@ -175,6 +177,9 @@ def _cost_result(package: GraderPackage) -> DimensionResult:
     spec = _declarative_spec(dimension)
     price = _price_for(package)
     records = _truncated_records(package, dimension)
+    if not records:
+        # The expert raises on an empty probe file instead of summarizing it.
+        raise PackageError("cost: the dimension has no inputs to replay")
     rows: list[dict[str, Any]] = []
     costs: list[Decimal] = []
     for record in records:
@@ -199,6 +204,9 @@ def _latency_result(package: GraderPackage) -> DimensionResult:
         raise PackageError("latency is not enabled")
     spec = _declarative_spec(dimension)
     records = _truncated_records(package, dimension)
+    if not records:
+        # The expert raises on an empty probe file instead of summarizing it.
+        raise PackageError("latency: the dimension has no inputs to replay")
     # The latency expert grades only successful requests, exactly as here.
     rows = [build_latency_record(record) for record in records if is_successful(record)]
     return summarize_latency(
