@@ -137,34 +137,44 @@ _ABSOLUTE_PATH_PATTERNS = (
     _POSIX_ABSOLUTE_PATH,
 )
 
+# Run-relative AIG artifact names, e.g. data/runs/<id>/aig/<session>.json or aig/<session>.csv.
+# They are admin-only artifacts, so public output must never carry them.
+_AIG_ARTIFACT_PATH = re.compile(
+    r"(?<![A-Za-z0-9._-])(?:[A-Za-z0-9._-]+/)*aig/[A-Za-z0-9_-]{1,128}\.(?:json|csv)(?![A-Za-z0-9._-])"
+)
+_PUBLIC_PATH_PATTERNS = (*_ABSOLUTE_PATH_PATTERNS, _AIG_ARTIFACT_PATH)
+
 
 def _has_absolute_path(text: str) -> bool:
-    """Return True when *text* contains any recognized absolute path token."""
-    return any(pattern.search(text) is not None for pattern in _ABSOLUTE_PATH_PATTERNS)
+    """Return True when *text* contains any absolute or run-relative AIG artifact path token."""
+    return any(pattern.search(text) is not None for pattern in _PUBLIC_PATH_PATTERNS)
 
 
 def redact_absolute_paths(text: str) -> str:
-    """Replace absolute filesystem path tokens with ``<path>``.
+    """Replace absolute or run-relative AIG artifact path tokens with ``<path>``.
 
     Line references such as ``D:\\data\\ds.jsonl#3`` become ``<path>#3``.
     """
-    for pattern in _ABSOLUTE_PATH_PATTERNS:
+    for pattern in _PUBLIC_PATH_PATTERNS:
         text = pattern.sub("<path>", text)
     return text
 
 
 def redact_markdown_paths(text: str) -> str:
-    """Redact path-bearing markdown lines as a whole.
+    """Redact absolute or run-relative AIG artifact path markdown lines.
 
-    The token regex stops at a space unless a later separator proves the space
-    belongs to the path, so a line ending in a spaced component or a UNC share
-    would leak its tail (``<path> File.jsonl``). Per line, this keeps the text
-    before the first path and the ``#<digits>`` line reference, then drops the
-    remainder. Over-redacting the rest of the line is intentional.
+    The absolute-path token regex stops at a space unless a later separator
+    proves the space belongs to the path, so a line ending in a spaced
+    component or a UNC share would leak its tail (``<path> File.jsonl``). Per
+    line, this keeps the text before the first path and the ``#<digits>`` line
+    reference, then drops the remainder. Over-redacting the rest of the line is
+    intentional. Run-relative AIG artifact names are exact, space-free tokens,
+    so they are replaced in place without dropping the rest of the line.
     """
     redacted: list[str] = []
     for line in text.split("\n"):
-        matches = [match for pattern in _ABSOLUTE_PATH_PATTERNS if (match := pattern.search(line))]
+        line = _AIG_ARTIFACT_PATH.sub("<path>", line)
+        matches = [match for pattern in _PUBLIC_PATH_PATTERNS if (match := pattern.search(line))]
         if not matches:
             redacted.append(line)
             continue
@@ -239,10 +249,11 @@ def _is_sensitive_key(key: str) -> bool:
 def sanitize_public_payload(value: Any, *, internal_hosts: tuple[str, ...] = ()) -> Any:
     """Recursively sanitize a payload before it reaches the public API.
 
-    Sensitive keys are dropped. A string value that contains any absolute path
-    token (a Windows drive path, a Windows or POSIX UNC share, or a POSIX
-    absolute path) is replaced entirely with ``<path>``; whole-value replacement
-    prevents paths containing spaces or UNC shares from leaking their tail.
+    Sensitive keys are dropped. A string value that contains any absolute or
+    run-relative AIG artifact path token (a Windows drive path, a Windows or
+    POSIX UNC share, a POSIX absolute path, or ``…/aig/<id>.json|csv``) is
+    replaced entirely with ``<path>``; whole-value replacement prevents paths
+    containing spaces or UNC shares from leaking their tail.
     Other strings have internal addresses and secrets redacted.
     """
     if isinstance(value, dict):
