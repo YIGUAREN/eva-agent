@@ -124,8 +124,8 @@ def test_markdown_renders_cost_table_and_estimated_note() -> None:
 
     markdown = render_markdown(payload)
 
-    assert "| input_tokens | output_tokens | total (USD) | mean (USD) | per 1k (USD) | estimated |" in markdown
-    assert "| 3000 | 1500 | 0.012000 | 0.006000 | 6.000000 | 1 |" in markdown
+    assert "| input_tokens | output_tokens | total (¥) | mean (¥) | per 1k (¥) | estimated |" in markdown
+    assert "| 3000 | 1500 | ¥0.012000 | ¥0.006000 | ¥6.000000 | 1 |" in markdown
     assert "部分 token 为本地估算（estimated_samples=1）。" in markdown
 
 
@@ -154,7 +154,7 @@ def test_markdown_surfaces_failed_dimensions_in_overview() -> None:
 
     markdown = render_markdown(payload)
 
-    assert "- 失败维度：cost" in markdown
+    assert "- 失败维度：成本" in markdown
 
 
 def test_markdown_omits_failed_dimensions_line_when_none() -> None:

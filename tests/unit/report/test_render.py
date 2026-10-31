@@ -97,8 +97,27 @@ def test_markdown_has_required_sections() -> None:
 
     for heading in ["## 概览", "## 计划", "## 维度结果", "## 发现", "## 未执行维度", "## 限制"]:
         assert heading in markdown
-    assert "quality" in markdown
+    assert "### 质量" in markdown
     assert "样本 2 质量得分偏低" in markdown
+
+
+def test_markdown_uses_chinese_labels_for_status_dimensions_and_severity() -> None:
+    payload = build_report_payload(
+        run_id="run-1",
+        plan=plan(),
+        merged=merged(),
+        generated_at=datetime(2026, 10, 27, 12, 0, tzinfo=UTC),
+    )
+
+    markdown = render_markdown(payload)
+
+    assert "- 状态：已完成" in markdown
+    assert "### 质量" in markdown
+    assert "- 状态：正常" in markdown
+    assert "| quality-low-2 | 中 | 样本 2 质量得分偏低 |" in markdown
+    assert "| 延迟 | 阶段 1 未实现 |" in markdown
+    # The technical code values stay in the JSON payload, not the prose.
+    assert "- 状态：`completed`" not in markdown
 
 
 def test_markdown_handles_failed_dimension() -> None:
@@ -111,7 +130,7 @@ def test_markdown_handles_failed_dimension() -> None:
 
     markdown = render_markdown(payload)
 
-    assert "failed" in markdown
+    assert "- 状态：失败" in markdown
 
 
 def test_payload_is_json_serializable_with_non_json_metrics() -> None:
