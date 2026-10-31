@@ -226,8 +226,8 @@ def redact_markdown_paths(text: str) -> str:
     return "\n".join(redacted)
 
 
-# Public Markdown never carries budget or spend figures.
-_HIDDEN_LINE_PREFIXES = ("- 预算：", "- 已花费：")
+# Public Markdown hides the budget cap; the actual spend is public.
+_HIDDEN_LINE_PREFIXES = ("- 预算：",)
 
 
 def _redact_data_dir(text: str, data_dir: str) -> str:
@@ -242,7 +242,7 @@ def sanitize_public_markdown(
 
     Admin responses return the stored markdown unchanged. Public output must
     never reveal absolute filesystem paths, internal addresses, secrets, or
-    budget figures.
+    budget caps.
     """
     # Line-level path redaction drops the remainder of any path-bearing line, so
     # spaced path components and UNC share tails cannot survive. Internal

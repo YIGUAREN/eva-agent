@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Annotated
 
@@ -24,8 +25,9 @@ from eva_agent.storage.models import AdminSessionRow
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
-_PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
+_PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced", "spent_usd")
 _PUBLIC_USAGE_BOOL_KEYS = frozenset({"estimated", "budget_enforced"})
+_PUBLIC_USAGE_MONEY_KEYS = frozenset({"spent_usd"})
 
 _PUBLIC_SAMPLE_COUNT_KEYS = ("sample_count", "completed_samples", "missing_samples")
 
@@ -37,16 +39,26 @@ def _valid_usage_value(key: str, value: object) -> bool:
     """A whitelisted usage key is only public when its value has the right type."""
     if key in _PUBLIC_USAGE_BOOL_KEYS:
         return isinstance(value, bool)
+    if key in _PUBLIC_USAGE_MONEY_KEYS:
+        # bool is an int subclass and a hostile producer may send NaN/inf/negatives.
+        return (
+            isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+        )
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def public_report_usage(payload: dict[str, object]) -> dict[str, object]:
     """Copy only whitelisted usage keys whose values are safe primitives.
 
-    A hostile producer can put spend figures into a whitelisted key (for
-    example ``{"cached": {"spent_usd": 12.3}}``), so key presence alone is not
-    enough: each value is type-checked and dropped when it does not match its
-    expected type.
+    The actual spend (``spent_usd``) is deliberately public now; the budget cap
+    is not. A hostile producer can put spend figures into a whitelisted key
+    (for example ``{"cached": {"spent_usd": 12.3}}``), so key presence alone is
+    not enough: each value is type-checked and dropped when it does not match
+    its expected type. Money values must be non-negative finite numbers, so a
+    bool, string, NaN, infinity, or negative value is dropped.
     """
     raw = payload.get("usage")
     if not isinstance(raw, dict):
