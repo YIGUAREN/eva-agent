@@ -152,6 +152,7 @@ def create_app(state: AppState) -> FastAPI:
     from eva_agent.server.routes.auth import router as auth_router
     from eva_agent.server.routes.events import router as events_router
     from eva_agent.server.routes.health import router as health_router
+    from eva_agent.server.routes.packages import router as packages_router
     from eva_agent.server.routes.reports import router as reports_router
     from eva_agent.server.routes.runs import router as runs_router
     from eva_agent.server.routes.uploads import router as uploads_router
@@ -162,6 +163,7 @@ def create_app(state: AppState) -> FastAPI:
     app.include_router(reports_router)
     app.include_router(events_router)
     app.include_router(uploads_router)
+    app.include_router(packages_router)
     _mount_spa(app, state.index_html)
     return app
 

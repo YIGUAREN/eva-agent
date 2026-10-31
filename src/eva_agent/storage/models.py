@@ -171,6 +171,19 @@ class UploadRow(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class GraderPackageRow(Base):
+    __tablename__ = "grader_packages"
+    __table_args__ = (UniqueConstraint("run_id", name="uq_grader_packages_run_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class RunUsageRow(Base):
     __tablename__ = "run_usage"
 

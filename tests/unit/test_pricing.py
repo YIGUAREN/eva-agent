@@ -31,6 +31,21 @@ models:
     assert price.cost_usd(input_tokens=1000, output_tokens=500) == Decimal("0.00082")
 
 
+def test_pricing_table_lists_its_keys(tmp_path: Path) -> None:
+    path = write_pricing(
+        tmp_path,
+        """
+models:
+  - provider: openai-compatible
+    model: fake
+    input_per_million: 1.0
+    output_per_million: 2.0
+""",
+    )
+    table = PricingTable.load(path)
+    assert table.keys() == [("openai-compatible", "fake")]
+
+
 def test_unknown_model_fails_closed(tmp_path: Path):
     path = write_pricing(
         tmp_path,

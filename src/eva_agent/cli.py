@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Sequence
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,9 @@ from dotenv import load_dotenv
 from eva_agent.config.settings import AppConfig, ConfigError, MissingSecretError, load_config
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput, RunStatus
+from eva_agent.packages.grader_package import build_grader_package, read_grader_package
+from eva_agent.packages.manifest import sha256_file
+from eva_agent.packages.replay import replay_package
 from eva_agent.runtime.manager import RunManager, RunStateError, RunStatusView
 
 
@@ -67,6 +71,25 @@ def build_parser() -> argparse.ArgumentParser:
     report = run_subparsers.add_parser("report")
     report.add_argument("run_id")
     report.add_argument("--config", default="config/config.yaml")
+
+    export_package = subparsers.add_parser("export-grader-package")
+    export_package.add_argument("run_id")
+    export_package.add_argument("--out", required=True)
+    export_package.add_argument("--config", default="config/config.yaml")
+
+    export_run = subparsers.add_parser("export-run")
+    export_run.add_argument("run_id")
+    export_run.add_argument("--out", required=True)
+    export_run.add_argument("--config", default="config/config.yaml")
+
+    import_run = subparsers.add_parser("import-run")
+    import_run.add_argument("bundle")
+    import_run.add_argument("--public", action="store_true")
+    import_run.add_argument("--config", default="config/config.yaml")
+
+    replay = subparsers.add_parser("replay")
+    replay.add_argument("package")
+    replay.add_argument("--out", required=True)
     return parser
 
 
@@ -192,8 +215,110 @@ async def _report(args: argparse.Namespace, config: AppConfig) -> int:
     return 0
 
 
+async def _export_grader_package(args: argparse.Namespace, config: AppConfig) -> int:
+    try:
+        async with RunManager.open(config, enforce_budget=False) as manager:
+            run_row = await manager.run_row(args.run_id)
+            archive, manifest = await build_grader_package(
+                config=config, run_row=run_row, out_dir=Path(args.out)
+            )
+        payload = {
+            "package": str(archive),
+            "sha256": sha256_file(archive),
+            "size_bytes": archive.stat().st_size,
+            "replayable": manifest.replayable,
+            "replay_blockers": manifest.replay_blockers,
+        }
+    except OSError as exc:
+        # ``str(OSError)`` embeds the path; the OS reason is enough and safe.
+        print(
+            f"error: cannot write grader package: {exc.strerror or type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _open_manager(config: AppConfig) -> AbstractAsyncContextManager[RunManager]:
+    return RunManager.open(config, enforce_budget=False)
+
+
+async def _export_run(args: argparse.Namespace, config: AppConfig) -> int:
+    try:
+        async with _open_manager(config) as manager:
+            archive, manifest = await manager.export_run_bundle(args.run_id, Path(args.out))
+    except OSError as exc:
+        # ``str(OSError)`` embeds the path; the OS reason is enough and safe.
+        print(
+            f"error: cannot write run bundle: {exc.strerror or type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        json.dumps(
+            {
+                "package": str(archive),
+                "run_id": manifest.run_id,
+                "members": sorted(manifest.files),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+async def _import_run(args: argparse.Namespace, config: AppConfig) -> int:
+    async with _open_manager(config) as manager:
+        result = await manager.import_run_bundle(Path(args.bundle), public=args.public)
+    print(
+        json.dumps(
+            {"run_id": result.run_id, "status": result.status, "artifacts": result.artifacts},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+async def _replay(args: argparse.Namespace, _config: AppConfig | None) -> int:
+    package = read_grader_package(Path(args.package))
+    result = replay_package(package)
+    out_dir = Path(args.out)
+    payload = {
+        "matched": result.matched,
+        "compared": result.compared,
+        "skipped": result.skipped,
+        "differences": [
+            {"path": item.path, "recorded": item.recorded, "replayed": item.replayed}
+            for item in result.differences
+        ],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "replay.json").write_text(encoded, encoding="utf-8")
+    except OSError as exc:
+        # ``str(OSError)`` embeds the path; the OS reason is enough and safe.
+        print(f"error: cannot write replay result: {exc.strerror or type(exc).__name__}", file=sys.stderr)
+        return 1
+    print(encoded)
+    return 0 if result.matched else 1
+
+
 async def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "replay":
+        # Replay is fully offline: it never reads config, pricing, model keys, or .env.
+        return await _replay(args, None)
+    load_dotenv()
     config = load_config(Path(args.config))
+    if args.command == "export-grader-package":
+        return await _export_grader_package(args, config)
+    if args.command == "export-run":
+        return await _export_run(args, config)
+    if args.command == "import-run":
+        return await _import_run(args, config)
     if args.run_command == "start":
         return await _start(args, config)
     if args.run_command == "approve":
@@ -204,7 +329,6 @@ async def _dispatch(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    load_dotenv()
     args = build_parser().parse_args(argv)
     try:
         return asyncio.run(_dispatch(args))

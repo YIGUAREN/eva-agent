@@ -57,11 +57,10 @@ async def test_dataset_run_meets_phase_one_acceptance(tmp_path: Path) -> None:
     assert usage["fresh"] == 4
     assert report["truncated_dimensions"] == []
     assert report["finalize_overrun"] is False
-    # Spend is admin-only: the public projection keeps only the four non-spend
-    # usage keys.
+    # The actual spend is public; nothing else from the usage record is added.
     public_usage = public_report_usage(report)
-    assert set(public_usage) == {"estimated", "cached", "fresh", "budget_enforced"}
-    assert "spent_usd" not in public_usage
+    assert set(public_usage) == {"estimated", "cached", "fresh", "budget_enforced", "spent_usd"}
+    assert public_usage["spent_usd"] == usage["spent_usd"]
     # A stored report carries no filesystem path, so inject one to prove the
     # public projection actually strips absolute paths rather than passing them
     # through: an assertion against a path that never appears is vacuous.

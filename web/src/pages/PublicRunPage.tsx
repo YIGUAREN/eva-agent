@@ -5,7 +5,7 @@ import { api } from "../api/client";
 import { EventTimeline } from "../components/EventTimeline";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRunEvents } from "../hooks/useRunEvents";
-import { formatDate, score } from "../lib/format";
+import { formatDate, score, spend } from "../lib/format";
 
 export function PublicRunPage() {
   const { runId = "" } = useParams();
@@ -24,6 +24,8 @@ export function PublicRunPage() {
     return <main className="grid min-h-screen place-items-center text-slate-400">该运行未公开或不存在。</main>;
   }
 
+  const spendLabel = spend(report.data?.report.usage?.spent_usd);
+
   return (
     <main className="min-h-screen bg-slate-950">
       <div className="mx-auto max-w-4xl px-6 py-10">
@@ -37,7 +39,10 @@ export function PublicRunPage() {
           <>
             <p className="mt-8 text-sm text-slate-400">
               综合得分 <span className="font-mono text-emerald-300">{score(report.data.report.overall_score)}</span>
-              · 报告版本 v{report.data.version}
+            </p>
+            <p className="mt-1 text-sm text-slate-400">
+              {spendLabel !== null && <>实际花费 <span className="font-mono text-slate-200">{spendLabel}</span> · </>}
+              报告版本 v{report.data.version}
             </p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               {(report.data.report.dimensions ?? []).map((dimension) => (

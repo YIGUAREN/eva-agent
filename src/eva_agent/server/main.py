@@ -24,6 +24,7 @@ from eva_agent.storage.budget import BudgetDecisionRepository, RunUsageRepositor
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.db import create_engine, create_session_factory
 from eva_agent.storage.migrate import run_migrations
+from eva_agent.storage.packages import GraderPackageRepository
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
 from eva_agent.storage.sessions import AdminSessionRepository
@@ -59,6 +60,7 @@ async def serve(config_path: Path, host: str, port: int) -> None:
         reports=ReportRepository(factory),
         artifacts=ArtifactRepository(factory),
         uploads=UploadRepository(factory),
+        packages=GraderPackageRepository(factory),
         sandbox=SandboxClient(
             config.web.sandbox_runner_url,
             sandbox_token,

@@ -38,14 +38,23 @@ export function RunDetailPage() {
     mutationFn: (published: boolean) => api.publish(runId, published),
     onSuccess: () => detail.refetch(),
   });
+  const exportPackage = useMutation({
+    mutationFn: async () => {
+      await api.exportGraderPackage(runId);
+      return api.downloadGraderPackage(runId);
+    },
+    onSuccess: (blob) => saveBlob(blob, `${runId}-grader-package.zip`),
+  });
 
-  const actionError = approve.error ?? reject.error ?? cancel.error ?? publish.error;
+  const actionError =
+    approve.error ?? reject.error ?? cancel.error ?? publish.error ?? exportPackage.error;
 
   function runAction(action: () => void) {
     approve.reset();
     reject.reset();
     cancel.reset();
     publish.reset();
+    exportPackage.reset();
     action();
   }
 
@@ -56,15 +65,18 @@ export function RunDetailPage() {
     return <p className="text-rose-400">{detail.error?.message ?? "运行不存在"}</p>;
   }
 
-  function downloadMarkdown() {
-    const markdown = report.data?.markdown ?? "";
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  function saveBlob(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${runId}-report.md`;
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  function downloadMarkdown() {
+    const markdown = report.data?.markdown ?? "";
+    saveBlob(new Blob([markdown], { type: "text/markdown;charset=utf-8" }), `${runId}-report.md`);
   }
 
   return (
@@ -87,6 +99,14 @@ export function RunDetailPage() {
             <>
               <button onClick={() => runAction(() => publish.mutate(!run.is_public))} className="rounded-lg border border-emerald-500/40 px-3 py-2 text-sm text-emerald-300">
                 {run.is_public ? "取消发布" : "发布"}
+              </button>
+              <button
+                type="button"
+                onClick={() => runAction(() => exportPackage.mutate())}
+                disabled={exportPackage.isPending}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 disabled:opacity-50"
+              >
+                {exportPackage.isPending ? "正在导出…" : "导出评测包"}
               </button>
               {run.is_public && (
                 <Link to={`/share/${run.run_id}`} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300">

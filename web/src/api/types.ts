@@ -68,8 +68,27 @@ export interface ReportResponse {
     overall_score?: number | null;
     dimensions?: Array<{ dimension: string; status: string; score?: number | null; summary?: string }>;
     findings?: Array<{ id: string; severity: string; title: string }>;
+    usage?: {
+      spent_usd?: number;
+      estimated?: boolean;
+      cached?: number;
+      fresh?: number;
+      budget_enforced?: boolean;
+    };
     [key: string]: unknown;
   };
+}
+
+export interface GraderPackageInfo {
+  package_id: string;
+  run_id: string;
+  sha256: string;
+  size_bytes: number;
+  created_at?: string;
+  replayable?: boolean;
+  replay_blockers?: string[];
+  members?: string[];
+  download_url?: string;
 }
 
 export interface GraderInfo {

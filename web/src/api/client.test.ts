@@ -88,6 +88,75 @@ describe("api client", () => {
     });
   });
 
+  it("posts to the grader package endpoint and returns the metadata", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ package_id: "pkg_1", run_id: "run-1", sha256: "a", size_bytes: 10, replayable: true }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.exportGraderPackage("run-1");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/runs/run-1/grader-package");
+    expect(init.method).toBe("POST");
+    expect(result.package_id).toBe("pkg_1");
+  });
+
+  it("reads the stored grader package metadata", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ package_id: "pkg_1", run_id: "run-1", sha256: "a", size_bytes: 10 }), {
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.graderPackage("run-1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/run-1/grader-package");
+    expect(result.package_id).toBe("pkg_1");
+  });
+
+  it("builds a same-origin download path without credentials", () => {
+    expect(api.graderPackageUrl("run-1")).toBe("/api/runs/run-1/grader-package/download");
+    expect(api.graderPackageUrl("run/with space")).toBe(
+      "/api/runs/run%2Fwith%20space/grader-package/download",
+    );
+  });
+
+  it("downloads the grader package through the authenticated client", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("PK\u0003\u0004", { status: 200, headers: { "Content-Type": "application/zip" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const blob = await api.downloadGraderPackage("run-1");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/runs/run-1/grader-package/download");
+    expect(init).toMatchObject({ credentials: "same-origin" });
+    expect(await blob.text()).toBe("PK\u0003\u0004");
+  });
+
+  it("surfaces a failed grader package download", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: { code: "not_found", message: "评测包不存在" } }), {
+          status: 404,
+        }),
+      ),
+    );
+
+    await expect(api.downloadGraderPackage("run-1")).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+      message: "评测包不存在",
+    });
+  });
+
   it("posts a budget decision to the run route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ run_id: "run_1", status: "waiting_budget" }), { status: 202 }),

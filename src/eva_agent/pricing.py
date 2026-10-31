@@ -69,6 +69,9 @@ class PricingTable:
                 raise PricingError(f"invalid pricing entry {index}: {details}") from None
         return cls(entries)
 
+    def keys(self) -> list[tuple[str, str]]:
+        return sorted(self._entries)
+
     def get(self, provider: str, model: str) -> ModelPrice:
         try:
             return self._entries[(provider, model)]

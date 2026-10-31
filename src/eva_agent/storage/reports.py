@@ -79,3 +79,12 @@ class ArtifactRepository:
             return await session.scalar(
                 select(ArtifactRow).where(ArtifactRow.run_id == run_id, ArtifactRow.name == name)
             )
+
+    async def list_public(self, run_id: str) -> list[ArtifactRow]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(ArtifactRow)
+                .where(ArtifactRow.run_id == run_id, ArtifactRow.visibility == "public")
+                .order_by(ArtifactRow.name)
+            )
+            return list(rows)

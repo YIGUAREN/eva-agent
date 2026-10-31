@@ -20,7 +20,7 @@ async def _publish(state: AppState, run_id: str) -> None:
     await state.runs.set_public(run_id, True, now=state.now())
 
 
-def test_public_payload_keeps_only_the_four_usage_keys() -> None:
+def test_public_payload_keeps_only_the_whitelisted_usage_keys() -> None:
     payload = {
         "usage": {
             "estimated": True,
@@ -36,12 +36,13 @@ def test_public_payload_keeps_only_the_four_usage_keys() -> None:
         "cached": 2,
         "fresh": 1,
         "budget_enforced": True,
+        "spent_usd": 0.9,
     }
     public = sanitize_public_payload(payload)
     assert "raw_result_path" not in public["active_scan"]
 
 
-async def test_public_report_strips_spend_and_keeps_admin_usage(
+async def test_public_report_keeps_spend_and_keeps_admin_usage(
     client: AsyncClient, state: AppState
 ) -> None:
     run_id = await _create(client)
@@ -51,6 +52,7 @@ async def test_public_report_strips_spend_and_keeps_admin_usage(
         "fresh": 1,
         "budget_enforced": True,
         "spent_usd": 12.345678,
+        "reserved_usd": 9.99,
         "debug_internal": "admin-only",
     }
     payload = {
@@ -82,16 +84,20 @@ async def test_public_report_strips_spend_and_keeps_admin_usage(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["report"]["usage"] == {
-        "estimated": True,
-        "cached": 2,
-        "fresh": 1,
-        "budget_enforced": True,
-    }
-    assert "spent_usd" not in response.text
+    # the actual spend is public; the budget cap is not
+    assert body["report"]["usage"]["spent_usd"] == 12.345678
+    assert set(body["report"]["usage"]) == {
+        "spent_usd",
+        "estimated",
+        "cached",
+        "fresh",
+        "budget_enforced",
+    } & set(body["report"]["usage"])
     assert "debug_internal" not in response.text
-    assert "12.345678" not in response.text
-    assert "- 已花费：" not in body["markdown"]
+    # Non-whitelisted usage keys (reservations, request counts, ...) stay hidden.
+    assert "reserved_usd" not in response.text
+    assert "9.99" not in response.text
+    assert "- 已花费：12.345678 USD" in body["markdown"]
     assert "- 预算：" not in body["markdown"]
     # Sample counts are not spend and carry no paths or hosts, so they remain
     # public; the Markdown truncation table stays readable.
@@ -207,6 +213,32 @@ async def test_public_report_drops_hostile_usage_values_but_admin_keeps_them(
 
     assert admin.status_code == 200
     assert admin.json()["report"]["usage"] == hostile_usage
+
+
+@pytest.mark.parametrize(
+    "spent",
+    [True, -1, "12", float("nan"), float("inf"), 10**400],
+    ids=["bool", "negative", "string", "nan", "inf", "huge-int"],
+)
+async def test_public_report_drops_invalid_spend_values(
+    client: AsyncClient, state: AppState, spent: object
+) -> None:
+    run_id = await _create(client)
+    payload = {
+        "run_id": run_id,
+        "version": 4,
+        "usage": {"spent_usd": spent, "fresh": 3},
+    }
+    await state.reports.upsert(run_id, 4, payload, "# report")
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    usage = response.json()["report"]["usage"]
+    assert "spent_usd" not in usage
+    # A hostile spend value must not take the other whitelisted keys down.
+    assert usage["fresh"] == 3
 
 
 async def test_public_report_keeps_valid_usage_values_and_drops_invalid_ones(
