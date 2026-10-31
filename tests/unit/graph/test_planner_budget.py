@@ -45,6 +45,32 @@ class HangingStructured:
         await asyncio.sleep(3600)
 
 
+class ExhaustedStructured:
+    """Raises `BudgetExhausted` from the guarded call, after a successful reserve."""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def ainvoke(self, prompt: str):
+        self.prompts.append(prompt)
+        raise BudgetExhausted(spent=Decimal("0"), remaining=Decimal("0"), reason="max_cost_usd")
+
+
+class FailOnceStore:
+    """A store whose first save raises, simulating a persistence failure after reserve."""
+
+    def __init__(self) -> None:
+        self.saves = 0
+
+    async def load(self, run_id: str) -> RunUsage | None:
+        return None
+
+    async def save(self, run_id: str, usage: RunUsage) -> None:
+        self.saves += 1
+        if self.saves == 1:
+            raise RuntimeError("store down")
+
+
 class RawStructured:
     def __init__(
         self,
@@ -161,7 +187,7 @@ async def test_planner_settles_the_reservation_when_the_task_is_cancelled() -> N
     )
     with bind_budget(ledger, pricing(), models()):
         task = asyncio.create_task(planner._invoke_structured("hello"))
-        await structured.started.wait()
+        await asyncio.wait_for(structured.started.wait(), timeout=1)
         assert ledger.snapshot().reserved_usd > 0
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -180,7 +206,7 @@ async def test_planner_settles_the_reservation_when_wait_for_times_out() -> None
     )
     with bind_budget(ledger, pricing(), models()):
         task = asyncio.create_task(planner._invoke_structured("hello"))
-        await structured.started.wait()
+        await asyncio.wait_for(structured.started.wait(), timeout=1)
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(task, timeout=0.01)
     assert ledger.snapshot().reserved_usd == 0
@@ -269,4 +295,39 @@ async def test_planner_settles_the_estimate_when_pricing_the_actual_cost_fails()
         await planner._invoke_structured("hello")
     assert ledger.snapshot().spent_usd == expected
     assert ledger.snapshot().reserved_usd == 0
+    assert ledger.estimated is True
+
+
+async def test_planner_settles_the_reservation_when_the_call_raises_budget_exhausted() -> None:
+    structured = ExhaustedStructured()
+    planner = LlmPlanner(None, ToolRegistry(), structured_runner=structured, max_output_tokens=10)
+    ledger = BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=_NullStore(),
+    )
+    expected = quantize_money(pricing().estimate_chat(model(), input_text="hello", max_output_tokens=10))
+    with bind_budget(ledger, pricing(), models()), pytest.raises(BudgetExhausted):
+        await planner._invoke_structured("hello")
+    assert structured.prompts == ["hello"]
+    assert ledger.snapshot().reserved_usd == 0
+    assert ledger.snapshot().spent_usd == expected
+    assert ledger.estimated is True
+
+
+async def test_planner_settles_when_the_store_fails_after_reserve() -> None:
+    structured = FakeStructured()
+    planner = LlmPlanner(None, ToolRegistry(), structured_runner=structured, max_output_tokens=10)
+    store = FailOnceStore()
+    ledger = BudgetLedger(
+        Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=5),
+        store=store,
+        run_id="planner-store-failure",
+        throttle_s=0,
+    )
+    expected = quantize_money(pricing().estimate_chat(model(), input_text="hello", max_output_tokens=10))
+    with bind_budget(ledger, pricing(), models()), pytest.raises(RuntimeError, match="store down"):
+        await planner._invoke_structured("hello")
+    assert structured.prompts == []
+    assert ledger.snapshot().reserved_usd == 0
+    assert ledger.snapshot().spent_usd == expected
     assert ledger.estimated is True

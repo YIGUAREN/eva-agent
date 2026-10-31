@@ -230,7 +230,11 @@ class LlmPlanner:
             output = await self._structured.ainvoke(prompt)
             parsed, usage_holder = self._unwrap_structured(output)
         except BudgetExhausted:
-            # The reservation was refused before any charge; nothing to settle.
+            # `reserve` refusing charges nothing, but the guarded call can also
+            # raise this after a successful reservation: settle it then too.
+            if enforced and reserved:
+                assert context is not None
+                await context.ledger.settle(estimate, None, kind="planner")
             raise
         except BaseException:
             # Cancellation (including a registry timeout) bypasses `except

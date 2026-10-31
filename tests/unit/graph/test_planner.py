@@ -228,10 +228,12 @@ def test_pasted_input_is_used_by_helper() -> None:
 class RecordingChatModel:
     def __init__(self) -> None:
         self.methods: list[str | None] = []
+        self.include_raw: list[object] = []
         self.runner = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
 
     def with_structured_output(self, schema: object, **kwargs: object) -> FakeStructured:
         self.methods.append(kwargs.get("method"))  # type: ignore[arg-type]
+        self.include_raw.append(kwargs.get("include_raw"))
         return self.runner
 
 
@@ -241,6 +243,7 @@ def test_planner_forwards_the_structured_output_method() -> None:
     LlmPlanner(model, build_registry(), structured_method="json_mode")
 
     assert model.methods == ["json_mode"]
+    assert model.include_raw == [True]
 
 
 def test_planner_uses_the_provider_default_structured_output() -> None:
@@ -249,6 +252,7 @@ def test_planner_uses_the_provider_default_structured_output() -> None:
     LlmPlanner(model, build_registry())
 
     assert model.methods == [None]
+    assert model.include_raw == [True]
 
 
 async def test_paste_prompt_allows_quality_and_security() -> None:

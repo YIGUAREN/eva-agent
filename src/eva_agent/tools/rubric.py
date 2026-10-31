@@ -64,7 +64,11 @@ def build_generate_rubric_tool(
                     scenario=payload.scenario,
                 )
         except BudgetExhausted:
-            # The reservation was refused before any charge; nothing to settle.
+            # `reserve` refusing charges nothing, but the guarded call can also
+            # raise this after a successful reservation: settle it then too.
+            if enforced and reserved:
+                assert context is not None
+                await context.ledger.settle(estimate, None, kind="rubric")
             raise
         except BaseException:
             # The registry enforces timeout_s with asyncio.wait_for, which
@@ -78,7 +82,9 @@ def build_generate_rubric_tool(
             assert context is not None
             actual = None
             try:
-                if totals.input_tokens or totals.output_tokens:
+                # Match the planner: one-sided or zero usage cannot be priced
+                # reliably, so settle the estimate and mark the ledger estimated.
+                if totals.input_tokens > 0 and totals.output_tokens > 0:
                     actual = context.estimator.cost_for_tokens(
                         context.models.judge,
                         input_tokens=totals.input_tokens,
