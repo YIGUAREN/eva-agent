@@ -64,6 +64,66 @@ async def test_unknown_target_is_rejected(client: AsyncClient) -> None:
     assert response.json()["error"]["code"] == "unknown_target"
 
 
+async def test_create_persists_the_selected_graders(client: AsyncClient, state: AppState) -> None:
+    csrf = await login(client)
+    payload = {
+        **PASTE_PAYLOAD,
+        "input": {
+            **PASTE_PAYLOAD["input"],
+            "graders": {"quality": ["relevance"], "security": ["harmfulness"]},
+        },
+    }
+
+    response = await client.post("/api/runs", json=payload, headers=csrf_headers(csrf))
+
+    assert response.status_code == 201, response.text
+    row = await state.runs.get(response.json()["run_id"])
+    assert row is not None
+    assert row.input_json["graders"] == {
+        "quality": ["relevance"],
+        "security": ["harmfulness"],
+    }
+
+
+async def test_create_rejects_an_empty_grader_selection(client: AsyncClient) -> None:
+    csrf = await login(client)
+    payload = {
+        **PASTE_PAYLOAD,
+        "input": {**PASTE_PAYLOAD["input"], "graders": {"quality": [], "security": []}},
+    }
+
+    response = await client.post("/api/runs", json=payload, headers=csrf_headers(csrf))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "no_graders"
+
+
+async def test_create_rejects_an_unknown_grader(client: AsyncClient) -> None:
+    csrf = await login(client)
+    payload = {
+        **PASTE_PAYLOAD,
+        "input": {**PASTE_PAYLOAD["input"], "graders": {"quality": ["not_a_grader"]}},
+    }
+
+    response = await client.post("/api/runs", json=payload, headers=csrf_headers(csrf))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "unknown_grader"
+
+
+async def test_create_rejects_a_grader_in_the_wrong_dimension(client: AsyncClient) -> None:
+    csrf = await login(client)
+    payload = {
+        **PASTE_PAYLOAD,
+        "input": {**PASTE_PAYLOAD["input"], "graders": {"quality": ["harmfulness"]}},
+    }
+
+    response = await client.post("/api/runs", json=payload, headers=csrf_headers(csrf))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_grader"
+
+
 async def test_admin_list_and_detail(client: AsyncClient, state: AppState) -> None:
     csrf = await login(client)
     run_id = (await client.post("/api/runs", json=PASTE_PAYLOAD, headers=csrf_headers(csrf))).json()["run_id"]

@@ -83,6 +83,7 @@ class FakePlanner:
         evidence: object,
         budget: Budget,
         objective: str | None = None,
+        selected_graders: object | None = None,
     ) -> EvalPlan:
         self.calls += 1
         if self._error is not None:

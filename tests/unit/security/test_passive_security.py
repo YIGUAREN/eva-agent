@@ -62,6 +62,16 @@ def test_harmfulness_always_runs_and_code_security_is_conditional() -> None:
     assert has_code([{"query": "q", "response": "", "context": "#include <stdio.h>", "reference": ""}]) is True
 
 
+def test_passive_specs_runs_only_the_selected_graders() -> None:
+    assert [spec.name for spec in passive_specs(code_rows(), selected={"harmfulness"})] == ["harmfulness"]
+    assert [spec.name for spec in passive_specs(code_rows(), selected={"code_security"})] == ["code_security"]
+    assert passive_specs(code_rows(), selected=set()) == []
+    # Code security needs code in the rows even when it is selected.
+    assert [spec.name for spec in passive_specs(rows(), selected={"harmfulness", "code_security"})] == [
+        "harmfulness"
+    ]
+
+
 def test_summarize_passive_scores_and_findings() -> None:
     output = GraderRunOutput(
         outcomes=[

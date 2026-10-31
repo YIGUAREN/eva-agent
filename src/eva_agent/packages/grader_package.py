@@ -34,6 +34,7 @@ from eva_agent.packages.manifest import (
     write_zip,
 )
 from eva_agent.packages.snapshots import SnapshotSet, collect_snapshots
+from eva_agent.report.render import render_markdown
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.storage.models import RunRow, utcnow
 
@@ -47,6 +48,8 @@ README = """# 评测包
 - `input.json` —— 运行输入、实际参与评分的样本行、探测（probe）记录与价格行。
 - `snapshots/gradings.json` —— 已记录的评分器输出；复现过程不会调用任何模型。
 - `report.json` —— 本次运行生成的报告。
+- `report.md` —— 中文测评结果报告，供阅读；正文、维度、状态与严重度均为中文，
+  金额以 ¥ 显示。
 - `manifest.json` —— 成员清单与校验和，解包前逐项校验。
 
 执行 `eva replay <包.zip> --out <目录>` 校验本包。
@@ -93,6 +96,12 @@ README = """# 评测包
 - `outcomes[]`：已记录的评分器输出。每项含 `dimension`、`spec_name`、`sample_index`、
   `score`、`raw_score`、`reason`、`error`；复现直接使用这些结果，不调用任何模型。
 
+### report.md
+
+- 由 `report.json` 渲染的中文测评结果，内容与页面报告一致，仅用于阅读。
+- 不参与离线复现比较；其中的金额与 `report.json` 数值相同，单位为 ¥（不做汇率换算）。
+- 不包含绝对文件系统路径。
+
 ### report.json
 
 - `version`、`run_id`、`generated_at`、`status`：报告版本、运行 ID、生成时间与运行状态。
@@ -119,7 +128,17 @@ README = """# 评测包
 `generated_at`、报告级 `overall_score`、`probe`、`evidence_summary`。
 """
 
-_MEMBER_NAMES = ("README.md", "input.json", "plan.json", "report.json", "snapshots/gradings.json")
+# New packages also carry the rendered Chinese report; older packages without
+# it must stay readable, so only the JSON members are required.
+_REQUIRED_MEMBERS = ("README.md", "input.json", "plan.json", "report.json", "snapshots/gradings.json")
+_MEMBER_NAMES = (
+    "README.md",
+    "input.json",
+    "plan.json",
+    "report.md",
+    "report.json",
+    "snapshots/gradings.json",
+)
 
 
 @dataclass(frozen=True)
@@ -269,6 +288,7 @@ async def build_grader_package(
             dimensions=[item for item in plan.dimensions if item.enabled],
             rows=inputs.rows,
             dimension_limits=inputs.dimension_limits,
+            graders=inputs.run_input.graders,
         )
         if not paths.report_json.is_file():
             raise PackageError("run has no report.json; only completed runs can be packaged")
@@ -283,6 +303,9 @@ async def build_grader_package(
                 pretty_json(snapshots.model_dump(mode="json"))
             )
             (workdir / "report.json").write_bytes(pretty_json(report))
+            # Render from the scrubbed payload, so the markdown cannot carry an
+            # absolute path the JSON counterpart does not already carry.
+            (workdir / "report.md").write_text(render_markdown(report), encoding="utf-8")
             (workdir / "README.md").write_text(README, encoding="utf-8")
             files = {
                 name: FileEntry(
@@ -327,7 +350,7 @@ async def build_grader_package(
 def _require_grader_package(manifest: PackageManifest) -> None:
     if manifest.kind != "grader_package":
         raise PackageError("package is not a grader package")
-    missing = sorted(set(_MEMBER_NAMES) - set(manifest.files))
+    missing = sorted(set(_REQUIRED_MEMBERS) - set(manifest.files))
     if missing:
         raise PackageError(f"package is missing required members {missing}")
 

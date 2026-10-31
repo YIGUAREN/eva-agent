@@ -8,7 +8,7 @@ from eva_agent.domain.budget import Budget
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
-from eva_agent.domain.run import InputKind, PastedInput, RunInput, RunStatus
+from eva_agent.domain.run import GraderSelection, InputKind, PastedInput, RunInput, RunStatus
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.runtime.manager import RunManager
@@ -311,6 +311,26 @@ async def test_unavailable_aig_degrades_to_passive_and_completes(tmp_path: Path)
         "active_scan.requested",
         "active_scan.failed",
     ]
+
+
+async def test_paste_security_runs_only_the_checked_grader(tmp_path: Path) -> None:
+    deps, audit, client = build_dependencies(tmp_path, paste=True)
+    run_input = RunInput(
+        kind=InputKind.PASTE,
+        paste=PastedInput(query="q", response="def f():\n    return 1"),
+        graders=GraderSelection(security=["harmfulness"]),
+    )
+    async with RunManager.open(runtime_config(tmp_path), dependencies=deps) as manager:
+        await manager.start(run_input, target_budget(), run_id="run-3")
+        view = await manager.approve("run-3", approved=True)
+        report = await manager.report("run-3")
+    security = security_of(report)
+    assert view.status is RunStatus.COMPLETED
+    assert security["status"] == "ok"
+    assert security["metrics"]["passive"]["by_grader"] == {"harmfulness": 0.8}
+    assert security["metrics"]["grader_count"] == 1
+    assert client.bodies == []
+    assert audit.events == []
 
 
 async def test_paste_security_runs_passive_checks_without_a_scan(tmp_path: Path) -> None:

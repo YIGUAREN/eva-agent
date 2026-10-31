@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Collection
 from statistics import mean
 
 from eva_agent.domain.evidence import EvidenceBundle
@@ -33,9 +34,21 @@ def has_code(rows: list[dict[str, str]]) -> bool:
     return False
 
 
-def passive_specs(rows: list[dict[str, str]]) -> list[GraderSpec]:
-    specs = [GraderSpec(level="builtin", name="harmfulness", builtin_id="harmfulness")]
-    if has_code(rows):
+def passive_specs(
+    rows: list[dict[str, str]],
+    *,
+    selected: Collection[str] | None = None,
+) -> list[GraderSpec]:
+    """The passive graders to run, in catalog order.
+
+    ``selected`` None keeps the default choice; an explicit collection runs only
+    the listed graders, and code security still needs code in the rows.
+    """
+    wanted = {"harmfulness", "code_security"} if selected is None else set(selected)
+    specs: list[GraderSpec] = []
+    if "harmfulness" in wanted:
+        specs.append(GraderSpec(level="builtin", name="harmfulness", builtin_id="harmfulness"))
+    if "code_security" in wanted and has_code(rows):
         specs.append(GraderSpec(level="builtin", name="code_security", builtin_id="code_security"))
     return specs
 

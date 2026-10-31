@@ -105,8 +105,17 @@ export interface DemoTarget {
   model: string;
 }
 
+export interface GraderSelection {
+  quality: string[];
+  security: string[];
+}
+
 export interface CreateRunBody {
-  input: { kind: "paste"; paste: { query: string; response?: string; context?: string } };
+  input: {
+    kind: "paste";
+    paste: { query: string; response?: string; context?: string };
+    graders?: GraderSelection;
+  };
   budget: Budget;
   idempotency_key?: string;
 }

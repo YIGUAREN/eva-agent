@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from eva_agent.domain.plan import Dimension, EvalPlan
-from eva_agent.domain.run import InputKind
+from eva_agent.domain.run import GraderSelection, InputKind
 from eva_agent.graders_dsl.schema import DeclarativeSpecError, validate_declarative_spec
 
 IMPLEMENTED_DIMENSIONS = frozenset(Dimension)
@@ -30,6 +30,7 @@ def validate_plan(
     max_target_requests: int | None = None,
     original: EvalPlan | None = None,
     implemented: frozenset[Dimension] = IMPLEMENTED_DIMENSIONS,
+    allowed_ids: GraderSelection | None = None,
 ) -> None:
     dimensions = [item.dimension for item in plan.dimensions]
     if len(set(dimensions)) != len(dimensions):
@@ -60,6 +61,11 @@ def validate_plan(
             raise PlanValidationError(f"{path}.sample_size", "target dimensions require sample_size")
 
         if item.dimension is Dimension.SECURITY:
+            if allowed_ids is not None and not allowed_ids.security:
+                raise PlanValidationError(
+                    f"{path}.enabled",
+                    "security was not selected for this run",
+                )
             if item.graders:
                 raise PlanValidationError(
                     f"{path}.graders",
@@ -75,6 +81,15 @@ def validate_plan(
 
         for index, spec in enumerate(item.graders):
             spec_path = f"{path}.graders[{index}]"
+            if (
+                allowed_ids is not None
+                and item.dimension is Dimension.QUALITY
+                and (spec.level != "builtin" or spec.builtin_id not in allowed_ids.quality)
+            ):
+                raise PlanValidationError(
+                    f"{spec_path}.builtin_id",
+                    "grader was not selected for this run",
+                )
             if spec.mode != "pointwise":
                 raise PlanValidationError(f"{spec_path}.mode", "only pointwise graders are supported")
             if item.dimension in DECLARATIVE_DIMENSIONS:
@@ -150,10 +165,17 @@ def parse_plan_edit(
     catalog_ids: set[str],
     original: EvalPlan,
     input_kind: InputKind = InputKind.PASTE,
+    allowed_ids: GraderSelection | None = None,
 ) -> EvalPlan:
     try:
         candidate = EvalPlan.model_validate(payload)
     except ValidationError as exc:
         raise PlanValidationError("plan", str(exc)) from exc
-    validate_plan(candidate, catalog_ids=catalog_ids, input_kind=input_kind, original=original)
+    validate_plan(
+        candidate,
+        catalog_ids=catalog_ids,
+        input_kind=input_kind,
+        original=original,
+        allowed_ids=allowed_ids,
+    )
     return candidate

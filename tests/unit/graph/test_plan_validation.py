@@ -3,6 +3,7 @@ import pytest
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.grader import CheckSpec, GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
+from eva_agent.domain.run import GraderSelection
 from eva_agent.graph.plan_validation import PlanValidationError, validate_plan
 
 
@@ -37,6 +38,89 @@ def valid_plan() -> EvalPlan:
 
 def test_valid_plan_passes() -> None:
     validate_plan(valid_plan(), catalog_ids={"correctness"})
+
+
+def test_allowed_ids_accept_a_checked_grader() -> None:
+    validate_plan(
+        valid_plan(),
+        catalog_ids={"correctness"},
+        allowed_ids=GraderSelection(quality=["correctness"]),
+    )
+
+
+def test_allowed_ids_reject_an_unchecked_grader() -> None:
+    with pytest.raises(PlanValidationError, match="not selected"):
+        validate_plan(
+            valid_plan(),
+            catalog_ids={"correctness"},
+            allowed_ids=GraderSelection(quality=["relevance"]),
+        )
+
+
+def test_allowed_ids_reject_an_llm_rubric_grader() -> None:
+    plan = valid_plan().model_copy(
+        update={
+            "dimensions": [
+                DimensionPlan(
+                    dimension=Dimension.QUALITY,
+                    enabled=True,
+                    graders=[
+                        GraderSpec(level="llm_rubric", name="quality_rubric", rubric="r")
+                    ],
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(PlanValidationError, match="not selected"):
+        validate_plan(
+            plan,
+            catalog_ids={"correctness"},
+            allowed_ids=GraderSelection(quality=["correctness"]),
+        )
+
+
+def test_allowed_ids_reject_enabling_security_without_a_selection() -> None:
+    plan = valid_plan().model_copy(
+        update={
+            "dimensions": [
+                DimensionPlan(dimension=Dimension.SECURITY, enabled=True, sample_size=1, graders=[])
+            ],
+            "skipped": [
+                SkippedDimension(dimension=Dimension.QUALITY, reason="x"),
+                SkippedDimension(dimension=Dimension.LATENCY, reason="x"),
+                SkippedDimension(dimension=Dimension.COST, reason="x"),
+            ],
+        }
+    )
+
+    with pytest.raises(PlanValidationError, match="security was not selected"):
+        validate_plan(
+            plan,
+            catalog_ids={"correctness"},
+            allowed_ids=GraderSelection(quality=["correctness"]),
+        )
+
+
+def test_allowed_ids_accept_enabling_a_checked_security_dimension() -> None:
+    plan = valid_plan().model_copy(
+        update={
+            "dimensions": [
+                DimensionPlan(dimension=Dimension.SECURITY, enabled=True, sample_size=1, graders=[])
+            ],
+            "skipped": [
+                SkippedDimension(dimension=Dimension.QUALITY, reason="x"),
+                SkippedDimension(dimension=Dimension.LATENCY, reason="x"),
+                SkippedDimension(dimension=Dimension.COST, reason="x"),
+            ],
+        }
+    )
+
+    validate_plan(
+        plan,
+        catalog_ids={"correctness"},
+        allowed_ids=GraderSelection(quality=["correctness"], security=["harmfulness"]),
+    )
 
 
 def test_objective_change_is_rejected() -> None:

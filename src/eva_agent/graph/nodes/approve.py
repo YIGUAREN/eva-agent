@@ -32,6 +32,7 @@ async def approve_node(state: EvalState, deps: GraphDependencies) -> dict:
                 catalog_ids=set(deps.catalog_ids),
                 original=plan,
                 input_kind=state["input"].kind,
+                allowed_ids=state["input"].graders,
             )
         except PlanValidationError as exc:
             await deps.event_sink(run_id, "plan.rejected", {"error": str(exc)})

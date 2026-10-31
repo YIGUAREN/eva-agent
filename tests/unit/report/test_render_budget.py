@@ -314,10 +314,10 @@ def test_markdown_states_the_source_split_with_the_admin_spend_line() -> None:
     )
     markdown = render_markdown(payload)
     assert "- 预算执行：已强制" in markdown
-    assert "- 截断维度：quality" in markdown
+    assert "- 截断维度：质量" in markdown
     assert "- 收尾超支：是" in markdown
     assert "- 评分来源：缓存 1，新评分 1" in markdown
-    assert "- 已花费：0.900000 USD" in markdown
+    assert "- 已花费：¥0.900000" in markdown
 
 
 def test_markdown_renders_the_truncation_sample_table() -> None:
@@ -328,7 +328,7 @@ def test_markdown_renders_the_truncation_sample_table() -> None:
     markdown = render_markdown(payload)
     assert "## 截断样本" in markdown
     assert "| 维度 | 计划/总样本 | 已完成样本 | 缺失样本 |" in markdown
-    assert "| quality | 4 | 1 | 3 |" in markdown
+    assert "| 质量 | 4 | 1 | 3 |" in markdown
 
 
 def test_markdown_renders_na_for_unrecorded_sample_counts() -> None:
@@ -336,7 +336,7 @@ def test_markdown_renders_na_for_unrecorded_sample_counts() -> None:
         {"estimated": False, "cached": 0, "fresh": 0, "budget_enforced": True}
     )
     markdown = render_markdown(payload)
-    assert "| quality | n/a | n/a | n/a |" in markdown
+    assert "| 质量 | n/a | n/a | n/a |" in markdown
 
 
 def test_markdown_renders_the_active_scan_raw_result_path_for_admins() -> None:

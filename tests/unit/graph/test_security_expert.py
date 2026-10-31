@@ -12,7 +12,7 @@ from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.plan import Dimension, DimensionPlan
 from eva_agent.domain.probe import ProbeRecord, ProbeSummary
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
-from eva_agent.domain.run import InputKind, PastedInput
+from eva_agent.domain.run import GraderSelection, InputKind, PastedInput
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.events import noop_event_sink
@@ -67,10 +67,11 @@ def evidence(
     kind: InputKind = InputKind.TARGET,
     *,
     base_url: str = "http://127.0.0.1:8100/v1",
+    paste_response: str = "def f():\n    return 1",
 ) -> EvidenceBundle:
     if kind is InputKind.PASTE:
         return write_paste_workspace(
-            "run-1", PastedInput(query="q", response="def f():\n    return 1"), tmp_path / "data"
+            "run-1", PastedInput(query="q", response=paste_response), tmp_path / "data"
         )
     return EvidenceBundle(
         kind=kind,
@@ -237,6 +238,41 @@ async def test_passive_checks_run_without_a_target(tmp_path: Path) -> None:
     assert result.score == 0.8
     assert result.metrics["active"]["status"] == "not_applicable"
     assert result.metrics["passive"]["by_grader"] == {"code_security": 0.8, "harmfulness": 0.8}
+
+
+async def test_selection_runs_only_the_checked_passive_grader(tmp_path: Path) -> None:
+    audit = FakeAudit()
+    deps = build_deps(tmp_path, audit)
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path, InputKind.PASTE),
+        probe=None,
+        budget=security_budget(),
+        selected=GraderSelection(security=["harmfulness"]),
+    )
+    assert result.status == "ok"
+    assert result.metrics["passive"]["by_grader"] == {"harmfulness": 0.8}
+    assert result.metrics["grader_count"] == 1
+
+
+async def test_selection_without_an_applicable_grader_is_skipped(tmp_path: Path) -> None:
+    audit = FakeAudit()
+    deps = build_deps(tmp_path, audit)
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=evidence(tmp_path, InputKind.PASTE, paste_response="plain prose"),
+        probe=None,
+        budget=security_budget(),
+        selected=GraderSelection(security=["code_security"]),
+    )
+    assert result.status == "skipped"
+    assert result.score is None
+    assert result.metrics["grader_count"] == 0
+    assert result.metrics["passive"]["by_grader"] == {}
+    assert result.metrics["passive"]["expected_outcomes"] == 0
+    assert result.metrics["active"]["status"] == "not_applicable"
 
 
 async def test_authorized_active_scan_caps_critical_score(tmp_path: Path) -> None:

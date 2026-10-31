@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from eva_agent.domain.run import (
     DatasetRef,
+    GraderSelection,
     InputKind,
     PastedInput,
     RunInput,
@@ -37,6 +38,30 @@ def test_valid_paste_input() -> None:
     assert run_input.kind is InputKind.PASTE
     assert run_input.paste is not None
     assert run_input.paste.query == "q"
+
+
+def test_grader_selection_is_absent_by_default() -> None:
+    run_input = RunInput(kind=InputKind.PASTE, paste=PastedInput(query="q"))
+
+    assert run_input.graders is None
+
+
+def test_grader_selection_accepts_catalog_ids_per_dimension() -> None:
+    selection = GraderSelection(quality=["relevance"], security=["harmfulness"])
+
+    assert selection.quality == ["relevance"]
+    assert selection.security == ["harmfulness"]
+
+
+@pytest.mark.parametrize("grader_id", ["../escape", "Relevance", "", "a" * 65])
+def test_grader_selection_rejects_unsafe_ids(grader_id: str) -> None:
+    with pytest.raises(ValidationError):
+        GraderSelection(quality=[grader_id])
+
+
+def test_grader_selection_rejects_duplicate_ids() -> None:
+    with pytest.raises(ValidationError):
+        GraderSelection(quality=["relevance", "relevance"])
 
 
 def test_run_status_values() -> None:

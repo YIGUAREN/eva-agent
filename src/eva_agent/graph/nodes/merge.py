@@ -24,9 +24,12 @@ async def merge_node(state: EvalState, deps: GraphDependencies) -> dict:
         return {"merged": merged, "status": merged.status}
 
     successful = [result for result in results if result.status in {"ok", "partial"} and result.score is not None]
+    # A dimension can report "skipped" when the user's grader selection does
+    # not apply to the input; that is not a failed run, just no score.
+    attempted = [result for result in results if result.status != "skipped"]
     scores = [result.score for result in successful if result.score is not None]
     overall = mean(scores) if scores else None
-    status = RunStatus.COMPLETED if successful else RunStatus.FAILED
+    status = RunStatus.COMPLETED if successful or not attempted else RunStatus.FAILED
     merged = MergedResult(
         status=status,
         results=results,

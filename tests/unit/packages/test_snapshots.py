@@ -4,6 +4,7 @@ from eva_agent.adapters.openjudge.cache import GradingCache, cache_key
 from eva_agent.domain.grader import CheckSpec, GraderSpec, ScoreSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan
 from eva_agent.domain.result import GraderSampleOutcome
+from eva_agent.domain.run import GraderSelection
 from eva_agent.packages.manifest import PackageError
 from eva_agent.packages.snapshots import collect_snapshots
 
@@ -124,6 +125,25 @@ def test_each_dimension_is_sliced_to_its_own_limit(tmp_path) -> None:
         3,
         4,
     ]
+
+
+def test_security_snapshots_follow_the_grader_selection(tmp_path) -> None:
+    code_rows = [{"query": "q0", "response": "def f():\n    return 1"}]
+    cache = GradingCache(tmp_path, "run-1")
+    for name in ("harmfulness", "code_security"):
+        _write(cache, GraderSpec(level="builtin", name=name, builtin_id=name), code_rows)
+
+    snapshots, blockers = collect_snapshots(
+        data_dir=tmp_path,
+        run_id="run-1",
+        dimensions=[_plan(dimension=Dimension.SECURITY)],
+        rows=code_rows,
+        dimension_limits={"security": 1},
+        graders=GraderSelection(security=["code_security"]),
+    )
+
+    assert blockers == []
+    assert [item.spec_name for item in snapshots.outcomes] == ["code_security"]
 
 
 def test_same_named_specs_in_different_dimensions_do_not_merge(tmp_path) -> None:

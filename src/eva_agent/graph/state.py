@@ -8,7 +8,7 @@ from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan
 from eva_agent.domain.probe import ProbeSummary
 from eva_agent.domain.result import Approval, DimensionResult, MergedResult, Report
-from eva_agent.domain.run import RunInput, RunStatus
+from eva_agent.domain.run import GraderSelection, RunInput, RunStatus
 
 
 def _last_status(current: RunStatus, update: RunStatus) -> RunStatus:
@@ -62,6 +62,7 @@ class ExpertState(TypedDict):
     evidence: EvidenceBundle
     probe: ProbeSummary | None
     budget: Budget
+    graders: NotRequired[GraderSelection | None]
     authorization_ref: NotRequired[str | None]
     requester_is_admin: NotRequired[bool | None]
     status: NotRequired[RunStatus]

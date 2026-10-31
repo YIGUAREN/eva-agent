@@ -31,8 +31,47 @@ def _score(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.3f}"
 
 
+_DIMENSION_LABELS = {
+    Dimension.QUALITY.value: "质量",
+    Dimension.SECURITY.value: "安全",
+    Dimension.LATENCY.value: "延迟",
+    Dimension.COST.value: "成本",
+}
+
+_STATUS_LABELS = {
+    # Run statuses.
+    "queued": "排队中",
+    "running": "运行中",
+    "waiting_approval": "待审批",
+    "waiting_budget": "待预算决策",
+    "completed": "已完成",
+    "cancelled": "已取消",
+    # Dimension statuses.
+    "ok": "正常",
+    "partial": "部分完成",
+    "skipped": "已跳过",
+    "failed": "失败",
+}
+
+_SEVERITY_LABELS = {
+    "info": "提示",
+    "low": "低",
+    "medium": "中",
+    "high": "高",
+    "critical": "严重",
+}
+
+
+def _label(value: Any, labels: dict[str, str]) -> str:
+    """Translate a recorded code value for the prose; unknown values stay as-is."""
+    text = str(value)
+    return labels.get(text, text)
+
+
 def _money(value: Any) -> str:
-    return "n/a" if value is None else f"{float(value):.6f}"
+    # Amounts are stored in USD and displayed in ¥ without conversion (the
+    # project's convention for user-visible spend).
+    return "n/a" if value is None else f"¥{float(value):.6f}"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -168,7 +207,7 @@ def _latency_lines(metrics: dict[str, Any]) -> list[str]:
 
 def _cost_lines(metrics: dict[str, Any]) -> list[str]:
     lines = [
-        "| input_tokens | output_tokens | total (USD) | mean (USD) | per 1k (USD) | estimated |",
+        "| input_tokens | output_tokens | total (¥) | mean (¥) | per 1k (¥) | estimated |",
         "|---|---|---|---|---|---|",
         f"| {_cell(metrics.get('input_tokens_total', 0))} | "
         f"{_cell(metrics.get('output_tokens_total', 0))} | "
@@ -269,12 +308,13 @@ def render_markdown(
         "",
         "## 概览",
         "",
-        f"- 状态：`{payload['status']}`",
+        f"- 状态：{_label(payload['status'], _STATUS_LABELS)}",
         f"- 综合得分：{_score(payload.get('overall_score'))}",
     ]
     failed_dimensions = (payload.get("metrics") or {}).get("failed_dimensions") or []
     if failed_dimensions:
-        lines.append(f"- 失败维度：{', '.join(str(item) for item in failed_dimensions)}")
+        names = ", ".join(_label(item, _DIMENSION_LABELS) for item in failed_dimensions)
+        lines.append(f"- 失败维度：{names}")
     lines.extend(
         [
             f"- 评估目标：{payload['objective']}",
@@ -283,7 +323,7 @@ def render_markdown(
             "",
             "## 计划",
             "",
-            f"- 预算：cost ≤ {payload['budget']['max_cost_usd']} 美元，"
+            f"- 预算：成本 ≤ ¥{payload['budget']['max_cost_usd']}，"
             f"时长 ≤ {payload['budget']['max_wall_clock_s']} 秒，"
             f"目标请求 ≤ {payload['budget']['max_target_requests']}",
         ]
@@ -293,13 +333,13 @@ def render_markdown(
     lines.extend(
         [
             f"- 预算执行：{'已强制' if usage.get('budget_enforced') else '未强制'}",
-            f"- 截断维度：{', '.join(truncated) or '无'}",
+            f"- 截断维度：{', '.join(_label(item, _DIMENSION_LABELS) for item in truncated) or '无'}",
             f"- 收尾超支：{'是' if payload.get('finalize_overrun') else '否'}",
             f"- 评分来源：缓存 {usage.get('cached', 0)}，新评分 {usage.get('fresh', 0)}",
         ]
     )
     if "spent_usd" in usage:
-        lines.append(f"- 已花费：{_money(usage.get('spent_usd'))} USD")
+        lines.append(f"- 已花费：{_money(usage.get('spent_usd'))}")
     if truncated:
         lines.extend(
             [
@@ -312,7 +352,7 @@ def render_markdown(
         )
         for item in payload.get("truncated_sample_counts") or []:
             lines.append(
-                f"| {_cell(item.get('dimension'))} | "
+                f"| {_cell(_label(item.get('dimension'), _DIMENSION_LABELS))} | "
                 f"{_cell(_count_text(item.get('sample_count')))} | "
                 f"{_cell(_count_text(item.get('completed_samples')))} | "
                 f"{_cell(_count_text(item.get('missing_samples')))} |"
@@ -340,9 +380,9 @@ def render_markdown(
     for result in payload["dimensions"]:
         lines.extend(
             [
-                f"### {result['dimension']}",
+                f"### {_label(result['dimension'], _DIMENSION_LABELS)}",
                 "",
-                f"- 状态：`{result['status']}`",
+                f"- 状态：{_label(result['status'], _STATUS_LABELS)}",
                 f"- 得分：{_score(result.get('score'))}",
                 f"- 置信度：{_score(result.get('confidence'))}",
                 f"- 摘要：{result['summary']}",
@@ -371,7 +411,7 @@ def render_markdown(
         for finding in payload["findings"]:
             evidence = ", ".join(item["locator"] for item in finding["evidence"]) or "-"
             lines.append(
-                f"| {_cell(finding['id'])} | {_cell(finding['severity'])} | "
+                f"| {_cell(finding['id'])} | {_cell(_label(finding['severity'], _SEVERITY_LABELS))} | "
                 f"{_cell(finding['title'])} | {_cell(evidence)} |"
             )
         lines.append("")
@@ -382,7 +422,9 @@ def render_markdown(
     else:
         lines.extend(["| 维度 | 原因 |", "|---|---|"])
         for item in payload["skipped"]:
-            lines.append(f"| {_cell(item['dimension'])} | {_cell(item['reason'])} |")
+            lines.append(
+                f"| {_cell(_label(item['dimension'], _DIMENSION_LABELS))} | {_cell(item['reason'])} |"
+            )
         lines.append("")
 
     lines.extend(["## 限制", ""])

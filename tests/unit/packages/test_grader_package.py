@@ -11,12 +11,14 @@ from eva_agent.adapters.inputs.target import write_target_workspace
 from eva_agent.config.settings import AppConfig, PricingSettings
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan
 from eva_agent.domain.probe import ProbeRecord
+from eva_agent.domain.result import MergedResult
 from eva_agent.domain.run import InputKind, PastedInput, RunInput, RunStatus
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.packages import grader_package as gp
 from eva_agent.packages.grader_package import build_grader_package, read_grader_package
 from eva_agent.packages.inputs import EvidenceSnapshot, PackageInput
-from eva_agent.packages.manifest import PackageError
+from eva_agent.packages.manifest import FileEntry, PackageError, PackageManifest
+from eva_agent.report.render import build_report_payload
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
 from eva_agent.storage.repository import RunRepository
@@ -26,6 +28,7 @@ MEMBERS = (
     "README.md",
     "input.json",
     "plan.json",
+    "report.md",
     "report.json",
     "snapshots/gradings.json",
 )
@@ -36,6 +39,7 @@ def _valid_members() -> dict[str, bytes]:
         "README.md": b"# Grader package\n",
         "input.json": b"{}",
         "plan.json": b"{}",
+        "report.md": "# 评估报告\n".encode(),
         "report.json": b'{"version": 4}',
         "snapshots/gradings.json": b"{}",
     }
@@ -62,6 +66,7 @@ async def test_build_grader_package_writes_every_declared_member(write_run, arch
         "input.json",
         "plan.json",
         "report.json",
+        "report.md",
         "snapshots/gradings.json",
     ]
     package = read_grader_package(archive)
@@ -89,7 +94,14 @@ async def test_build_grader_package_readme_documents_fields_in_chinese(write_run
         readme = z.read("README.md").decode("utf-8")
     assert any("一" <= character <= "鿿" for character in readme)
     assert "字段说明" in readme
-    for member in ("plan.json", "input.json", "snapshots/gradings.json", "report.json", "manifest.json"):
+    for member in (
+        "plan.json",
+        "input.json",
+        "snapshots/gradings.json",
+        "report.json",
+        "report.md",
+        "manifest.json",
+    ):
         assert member in readme
     for field in (
         "max_cost_usd",
@@ -101,6 +113,23 @@ async def test_build_grader_package_readme_documents_fields_in_chinese(write_run
         assert field in readme
     assert "eva replay" in readme
     assert "# Grader package" not in readme
+
+
+async def test_build_grader_package_includes_a_chinese_result_report(write_run, archive_dir):
+    config, run_row = await write_run()
+    archive, manifest = await build_grader_package(config=config, run_row=run_row, out_dir=archive_dir)
+
+    assert "report.md" in manifest.files
+    with zipfile.ZipFile(archive) as z:
+        markdown = z.read("report.md").decode("utf-8")
+
+    assert f"# Eva-Agent 评估报告：{run_row.id}" in markdown
+    assert "## 概览" in markdown
+    assert "## 维度结果" in markdown
+    assert "### 质量" in markdown
+    assert "- 状态：已完成" in markdown
+    assert "USD" not in markdown
+    assert "美元" not in markdown
 
 
 def _priced_config(tmp_path: Path) -> AppConfig:
@@ -149,8 +178,14 @@ async def _completed_target_run(tmp_path: Path, target: TargetSpec):
             response_text="hello",
         )
         paths.target_probe.write_text(record.model_dump_json() + "\n", encoding="utf-8")
+        payload = build_report_payload(
+            run_id="run-1",
+            plan=plan,
+            merged=MergedResult(status=RunStatus.COMPLETED, results=[], skipped=[]),
+            generated_at=datetime.now(UTC),
+        )
         paths.report_json.write_text(
-            json.dumps({"version": 4, "dimensions": []}), encoding="utf-8"
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         row = await runs.get("run-1")
         assert row is not None
@@ -258,6 +293,20 @@ def test_read_grader_package_requires_every_member(write_archive):
         read_grader_package(archive)
     assert "plan.json" in str(info.value)
     assert "snapshots/gradings.json" in str(info.value)
+
+
+def test_a_package_exported_before_the_report_member_is_still_readable() -> None:
+    files = {
+        name: FileEntry(sha256="0" * 64, size=1) for name in MEMBERS if name != "report.md"
+    }
+    manifest = PackageManifest(
+        kind="grader_package",
+        run_id="run-1",
+        created_at="2026-01-01T00:00:00+00:00",
+        files=files,
+    )
+
+    gp._require_grader_package(manifest)
 
 
 def test_read_grader_package_rejects_a_run_bundle(write_archive):

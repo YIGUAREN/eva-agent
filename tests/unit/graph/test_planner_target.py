@@ -8,7 +8,7 @@ from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.grader import CheckSpec, GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, SkippedDimension
-from eva_agent.domain.run import InputKind
+from eva_agent.domain.run import GraderSelection, InputKind
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.graph.plan_validation import PlanValidationError
 from eva_agent.graph.planner import LlmPlanner, PlannerOutput
@@ -29,7 +29,18 @@ class FakeStructured:
 
 
 async def list_handler(payload: ListGradersInput) -> ListGradersOutput:
-    return ListGradersOutput(graders=[])
+    return ListGradersOutput(
+        graders=[
+            {
+                "id": "relevance",
+                "mode": "pointwise",
+                "inputs": ["query", "response"],
+                "tags": ["quality"],
+                "needs_model": True,
+                "cost": "low",
+            }
+        ]
+    )
 
 
 async def rubric_handler(payload: GenerateRubricInput) -> RubricOutput:
@@ -78,15 +89,29 @@ def demo_target() -> TargetSpec:
     )
 
 
-def target_evidence(tmp_path: Path) -> EvidenceBundle:
+def demo_agent() -> TargetSpec:
+    return TargetSpec(
+        name="demo-agent",
+        kind=TargetKind.AGENT_HTTP,
+        provider="dify",
+        model="agent",
+        url="http://127.0.0.1:8200/chat",
+        method="POST",
+        request_template={"message": "{{prompt}}"},
+        response_path="$.answer",
+    )
+
+
+def target_evidence(tmp_path: Path, target: TargetSpec | None = None) -> EvidenceBundle:
+    target = target or demo_target()
     root = tmp_path / "evidence"
     root.mkdir()
-    payload = {"target": demo_target().model_dump(mode="json"), "prompts": ["q1", "q2"]}
+    payload = {"target": target.model_dump(mode="json"), "prompts": ["q1", "q2"]}
     (root / "target.json").write_text(json.dumps(payload), encoding="utf-8")
     return EvidenceBundle(
         kind=InputKind.TARGET,
         root=str(root),
-        target=demo_target(),
+        target=target,
         target_prompts=["q1", "q2"],
         manifest_sha256="a" * 64,
     )
@@ -163,6 +188,128 @@ async def test_target_planner_builds_latency_and_cost(tmp_path: Path):
     assert '"dimension": "quality"|"latency"|"cost"|"security"' in prompt
     assert 'security MUST set `"graders": []`' in prompt
     assert "`score.weights` keys must equal the check `name`, or the check `type` when it has no name." in prompt
+
+
+def target_output_with_quality() -> PlannerOutput:
+    return PlannerOutput(
+        objective="评估目标",
+        evidence_summary="target demo",
+        dimensions=[
+            DimensionPlan(
+                dimension=Dimension.QUALITY,
+                enabled=True,
+                sample_size=3,
+                graders=[GraderSpec(level="llm_rubric", name="quality_rubric", rubric="r")],
+            ),
+            DimensionPlan(
+                dimension=Dimension.LATENCY,
+                enabled=True,
+                sample_size=3,
+                graders=[declarative("latency_budget", "latency_ms", 3000)],
+            ),
+            DimensionPlan(
+                dimension=Dimension.COST,
+                enabled=True,
+                sample_size=3,
+                graders=[declarative("cost_budget", "cost_usd", 0.01)],
+            ),
+        ],
+        skipped=[SkippedDimension(dimension=Dimension.SECURITY, reason="阶段 3 实现")],
+    )
+
+
+async def test_target_selection_keeps_only_the_checked_relevance_grader(tmp_path: Path):
+    structured = FakeStructured(target_output_with_quality())
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+
+    plan = await planner.plan(
+        target_evidence(tmp_path),
+        budget(),
+        selected_graders=GraderSelection(quality=["relevance"], security=["harmfulness"]),
+    )
+
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    assert quality.enabled is True
+    assert [(spec.level, spec.builtin_id) for spec in quality.graders] == [("builtin", "relevance")]
+
+
+async def test_target_selection_keeps_a_checked_security_grader_over_the_llm_skip(tmp_path: Path):
+    """The llm skip cannot override the user's security selection: the dimension
+    runs and the security expert decides at run time whether it applies."""
+    structured = FakeStructured(target_output_with_quality())
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+
+    plan = await planner.plan(
+        target_evidence(tmp_path),
+        budget(),
+        selected_graders=GraderSelection(quality=["relevance"], security=["harmfulness"]),
+    )
+
+    security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert security.enabled is True
+    assert security.graders == []
+    assert security.sample_size is not None
+    assert all(item.dimension is not Dimension.SECURITY for item in plan.skipped)
+
+
+async def test_target_selection_skips_quality_for_an_agent_target(tmp_path: Path):
+    """An agent scan runs inside AIG, so no local probe rows exist to grade."""
+    structured = FakeStructured(target_output_with_quality())
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+
+    plan = await planner.plan(
+        target_evidence(tmp_path, demo_agent()),
+        budget(),
+        selected_graders=GraderSelection(quality=["relevance"]),
+    )
+
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    assert quality.enabled is False
+    assert quality.graders == []
+    skipped = {item.dimension: item.reason for item in plan.skipped}
+    assert "agent 目标" in skipped[Dimension.QUALITY]
+
+
+async def test_target_selection_skips_quality_without_relevance(tmp_path: Path):
+    structured = FakeStructured(target_output_with_quality())
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+
+    plan = await planner.plan(
+        target_evidence(tmp_path),
+        budget(),
+        selected_graders=GraderSelection(quality=["correctness"]),
+    )
+
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    assert quality.enabled is False
+    assert quality.graders == []
+    skipped = {item.dimension: item.reason for item in plan.skipped}
+    assert "仅支持 relevance" in skipped[Dimension.QUALITY]
+
+
+async def test_target_selection_disables_security_without_a_checked_grader(tmp_path: Path):
+    output = PlannerOutput(
+        objective="评估目标安全",
+        evidence_summary="target demo",
+        dimensions=[DimensionPlan(dimension=Dimension.SECURITY, enabled=True, sample_size=2)],
+        skipped=[
+            SkippedDimension(dimension=Dimension.QUALITY, reason="x"),
+            SkippedDimension(dimension=Dimension.LATENCY, reason="x"),
+            SkippedDimension(dimension=Dimension.COST, reason="x"),
+        ],
+    )
+    planner = LlmPlanner(None, build_registry(), structured_runner=FakeStructured(output))
+
+    plan = await planner.plan(
+        target_evidence(tmp_path),
+        budget(),
+        selected_graders=GraderSelection(quality=["relevance"]),
+    )
+
+    security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert security.enabled is False
+    skipped = {item.dimension: item.reason for item in plan.skipped}
+    assert "未选择安全评分器" in skipped[Dimension.SECURITY]
 
 
 async def test_target_planner_reads_target_json_not_manifest(tmp_path: Path):
