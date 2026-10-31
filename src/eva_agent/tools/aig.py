@@ -38,8 +38,9 @@ from eva_agent.tools.registry import ToolSpec
 SCAN_KIND = "model_redteam_report"
 AGENT_SCAN_KIND = "agent_scan"
 SKILL_SCAN_KIND = "skill_scan"
-# Extra wall-clock room on top of three HTTP timeouts (create, wait, result) so
-# the registry deadline never undercuts the configured scan wait window.
+# Extra wall-clock room on top of a tool's HTTP timeouts (create, wait, result,
+# plus upload for the skill tool) so the registry deadline never undercuts the
+# configured scan wait window.
 AIG_TOOL_TIMEOUT_MARGIN_S = 30.0
 # AIG's CLI refuses an empty model token. A target without api_key_env accepts
 # anonymous access (our probe sends no Authorization header for it, see
@@ -210,15 +211,25 @@ def _package_archive(root: str, files: list[str], *, limit: int) -> bytes:
     """Zip the listed evidence files; refuse anything that escapes the root or the size cap."""
     buffer = io.BytesIO()
     total = 0
+    root_path = Path(root).resolve()
     try:
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for relative in files:
                 path = resolve_evidence_path(root, relative)
-                data = path.read_bytes()
+                # Name members by their resolved path inside the root so a caller
+                # cannot smuggle ".." segments or a drive prefix into the archive.
+                try:
+                    member = path.relative_to(root_path).as_posix()
+                except ValueError:
+                    raise AigPackageError("skill package member escapes the evidence root") from None
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    raise AigPackageError("skill package member is not readable") from None
                 total += len(data)
                 if total > limit:
                     raise AigPackageError(f"skill package exceeds {limit} bytes")
-                archive.writestr(relative, data)
+                archive.writestr(member, data)
     except EvidenceAccessError as exc:
         raise AigPackageError(f"skill package member is not readable: {exc.reason}") from None
     return buffer.getvalue()
@@ -491,7 +502,8 @@ def build_run_aig_skill_scan_tool(
         input_model=AigSkillScanInput,
         output_model=AigSkillScanOutput,
         permission="admin",
-        timeout_s=settings.max_wait_s + 3 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S,
+        # Upload + create + last wait poll + result all consume one timeout each.
+        timeout_s=settings.max_wait_s + 4 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S,
         side_effects=True,
         idempotent=False,
         handler=handler,

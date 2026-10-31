@@ -5,15 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from eva_agent.adapters.aig.errors import AigTimeout
+from eva_agent.adapters.aig.errors import AigError, AigTimeout
 from eva_agent.config.settings import AigSettings, AigSkillScanSettings, MissingSecretError, ModelConfig
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.security.audit import noop_audit_sink
 from eva_agent.tools.aig import (
+    AIG_TOOL_TIMEOUT_MARGIN_S,
     AigAgentScanInput,
     AigPackageError,
     AigSkillScanInput,
     build_run_aig_agent_scan_tool,
+    build_run_aig_scan_tool,
     build_run_aig_skill_scan_tool,
 )
 
@@ -51,9 +53,16 @@ SKILL_RESULT = {
 
 
 class FakeClient:
-    def __init__(self, result: dict, *, wait_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        result: dict,
+        *,
+        wait_error: Exception | None = None,
+        upload_error: Exception | None = None,
+    ) -> None:
         self.result_payload = result
         self.wait_error = wait_error
+        self.upload_error = upload_error
         self.bodies: list[dict] = []
         self.uploads: list[tuple[str, bytes]] = []
         self.waits: list[tuple[str, float]] = []
@@ -72,6 +81,8 @@ class FakeClient:
         return self.result_payload
 
     async def upload(self, filename: str, content: bytes) -> str:
+        if self.upload_error is not None:
+            raise self.upload_error
         self.uploads.append((filename, content))
         return "pkg_1793423249288665728_1793423249.zip"
 
@@ -96,17 +107,6 @@ def agent_target() -> TargetSpec:
         header_env={"Authorization": "AGENT_TOKEN"},
         request_template={"message": "{{prompt}}"},
         response_path="$.reply",
-    )
-
-
-def agent_tool(client: FakeClient, audit=None, env=None):
-    return build_run_aig_agent_scan_tool(
-        client=client,
-        settings=AigSettings(),
-        eval_model=EVAL,
-        env={"JUDGE_KEY": "judge-token", "AGENT_TOKEN": "Bearer target"} if env is None else env,
-        audit=audit or noop_audit_sink,
-        data_dir="./data",
     )
 
 
@@ -143,7 +143,9 @@ async def test_agent_scan_resolves_header_secrets_and_persists_the_raw_result(tm
     assert [event.action for event in audit.events] == ["active_scan.started", "active_scan.completed"]
     assert {event.scan_kind for event in audit.events} == {"agent_scan"}
     assert {event.authorization_ref for event in audit.events} == {"ticket-42"}
-    assert "Bearer target" not in json.dumps([event.detail for event in audit.events])
+    details = json.dumps([event.detail for event in audit.events])
+    assert "Bearer target" not in details
+    assert "judge-token" not in details
 
 
 @pytest.mark.asyncio
@@ -252,6 +254,7 @@ async def test_skill_scan_uploads_one_archive_and_passes_the_file_url(tmp_path: 
     assert output.report.score == 100
     assert (tmp_path / "runs" / "run-1" / "aig" / "sess-1.json").is_file()
     assert {event.scan_kind for event in audit.events} == {"skill_scan"}
+    assert "judge-token" not in json.dumps([event.detail for event in audit.events])
 
 
 @pytest.mark.asyncio
@@ -296,3 +299,113 @@ async def test_skill_scan_rejects_a_file_outside_the_evidence_root(tmp_path: Pat
                 max_wait_s=30.0,
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_skill_scan_rewrites_dotdot_members_to_the_resolved_relative_path(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    write_package(evidence_root)
+    client = FakeClient(SKILL_RESULT)
+
+    await skill_tool(client, data_dir=tmp_path).handler(
+        AigSkillScanInput(
+            run_id="run-1",
+            root=str(evidence_root),
+            files=["scripts/../SKILL.md"],
+            authorization_ref="ticket-42",
+            max_wait_s=30.0,
+        )
+    )
+
+    assert len(client.uploads) == 1
+    with zipfile.ZipFile(io.BytesIO(client.uploads[0][1])) as archive:
+        names = archive.namelist()
+    assert names == ["SKILL.md"]
+    assert all(".." not in name and "\\" not in name for name in names)
+
+
+@pytest.mark.asyncio
+async def test_skill_scan_upload_failure_records_a_terminal_failed_row(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    files = write_package(evidence_root)
+    client = FakeClient(SKILL_RESULT, upload_error=AigError("upload exploded"))
+    audit = RecordingAudit()
+
+    with pytest.raises(AigError):
+        await skill_tool(client, data_dir=tmp_path, audit=audit).handler(
+            AigSkillScanInput(
+                run_id="run-1",
+                root=str(evidence_root),
+                files=files,
+                authorization_ref="ticket-42",
+                max_wait_s=30.0,
+            )
+        )
+
+    assert client.bodies == []
+    assert [event.action for event in audit.events] == ["active_scan.failed"]
+    assert audit.events[0].detail == {"error_type": "AigError"}
+
+
+@pytest.mark.asyncio
+async def test_skill_scan_wraps_a_read_failure_without_leaking_the_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    files = write_package(evidence_root)
+    audit = RecordingAudit()
+
+    def raise_oserror(self: Path) -> bytes:
+        raise OSError(f"cannot read {self}")
+
+    monkeypatch.setattr(Path, "read_bytes", raise_oserror)
+
+    with pytest.raises(AigPackageError) as excinfo:
+        await skill_tool(FakeClient(SKILL_RESULT), data_dir=tmp_path, audit=audit).handler(
+            AigSkillScanInput(
+                run_id="run-1",
+                root=str(evidence_root),
+                files=files,
+                authorization_ref="ticket-42",
+                max_wait_s=30.0,
+            )
+        )
+
+    assert str(evidence_root) not in str(excinfo.value)
+    assert "SKILL.md" not in str(excinfo.value)
+    assert [event.action for event in audit.events] == ["active_scan.failed"]
+
+
+def test_skill_tool_budget_covers_four_http_timeouts(tmp_path: Path) -> None:
+    settings = AigSettings()
+    skill = build_run_aig_skill_scan_tool(
+        client=FakeClient(SKILL_RESULT),
+        settings=settings,
+        eval_model=EVAL,
+        env={"JUDGE_KEY": "judge-token"},
+        audit=noop_audit_sink,
+        data_dir=str(tmp_path),
+    )
+    assert skill.timeout_s == settings.max_wait_s + 4 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
+    for tool in (
+        build_run_aig_scan_tool(
+            client=FakeClient(SKILL_RESULT),
+            settings=settings,
+            eval_model=EVAL,
+            env={"JUDGE_KEY": "judge-token"},
+            audit=noop_audit_sink,
+            data_dir=str(tmp_path),
+        ),
+        build_run_aig_agent_scan_tool(
+            client=FakeClient(SKILL_RESULT),
+            settings=settings,
+            eval_model=EVAL,
+            env={"JUDGE_KEY": "judge-token"},
+            audit=noop_audit_sink,
+            data_dir=str(tmp_path),
+        ),
+    ):
+        assert tool.timeout_s == settings.max_wait_s + 3 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
