@@ -8,6 +8,7 @@ from typing import Any, cast
 from openai import AsyncOpenAI
 from openjudge.models.openai_chat_model import OpenAIChatModel
 
+from eva_agent.budget.usage import record_usage
 from eva_agent.config.settings import ModelConfig, resolve_api_key
 
 
@@ -25,7 +26,9 @@ class _JsonObjectCompletions:
 
     async def parse(self, **kwargs: Any) -> Any:
         kwargs["response_format"] = {"type": "json_object"}
-        return await self._completions.create(**kwargs)
+        response = await self._completions.create(**kwargs)
+        record_usage(response)
+        return response
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._completions, name)

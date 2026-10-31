@@ -16,6 +16,7 @@ from openjudge.runner.grading_runner import GraderConfig, GradingRunner
 
 from eva_agent.adapters.openjudge.catalog import GraderEntry, load_class
 from eva_agent.adapters.openjudge.normalize import normalize_results
+from eva_agent.budget.usage import UsageTotals, track_usage
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
 
@@ -119,13 +120,16 @@ class OpenJudgeRunner:
             configs[spec.name] = GraderConfig(grader=grader, mapper=self._mapper_for(spec, entry))
 
         error: str | None = None
+        totals = UsageTotals()
         if configs:
             try:
-                results = await GradingRunner(
-                    grader_configs=configs,
-                    max_concurrency=self._max_concurrency,
-                    show_progress=False,
-                ).arun(rows)
+                with track_usage() as tracked:
+                    totals = tracked
+                    results = await GradingRunner(
+                        grader_configs=configs,
+                        max_concurrency=self._max_concurrency,
+                        show_progress=False,
+                    ).arun(rows)
             except Exception as exc:
                 error = f"grading runner failed: {exc}"
                 handled = {item.grader for item in outcomes}
@@ -147,4 +151,10 @@ class OpenJudgeRunner:
             error = "no runnable graders"
 
         duration_ms = int((time.perf_counter() - started) * 1000)
-        return GraderRunOutput(outcomes=outcomes, duration_ms=duration_ms, error=error)
+        return GraderRunOutput(
+            outcomes=outcomes,
+            duration_ms=duration_ms,
+            error=error,
+            input_tokens=totals.input_tokens or None,
+            output_tokens=totals.output_tokens or None,
+        )

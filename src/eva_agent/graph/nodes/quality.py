@@ -1,5 +1,6 @@
 """Run the quality expert and record one dimension result."""
 
+from eva_agent.budget.context import budget_context
 from eva_agent.domain.plan import Dimension
 from eva_agent.domain.result import DimensionResult, Usage
 from eva_agent.domain.run import RunStatus
@@ -56,6 +57,19 @@ async def quality_node(state: ExpertState, deps: GraphDependencies) -> dict:
             state["run_id"],
             "quality.completed",
             {"status": result.status, "score": result.score},
+        )
+
+    if result.truncated_reason == "budget":
+        context = budget_context()
+        snapshot = context.ledger.snapshot() if context is not None else None
+        await deps.event_sink(
+            state["run_id"],
+            "budget.exhausted",
+            {
+                "spent_usd": float(snapshot.spent_usd) if snapshot is not None else 0.0,
+                "remaining_usd": float(snapshot.remaining_usd) if snapshot is not None else 0.0,
+                "dimension": "quality",
+            },
         )
 
     return {"expert_results": [result]}
