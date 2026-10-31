@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from uuid import uuid4
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.domain.evidence import SKILL_MANIFEST_NAMES
@@ -193,54 +195,71 @@ async def build_grader_package(
     *, config: AppConfig, run_row: RunRow, out_dir: Path
 ) -> tuple[Path, PackageManifest]:
     try:
-        paths = run_paths(config.storage.data_dir, run_row.id)
-    except ValueError as exc:
-        raise PackageError(str(exc)) from None
-    plan = _plan_from_row(run_row)
-    inputs = await collect_package_input(config=config, run_row=run_row)
-    snapshots, snapshot_blockers = collect_snapshots(
-        data_dir=config.storage.data_dir,
-        run_id=run_row.id,
-        dimensions=[item for item in plan.dimensions if item.enabled],
-        rows=inputs.rows,
-        dimension_limits=inputs.dimension_limits,
-    )
-    if not paths.report_json.is_file():
-        raise PackageError("run has no report.json; only completed runs can be packaged")
-    report = _report_payload(paths.report_json)
-    blockers = _replay_blockers(snapshot_blockers, report, inputs.evidence, inputs)
-    workdir = Path(tempfile.mkdtemp(prefix="eva-package-"))
-    try:
-        (workdir / "snapshots").mkdir(parents=True)
-        (workdir / "plan.json").write_bytes(canonical_json(plan.model_dump(mode="json")))
-        (workdir / "input.json").write_bytes(canonical_json(inputs.model_dump(mode="json")))
-        (workdir / "snapshots" / "gradings.json").write_bytes(
-            canonical_json(snapshots.model_dump(mode="json"))
-        )
-        (workdir / "report.json").write_bytes(canonical_json(report))
-        (workdir / "README.md").write_text(README, encoding="utf-8")
-        files = {
-            name: FileEntry(sha256=sha256_file(workdir / name), size=(workdir / name).stat().st_size)
-            for name in _MEMBER_NAMES
-        }
-        manifest = PackageManifest(
-            kind="grader_package",
+        try:
+            paths = run_paths(config.storage.data_dir, run_row.id)
+        except ValueError as exc:
+            raise PackageError(str(exc)) from None
+        plan = _plan_from_row(run_row)
+        inputs = await collect_package_input(config=config, run_row=run_row)
+        snapshots, snapshot_blockers = collect_snapshots(
+            data_dir=config.storage.data_dir,
             run_id=run_row.id,
-            created_at=utcnow().isoformat(),
-            report_version=int(report.get("version") or 0),
-            catalog_sha256=_catalog_sha256(config),
-            evidence_sha256=inputs.evidence.manifest_sha256,
-            replayable=not blockers,
-            replay_blockers=blockers,
-            files=files,
+            dimensions=[item for item in plan.dimensions if item.enabled],
+            rows=inputs.rows,
+            dimension_limits=inputs.dimension_limits,
         )
-        write_manifest(workdir, manifest)
-        verify_tree(workdir, manifest)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        archive = write_zip(workdir, out_dir / f"{run_row.id}.grader-package.zip", manifest=manifest)
-        return archive, manifest
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        if not paths.report_json.is_file():
+            raise PackageError("run has no report.json; only completed runs can be packaged")
+        report = _report_payload(paths.report_json)
+        blockers = _replay_blockers(snapshot_blockers, report, inputs.evidence, inputs)
+        workdir = Path(tempfile.mkdtemp(prefix="eva-package-"))
+        try:
+            (workdir / "snapshots").mkdir(parents=True)
+            (workdir / "plan.json").write_bytes(canonical_json(plan.model_dump(mode="json")))
+            (workdir / "input.json").write_bytes(canonical_json(inputs.model_dump(mode="json")))
+            (workdir / "snapshots" / "gradings.json").write_bytes(
+                canonical_json(snapshots.model_dump(mode="json"))
+            )
+            (workdir / "report.json").write_bytes(canonical_json(report))
+            (workdir / "README.md").write_text(README, encoding="utf-8")
+            files = {
+                name: FileEntry(
+                    sha256=sha256_file(workdir / name), size=(workdir / name).stat().st_size
+                )
+                for name in _MEMBER_NAMES
+            }
+            manifest = PackageManifest(
+                kind="grader_package",
+                run_id=run_row.id,
+                created_at=utcnow().isoformat(),
+                report_version=int(report.get("version") or 0),
+                catalog_sha256=_catalog_sha256(config),
+                evidence_sha256=inputs.evidence.manifest_sha256,
+                replayable=not blockers,
+                replay_blockers=blockers,
+                files=files,
+            )
+            write_manifest(workdir, manifest)
+            verify_tree(workdir, manifest)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            destination = out_dir / f"{run_row.id}.grader-package.zip"
+            # Write beside the destination and move it into place only on
+            # success, so a mid-write failure cannot truncate a previous
+            # archive with the same name. This mirrors ``build_run_bundle``.
+            staging = out_dir / f".{destination.name}.tmp-{uuid4().hex}"
+            try:
+                write_zip(workdir, staging, manifest=manifest)
+                os.replace(staging, destination)
+            except BaseException:
+                staging.unlink(missing_ok=True)
+                raise
+            return destination, manifest
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+    except OSError as exc:
+        # ``str(OSError)`` embeds the absolute filename; the OS reason is enough
+        # and safe for both the CLI and the admin HTTP route.
+        raise PackageError(f"cannot write grader package: {_error_detail(exc)}") from None
 
 
 def _require_grader_package(manifest: PackageManifest) -> None:

@@ -431,6 +431,25 @@ def test_replay_matches_a_latency_package_with_successful_rows_only() -> None:
     assert expected.metrics["sample_size"] == 2
 
 
+def test_replay_refuses_a_plan_with_no_enabled_dimension() -> None:
+    plan = _plan(DimensionPlan(dimension=Dimension.QUALITY, enabled=False))
+
+    package = _package(plan, dimensions=[{"dimension": "quality"}])
+
+    with pytest.raises(PackageError, match="compared no dimension"):
+        replay_package(package)
+
+
+def test_replay_refuses_a_report_with_no_dimension_entries() -> None:
+    spec = GraderSpec(level="builtin", name="relevance", builtin_id="relevance")
+    plan = _plan(DimensionPlan(dimension=Dimension.QUALITY, enabled=True, graders=[spec]))
+
+    package = _package(plan, rows=ROWS, dimensions=[])
+
+    with pytest.raises(PackageError, match="compared no dimension"):
+        replay_package(package)
+
+
 def test_replay_refuses_a_quality_dimension_with_no_rows() -> None:
     spec = GraderSpec(level="builtin", name="relevance", builtin_id="relevance")
     plan = _plan(DimensionPlan(dimension=Dimension.QUALITY, enabled=True, graders=[spec]))
