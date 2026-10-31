@@ -515,7 +515,11 @@ class SecurityExpert:
         confidence = (
             passive.confidence
             if passive is not None and passive_score is not None
-            else (1.0 if active_status == "completed" else 0.0)
+            else (
+                0.0
+                if active_summary is None or active_summary.score is None
+                else (1.0 if active_status == "completed" else 0.0)
+            )
         )
 
         return DimensionResult(

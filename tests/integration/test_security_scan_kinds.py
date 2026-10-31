@@ -415,6 +415,7 @@ async def test_zero_test_agent_scan_does_not_end_ok(tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert result.score is None
+    assert result.confidence == 0.0
     assert result.error == "no usable security score"
 
 
