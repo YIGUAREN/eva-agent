@@ -431,6 +431,18 @@ def skill_upload(tmp_path: Path, *, qa: str | None = None) -> tuple[Path, Eviden
     return root, upload_evidence(root, *paths)
 
 
+def wrapped_skill_upload(tmp_path: Path) -> tuple[Path, EvidenceBundle]:
+    """A package zipped with a wrapper directory, alongside a root qa.jsonl."""
+    root = tmp_path / "evidence"
+    package = root / "ssh-collector"
+    (package / "scripts").mkdir(parents=True)
+    (package / "SKILL.md").write_text("# Collector\n\nCollect facts.\n", encoding="utf-8")
+    (package / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+    (root / "qa.jsonl").write_text('{"query": "q", "response": "safe answer"}\n', encoding="utf-8")
+    paths = ["ssh-collector/SKILL.md", "ssh-collector/scripts/run.py", "qa.jsonl"]
+    return root, upload_evidence(root, *paths)
+
+
 def skill_tools(*, fail_on: str | None = None) -> tuple[ToolRegistry, FakeScanTool]:
     tools = ToolRegistry()
     tools.register(build_read_evidence_tool(1_000_000))
@@ -465,6 +477,31 @@ async def test_skill_upload_runs_threat_analysis_and_a_skill_scan(tmp_path: Path
     requested = next(event for event in audit.events if event.action == "active_scan.requested")
     assert requested.scan_kind == "skill_scan"
     assert requested.authorization_ref == "ticket-42"
+
+
+async def test_wrapped_skill_upload_takes_the_skill_scan_path(tmp_path: Path) -> None:
+    _, bundle = wrapped_skill_upload(tmp_path)
+    tools, skill_tool = skill_tools()
+    policy = scan_policy()
+    deps = dependencies(tmp_path, tools=tools, policy=policy)
+    expert = SecurityExpert(deps)
+
+    assert expert._scan_kind(bundle) == "skill_scan"
+
+    result = await expert.run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    # The active skill scan must run, not just the passive qa grading.
+    assert policy.calls[0]["scan_kind"] == "skill_scan"
+    assert result.metrics["active"]["kind"] == "skill_scan"
+    assert len(skill_tool.calls) == 1
 
 
 async def test_skill_upload_with_malformed_qa_records_the_failure(tmp_path: Path) -> None:

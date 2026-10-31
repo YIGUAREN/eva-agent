@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from eva_agent.domain.run import DatasetRef, InputKind
 from eva_agent.domain.target import TargetSpec
 
-# A skill package is identified by a manifest at the evidence root only; a
-# nested example manifest must not turn an ordinary upload into a skill.
+# A manifest anywhere in the evidence workspace makes the upload a skill
+# package, not only one at the root: zipped packages commonly keep SKILL.md
+# under a wrapper directory. A root-only check would let that layout bypass
+# skill scanning, and detection must match the package rule in
+# security/skill_package.py, which treats every manifest-bearing directory as
+# a package.
 SKILL_MANIFEST_NAMES = ("SKILL.md", "skill.yaml", "skill.yml")
 
 
@@ -41,4 +47,4 @@ class EvidenceBundle(BaseModel):
         return self
 
     def has_skill_manifest(self) -> bool:
-        return any(item.path in SKILL_MANIFEST_NAMES for item in self.files)
+        return any(PurePosixPath(item.path).name in SKILL_MANIFEST_NAMES for item in self.files)
