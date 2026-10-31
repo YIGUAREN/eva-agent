@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from eva_agent.adapters.aig.attachments import attachment_names
+from eva_agent.adapters.aig.attachments import MAX_ATTACHMENTS, attachment_names
 from eva_agent.adapters.aig.body import (
     build_agent_scan_body,
     build_create_body,
@@ -237,15 +237,18 @@ async def _save_attachment(
     session_id = raw_path.stem
     # AIG can report several attachments; download each distinct name once. The
     # first keeps the acceptance-tested "<session_id>.csv" name, later ones are
-    # numbered from 2 so Task 7's aig/*.csv glob picks them up too.
+    # numbered from 2 so Task 7's aig/*.csv glob picks them up too. Cap the count
+    # so the tool budget stays honest, and audit (never silently drop) the rest.
     distinct = list(dict.fromkeys(names))
-    for index, name in enumerate(distinct, start=1):
+    for index, name in enumerate(distinct[:MAX_ATTACHMENTS], start=1):
         filename = f"{session_id}.csv" if index == 1 else f"{session_id}-{index}.csv"
         try:
             content = await client.download(session_id, name)
             (paths.aig_dir / filename).write_bytes(content)
         except (AigError, OSError) as exc:
             await auditor.attachment_failed(type(exc).__name__)
+    if len(distinct) > MAX_ATTACHMENTS:
+        await auditor.attachment_failed("too_many_attachments")
 
 
 def _package_archive(root: str, files: list[str], *, limit: int) -> bytes:
@@ -378,8 +381,11 @@ def build_run_aig_scan_tool(
         input_model=AigScanInput,
         output_model=AigScanOutput,
         permission="admin",
-        # Create + last wait poll + result + download consume one timeout each.
-        timeout_s=settings.max_wait_s + 4 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S,
+        # Create + last wait poll + result consume three timeouts and the downloads
+        # consume one each, up to MAX_ATTACHMENTS.
+        timeout_s=(
+            settings.max_wait_s + (3 + MAX_ATTACHMENTS) * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
+        ),
         side_effects=True,
         idempotent=False,
         handler=handler,

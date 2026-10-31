@@ -29,9 +29,10 @@ _FILE_URL = re.compile(r"(?=[A-Za-z0-9._-]*[A-Za-z0-9])[A-Za-z0-9._-]{1,255}")
 _SUCCESS_STATUSES = frozenset({"completed", "done"})
 _FAILURE_STATUSES = frozenset({"failed", "error", "terminated"})
 _IN_PROGRESS_STATUSES = frozenset({"pending", "running", "todo", "doing"})
-# The download endpoint returns the CSV itself; only these media types are plausible
-# for it. An absent content type is accepted for AIG deployments that omit it.
-_ALLOWED_ATTACHMENT_TYPES = frozenset({"text/csv", "application/octet-stream"})
+# AIG's media type for this endpoint has never been observed, so accept anything
+# that could be the file and reject only the types that mean "this is an error
+# page". The `<html` sniff and the byte cap still apply.
+_REJECTED_ATTACHMENT_TYPES = frozenset({"text/html", "application/json", "text/xml", "application/xml"})
 
 
 class AigScanClient(Protocol):
@@ -153,7 +154,7 @@ class AigClient:
                 if not 200 <= response.status_code < 300:
                     raise AigUnavailable(f"AIG returned HTTP {response.status_code}")
                 media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                if media_type and media_type not in _ALLOWED_ATTACHMENT_TYPES:
+                if media_type in _REJECTED_ATTACHMENT_TYPES:
                     raise AigUnavailable("AIG returned an invalid attachment type")
                 buffer = bytearray()
                 async for chunk in response.aiter_bytes():

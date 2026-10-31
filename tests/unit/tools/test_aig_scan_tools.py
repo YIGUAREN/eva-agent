@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from eva_agent.adapters.aig.attachments import MAX_ATTACHMENTS
 from eva_agent.adapters.aig.client import AigScanClient
 from eva_agent.adapters.aig.errors import AigError, AigTimeout, AigUnavailable
 from eva_agent.config.settings import AigSettings, AigSkillScanSettings, MissingSecretError, ModelConfig
@@ -56,6 +57,7 @@ SKILL_RESULT = {
 
 ATTACHMENT = "attachment_0123456789abcdef0123456789abcdef_1793422813849140825_1793422813.csv"
 ATTACHMENT_2 = "attachment_0123456789abcdef0123456789abcdef_1793422813849140826_1793422814.csv"
+ATTACHMENT_3 = "attachment_0123456789abcdef0123456789abcdef_1793422813849140827_1793422815.csv"
 CSV_BYTES = b"\xef\xbb\xbfstatus,modelName\ncompleted,demo\n"
 MODEL_RESULT = {
     "result": {
@@ -78,6 +80,16 @@ TWO_MODEL_RESULT = {
             {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT},
             {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT_2},
             {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT},
+        ],
+    }
+}
+THREE_MODEL_RESULT = {
+    "result": {
+        "msgType": "json",
+        "content": [
+            {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT},
+            {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT_2},
+            {"modelName": "demo-echo", "total": 2, "jailbreak": 1, "score": 50.0, "attachment": ATTACHMENT_3},
         ],
     }
 }
@@ -540,6 +552,32 @@ async def test_every_distinct_attachment_is_saved_with_the_first_name_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_downloads_are_capped_and_the_extra_attachment_is_audited(tmp_path: Path) -> None:
+    client = FakeClient(THREE_MODEL_RESULT)
+    audit = RecordingAudit()
+
+    output = await model_tool(client, data_dir=tmp_path, audit=audit).handler(model_input())
+
+    aig_dir = tmp_path / "runs" / "run-1" / "aig"
+    assert client.downloaded == [
+        (output.session_id, ATTACHMENT),
+        (output.session_id, ATTACHMENT_2),
+    ]
+    assert (aig_dir / f"{output.session_id}.csv").read_bytes() == CSV_BYTES
+    assert (aig_dir / f"{output.session_id}-2.csv").read_bytes() == CSV_BYTES
+    assert not (aig_dir / f"{output.session_id}-3.csv").exists()
+    assert [event.action for event in audit.events] == [
+        "active_scan.started",
+        "active_scan.attachment_failed",
+        "active_scan.completed",
+    ]
+    assert audit.events[1].detail == {"reason": "too_many_attachments"}
+    details = json.dumps([event.detail for event in audit.events])
+    assert ATTACHMENT_3 not in details
+    assert "demo-echo" not in details
+
+
+@pytest.mark.asyncio
 async def test_unreadable_result_audits_and_completes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     original = Path.read_text
 
@@ -606,7 +644,7 @@ async def test_client_without_download_degrades_instead_of_crashing(tmp_path: Pa
     assert audit.events[1].detail == {"reason": "download_unsupported"}
 
 
-def test_model_and_skill_budgets_cover_four_http_timeouts(tmp_path: Path) -> None:
+def test_model_and_skill_budgets_match_their_http_calls(tmp_path: Path) -> None:
     settings = AigSettings()
     skill = build_run_aig_skill_scan_tool(
         client=FakeClient(SKILL_RESULT),
@@ -625,7 +663,10 @@ def test_model_and_skill_budgets_cover_four_http_timeouts(tmp_path: Path) -> Non
         audit=noop_audit_sink,
         data_dir=str(tmp_path),
     )
-    assert model.timeout_s == settings.max_wait_s + 4 * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
+    assert (
+        model.timeout_s
+        == settings.max_wait_s + (3 + MAX_ATTACHMENTS) * settings.timeout_s + AIG_TOOL_TIMEOUT_MARGIN_S
+    )
     agent = build_run_aig_agent_scan_tool(
         client=FakeClient(SKILL_RESULT),
         settings=settings,

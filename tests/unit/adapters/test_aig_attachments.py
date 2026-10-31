@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 
@@ -96,16 +98,39 @@ async def test_download_rejects_an_empty_body() -> None:
         await client(handler).download("session-1", "attachment_1_2_3.csv")
 
 
-async def test_download_rejects_an_oversized_body() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            content=b"x" * (MAX_ATTACHMENT_BYTES + 1),
-            headers={"content-type": "text/csv"},
-        )
+class CountingStream(httpx.AsyncByteStream):
+    """Yield pre-built chunks one at a time and count how many were pulled."""
 
-    with pytest.raises(AigUnavailable):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.pulled = 0
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            self.pulled += 1
+            yield chunk
+
+
+async def test_download_stops_an_oversized_body_mid_stream() -> None:
+    # A distinctive marker proves the raised message never carries body content.
+    marker = b"SECRET-CHUNK"
+    per_chunk = 1024 * 1024
+    chunk = marker + b"x" * (per_chunk - len(marker))
+    chunk_count = 2 * (MAX_ATTACHMENT_BYTES // per_chunk)  # twice the cap, in many chunks
+    stream = CountingStream([chunk] * chunk_count)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream, headers={"content-type": "text/csv"})
+
+    with pytest.raises(AigUnavailable) as excinfo:
         await client(handler).download("session-1", "attachment_1_2_3.csv")
+
+    # The guard fires during the read, not after every chunk was buffered.
+    assert 0 < stream.pulled < chunk_count
+    message = str(excinfo.value)
+    assert marker.decode() not in message
+    assert "200" not in message
+    assert "OK" not in message
 
 
 @pytest.mark.parametrize("media_type", ["text/html", "application/json"])
@@ -124,6 +149,9 @@ async def test_download_rejects_document_content_types(media_type: str) -> None:
         {"content-type": "text/csv"},
         {"content-type": "text/csv; charset=utf-8"},
         {"content-type": "application/octet-stream"},
+        # A BOM-prefixed CSV served through Go's http.ServeContent commonly comes
+        # back as text/plain; rejecting it would reject every real attachment.
+        {"content-type": "text/plain; charset=utf-8"},
     ],
 )
 async def test_download_accepts_csv_like_content_types(headers: dict[str, str]) -> None:

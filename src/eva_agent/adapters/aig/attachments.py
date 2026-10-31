@@ -7,6 +7,9 @@ from typing import Any
 
 DOWNLOAD_PATH = "/api/v1/app/tasks/{session_id}/downloadFile"
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+# The live result carries one attachment; two distinct names covers the observed
+# naming while keeping the tool budget honest.
+MAX_ATTACHMENTS = 2
 
 ATTACHMENT_NAME = re.compile(r"(?!\.)[A-Za-z0-9._-]{1,255}\.csv")
 
