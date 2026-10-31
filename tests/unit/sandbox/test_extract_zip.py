@@ -243,6 +243,36 @@ def test_rejects_many_entry_zip_before_opening(tmp_path: Path, monkeypatch: pyte
     assert not (tmp_path / "out").exists()
 
 
+def test_rejects_zip_with_oversized_declared_central_directory(tmp_path: Path) -> None:
+    package = _zip(tmp_path / "p.bin", {"a.txt": b"x"})
+    data = bytearray(package.read_bytes())
+    eocd = data.rfind(b"PK\x05\x06")
+    assert eocd >= 0
+    data[eocd + 12 : eocd + 16] = (2**31 - 1).to_bytes(4, "little")
+    package.write_bytes(bytes(data))
+
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+
+    assert caught.value.reason == "too_many_files"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_zip64_entry_count_marker_below_the_limit(tmp_path: Path) -> None:
+    """0xFFFF defers the count to ZIP64 and cannot be compared numerically."""
+    package = _zip(tmp_path / "p.bin", {"a.txt": b"x"})
+    data = bytearray(package.read_bytes())
+    eocd = data.rfind(b"PK\x05\x06")
+    assert eocd >= 0
+    data[eocd + 10 : eocd + 12] = (0xFFFF).to_bytes(2, "little")
+    package.write_bytes(bytes(data))
+
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+
+    assert caught.value.reason == "too_many_files"
+
+
 def test_rejects_empty_zip(tmp_path: Path) -> None:
     package = tmp_path / "p.bin"
     with zipfile.ZipFile(package, "w"):

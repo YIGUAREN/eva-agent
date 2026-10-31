@@ -1,10 +1,17 @@
+import gzip
 import io
 import tarfile
 from pathlib import Path
 
 import pytest
 
-from eva_agent.sandbox.extract import ExtractionError, ExtractionLimits, detect_format, extract_archive
+from eva_agent.sandbox.extract import (
+    ExtractionError,
+    ExtractionLimits,
+    _LimitedReader,
+    detect_format,
+    extract_archive,
+)
 
 
 def _tar(path: Path, members: dict[str, bytes], *, compression: str = "") -> Path:
@@ -105,6 +112,42 @@ def test_rejects_corrupt_tar(tmp_path: Path) -> None:
     package.write_bytes(b"\x1f\x8b" + b"not-gzip")
     with pytest.raises(ExtractionError) as caught:
         extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "corrupt"
+    assert not (tmp_path / "out").exists()
+
+
+def test_limited_reader_bounds_cumulative_decompression() -> None:
+    reader = _LimitedReader(io.BytesIO(b"x" * 100), 10, total_limit=20)
+
+    assert reader.read(10) == b"x" * 10
+    assert reader.read(10) == b"x" * 10
+    with pytest.raises(ExtractionError) as caught:
+        reader.read(10)
+
+    assert caught.value.reason == "total_too_large"
+
+
+def test_limited_reader_caps_unbounded_reads() -> None:
+    reader = _LimitedReader(io.BytesIO(b"x" * 100), 10)
+
+    assert reader.read() == b"x" * 10
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\x1f\x8b",
+        gzip.compress(b"x" * 1024)[:15],
+    ],
+)
+def test_rejects_truncated_gzip_as_corrupt(tmp_path: Path, payload: bytes) -> None:
+    """A truncated gzip stream must be a rejection, never a server error."""
+    package = tmp_path / "p.bin"
+    package.write_bytes(payload)
+
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+
     assert caught.value.reason == "corrupt"
     assert not (tmp_path / "out").exists()
 

@@ -9,6 +9,7 @@ import shutil
 import stat
 import tarfile
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Literal, cast
@@ -52,16 +53,27 @@ class _LimitedReader:
     Legitimate member data is streamed in ``_CHUNK`` reads, so a single read
     above ``max(max_file_bytes, _CHUNK)`` can only be header parsing; capping
     there keeps every valid member readable while bounding header reads.
+
+    A cumulative budget also bounds decompression work: pax pseudo-members are
+    consumed by ``tarfile`` without being yielded, so they never reach the
+    per-member byte checks and could otherwise expand a tiny gzip without end.
     """
 
-    def __init__(self, stream: IO[bytes], limit: int) -> None:
+    def __init__(self, stream: IO[bytes], limit: int, *, total_limit: int | None = None) -> None:
         self._stream = stream
         self._limit = limit
+        self._total_limit = total_limit
+        self._consumed = 0
 
     def read(self, size: int | None = -1) -> bytes:
-        if size is not None and size > self._limit:
-            raise ExtractionError("file_too_large")
-        return self._stream.read(-1 if size is None else size)
+        if size is None or size < 0 or size > self._limit:
+            # Never hand ``read()``-everything through to the stream.
+            size = self._limit
+        data = self._stream.read(size)
+        self._consumed += len(data)
+        if self._total_limit is not None and self._consumed > self._total_limit:
+            raise ExtractionError("total_too_large")
+        return data
 
     def seek(self, offset: int, whence: int = 0) -> int:
         return self._stream.seek(offset, whence)
@@ -223,15 +235,22 @@ def _extract_zip(package: Path, staging: Path, limits: ExtractionLimits) -> dict
         # ``ZipInfo`` per entry: a small archive can declare ~1M entries.
         declared_entries = int.from_bytes(eocd_tail[eocd_start + 10 : eocd_start + 12], "little")
         central_directory_size = int.from_bytes(eocd_tail[eocd_start + 12 : eocd_start + 16], "little")
-        if declared_entries == 0xFFFF or declared_entries > limits.max_files:
+        # 0xFFFF is the ZIP64 "count is elsewhere" marker, so it cannot be
+        # compared numerically. It only implies an over-limit count while the
+        # configured limit is below 65,535; above that, the per-member counter
+        # below remains authoritative.
+        if declared_entries == 0xFFFF and limits.max_files < 0xFFFF:
             raise ExtractionError("too_many_files")
-        if central_directory_size > limits.max_files * 4096:
+        if declared_entries != 0xFFFF and declared_entries > limits.max_files:
+            raise ExtractionError("too_many_files")
+        if central_directory_size > max(limits.max_files * 1024, 1024 * 1024):
             raise ExtractionError("too_many_files")
         with zipfile.ZipFile(package) as archive:
             member_count = 0
             for info in archive.infolist():
                 member_count += 1
-                # Directory entries are members too; count them before skipping.
+                # Directory entries are members too and consume the same budget,
+                # so a directory-heavy archive cannot bypass the member limit.
                 if member_count > limits.max_files:
                     raise ExtractionError("too_many_files")
                 if info.flag_bits & 0x1:
@@ -279,6 +298,8 @@ def _extract_zip(package: Path, staging: Path, limits: ExtractionLimits) -> dict
         raise ExtractionError("corrupt") from exc
     except RuntimeError as exc:
         raise ExtractionError("corrupt") from exc
+    except zlib.error as exc:
+        raise ExtractionError("corrupt") from exc
     except OSError as exc:
         raise ExtractionError("invalid_path") from exc
     return {
@@ -301,7 +322,13 @@ def _extract_tar(package: Path, staging: Path, limits: ExtractionLimits) -> dict
             # what ``tarfile`` actually parses (plain or gzip, the only formats
             # ``detect_format`` accepts).
             stream = cast(IO[bytes], gzip.GzipFile(fileobj=raw) if is_gzip else raw)
-            guarded = _LimitedReader(stream, max(limits.max_file_bytes, _CHUNK))
+            guarded = _LimitedReader(
+                stream,
+                max(limits.max_file_bytes, _CHUNK),
+                # Legitimate member bytes are bounded by max_total_bytes; the
+                # extra headroom covers headers and any re-read by tarfile.
+                total_limit=2 * limits.max_total_bytes + limits.max_file_bytes,
+            )
             with tarfile.open(fileobj=cast(IO[bytes], guarded), mode="r:") as archive:
                 member_count = 0
                 for member in archive:
@@ -343,7 +370,9 @@ def _extract_tar(package: Path, staging: Path, limits: ExtractionLimits) -> dict
             raise ExtractionError("rejected")
     except (MemoryError, OverflowError) as exc:
         raise ExtractionError("corrupt") from exc
-    except tarfile.TarError as exc:
+    except (tarfile.TarError, EOFError, zlib.error) as exc:
+        # A truncated gzip stream surfaces as EOFError from ``gzip`` rather
+        # than TarError; treat it as a corrupt package, not a server failure.
         raise ExtractionError("corrupt") from exc
     except OSError as exc:
         raise ExtractionError("corrupt") from exc
