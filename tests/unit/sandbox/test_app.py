@@ -31,6 +31,28 @@ async def test_extract_requires_the_token(tmp_path) -> None:
     assert response.status_code == 401
 
 
+def test_factory_rejects_an_empty_token(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        create_sandbox_app(data_dir=str(tmp_path), token="", uploads=UploadsSettings())
+
+
+async def test_non_ascii_token_header_is_unauthorized(tmp_path) -> None:
+    async with _client(_app(tmp_path)) as client:
+        response = await client.post(
+            "/extract",
+            json={"upload_id": "upload_a", "format": "zip"},
+            headers=[(b"X-Sandbox-Token", b"\xff")],
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("path", ["/openapi.json", "/docs", "/redoc"])
+async def test_api_docs_are_disabled(tmp_path, path: str) -> None:
+    async with _client(_app(tmp_path)) as client:
+        response = await client.get(path)
+    assert response.status_code == 404
+
+
 async def test_extract_writes_under_the_upload_root(tmp_path) -> None:
     paths = upload_paths(tmp_path, "upload_a")
     paths.root.mkdir(parents=True)

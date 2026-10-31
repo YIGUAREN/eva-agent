@@ -50,6 +50,43 @@ async def test_unknown_reason_is_replaced() -> None:
     with pytest.raises(SandboxRejected) as caught:
         await _client(handler).extract("upload_a", "zip")
     assert caught.value.reason == "rejected"
+    assert str(caught.value) == "rejected"
+    assert caught.value.args == ("rejected",)
+
+
+async def test_non_json_400_is_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="<html>bad gateway</html>")
+
+    with pytest.raises(SandboxUnavailable):
+        await _client(handler).extract("upload_a", "zip")
+
+
+async def test_json_array_400_is_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json=["not", "an", "object"])
+
+    with pytest.raises(SandboxUnavailable):
+        await _client(handler).extract("upload_a", "zip")
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        {"message": "symlink"},
+        {"code": "bad_request", "message": "upstream error"},
+        {"code": "upload_rejected"},
+        {"code": "upload_rejected", "message": 42},
+        "not-a-dict",
+        None,
+    ],
+)
+async def test_malformed_400_detail_is_unavailable(detail) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"detail": detail})
+
+    with pytest.raises(SandboxUnavailable):
+        await _client(handler).extract("upload_a", "zip")
 
 
 async def test_auth_failure_is_unavailable() -> None:

@@ -27,6 +27,9 @@ def _rejected(message: str) -> HTTPException:
 
 
 def create_sandbox_app(*, data_dir: str, token: str, uploads: UploadsSettings) -> FastAPI:
+    if not token:
+        raise ValueError("sandbox token must not be empty")
+    token_bytes = token.encode("utf-8")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/health")
@@ -36,7 +39,7 @@ def create_sandbox_app(*, data_dir: str, token: str, uploads: UploadsSettings) -
     @app.post("/extract")
     async def extract(payload: ExtractRequest, request: Request) -> dict[str, object]:
         supplied = request.headers.get("X-Sandbox-Token", "")
-        if not secrets.compare_digest(supplied, token):
+        if not secrets.compare_digest(supplied.encode("utf-8"), token_bytes):
             raise HTTPException(status_code=401, detail={"code": "forbidden", "message": "invalid sandbox token"})
         if payload.relative_path != "package.bin":
             raise _rejected("invalid package path")

@@ -36,8 +36,9 @@ class SandboxRejected(RuntimeError):
     """The sandbox runner rejected the package."""
 
     def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason if reason in SAFE_REASONS else "rejected"
+        safe_reason = reason if reason in SAFE_REASONS else "rejected"
+        super().__init__(safe_reason)
+        self.reason = safe_reason
 
 
 def _validate_manifest(payload: object) -> dict[str, Any]:
@@ -96,9 +97,18 @@ class SandboxClient:
         if response.status_code == 401:
             raise SandboxUnavailable("sandbox rejected the shared token")
         if response.status_code == 400:
-            detail = response.json().get("detail")
-            reason = detail.get("message") if isinstance(detail, dict) else "rejected"
-            raise SandboxRejected(reason if isinstance(reason, str) else "rejected")
+            try:
+                rejection = response.json()
+            except ValueError as exc:
+                raise SandboxUnavailable("sandbox returned an invalid response") from exc
+            detail = rejection.get("detail") if isinstance(rejection, dict) else None
+            if (
+                not isinstance(detail, dict)
+                or detail.get("code") != "upload_rejected"
+                or not isinstance(detail.get("message"), str)
+            ):
+                raise SandboxUnavailable("sandbox returned an invalid response")
+            raise SandboxRejected(detail["message"])
         if response.status_code != 200:
             raise SandboxUnavailable("sandbox runner is unavailable")
         try:
