@@ -103,7 +103,12 @@ class BudgetDecisionRepository:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
-                return False
+                # Only a genuine duplicate is idempotent; other constraint
+                # violations (foreign keys, etc.) must surface to the caller.
+                existing = await session.get(BudgetDecisionRow, (run_id, seq))
+                if existing is not None and existing.action == action and existing.payload_json == payload:
+                    return False
+                raise
             return True
 
     async def get(self, run_id: str, seq: int) -> BudgetDecisionRow | None:
