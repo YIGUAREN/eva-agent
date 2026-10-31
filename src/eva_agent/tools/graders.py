@@ -13,7 +13,7 @@ from eva_agent.tools.registry import ToolSpec
 
 
 class GraderRunner(Protocol):
-    async def run(self, specs: list[GraderSpec], rows: list[dict[str, str]]) -> GraderRunOutput: ...
+    async def run(self, specs: list[GraderSpec], rows: list[dict[str, Any]]) -> GraderRunOutput: ...
 
 
 class ListGradersInput(BaseModel):
@@ -27,18 +27,25 @@ class ListGradersOutput(BaseModel):
 
 class RunGradersInput(BaseModel):
     specs: list[GraderSpec]
-    rows: list[dict[str, str]]
+    rows: list[dict[str, Any]]
     run_id: str | None = None
 
 
 def build_list_graders_tool(catalog: dict[str, GraderEntry]) -> ToolSpec:
     async def handler(payload: ListGradersInput) -> ListGradersOutput:
-        entries = [entry for entry in catalog.values() if not payload.tags or set(payload.tags) <= set(entry.tags)]
+        entries = [
+            entry
+            for entry in catalog.values()
+            if (set(payload.tags) <= set(entry.tags) if payload.tags else "skill" not in entry.tags)
+        ]
         return ListGradersOutput(graders=summarize({entry.id: entry for entry in entries}))
 
     return ToolSpec(
         name="list_graders",
-        description="List grader catalog entries with the inputs they require.",
+        description=(
+            "List grader catalog entries with the inputs they require; "
+            "package-level skill graders are listed only when a tag filter selects them."
+        ),
         input_model=ListGradersInput,
         output_model=ListGradersOutput,
         permission="public_read",

@@ -68,3 +68,13 @@ graders:
     score_min: 1
     score_max: 5
     cost: low
+
+  - id: threat_analysis
+    class: openjudge.graders.skills.threat_analysis.SkillThreatAnalysisGrader
+    mode: pointwise
+    inputs: [skill_name, skill_manifest, instruction_body, script_contents, reference_contents]
+    tags: [security, skill]
+    needs_model: true
+    score_min: 1
+    score_max: 4
+    cost: medium

@@ -22,6 +22,7 @@ class ReadEvidenceInput(BaseModel):
     root: str = Field(min_length=1)
     path: str = Field(min_length=1)
     max_bytes: int | None = Field(default=None, gt=0)
+    truncate: bool = False
     run_id: str | None = None
 
 
@@ -40,12 +41,21 @@ def build_read_evidence_tool(default_max_bytes: int) -> ToolSpec:
         path = resolve_evidence_path(payload.root, payload.path)
         limit = payload.max_bytes or default_max_bytes
         size = path.stat().st_size
-        if size > limit:
+        if size > limit and not payload.truncate:
             raise EvidenceAccessError(f"file '{payload.path}' exceeds {limit} bytes", reason="too_large")
+        with path.open("rb") as handle:
+            data = handle.read(limit)
         try:
-            return path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise EvidenceAccessError(f"file '{payload.path}' is not valid UTF-8", reason="undecodable") from exc
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            if not payload.truncate:
+                raise EvidenceAccessError(
+                    f"file '{payload.path}' is not valid UTF-8", reason="undecodable"
+                ) from None
+            # A truncated multi-byte character is expected; drop only that tail.
+            text = data.decode("utf-8", errors="ignore")
+        # Match text-mode universal newlines so reads are platform-independent.
+        return text.replace("\r\n", "\n").replace("\r", "\n")
 
     return ToolSpec(
         name="read_evidence",
