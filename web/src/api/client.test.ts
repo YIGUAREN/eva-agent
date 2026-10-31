@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, setCsrfToken } from "./client";
+import { ApiError, api, setCsrfToken } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -44,6 +44,23 @@ describe("api client", () => {
     );
 
     await expect(api.cancel("run_1")).rejects.toMatchObject({ status: 409, code: "invalid_state" });
+  });
+
+  it("uses a Chinese fallback when the error envelope has no message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("<html>bad gateway</html>", { status: 502 })),
+    );
+
+    const error = (await api
+      .budgetDecision("run_1", { action: "summarize" })
+      .catch((caught) => caught)) as ApiError;
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(502);
+    expect(error.code).toBe("http_error");
+    expect(error.message).toBe("请求失败，请重试");
+    expect(error.message).not.toContain("request failed");
   });
 
   it("preserves error details", async () => {

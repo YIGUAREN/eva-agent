@@ -101,8 +101,30 @@ describe("budget helpers", () => {
     ).toEqual({
       kind: "field",
       field: "max_cost_usd",
-      message: "max_cost_usd must be greater than spent_usd",
+      message: "费用上限 must be greater than spent_usd",
     });
+  });
+
+  it("replaces the raw field key in the backend message with its human label", () => {
+    const cases = [
+      ["max_cost_usd", "费用上限", "新预算 max_cost_usd 必须严格大于已消费 0.9", "0.9"],
+      ["max_wall_clock_s", "时长上限", "新预算 max_wall_clock_s 必须严格大于已消费 30.0", "30.0"],
+      ["max_target_requests", "目标请求数上限", "新预算 max_target_requests 必须严格大于已消费 4", "4"],
+    ] as const;
+
+    for (const [field, label, serverMessage, number] of cases) {
+      const failure = budgetDecisionError({
+        status: 400,
+        code: "invalid_request",
+        message: serverMessage,
+        details: { field },
+      });
+      expect(failure.kind).toBe("field");
+      if (failure.kind !== "field") continue;
+      expect(failure.message).toContain(label);
+      expect(failure.message).toContain(number);
+      expect(failure.message).not.toContain(field);
+    }
   });
 
   it("falls back to a human field label when the server message is empty", () => {

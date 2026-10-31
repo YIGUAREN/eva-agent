@@ -51,7 +51,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(
       response.status,
       body?.error?.code ?? "http_error",
-      body?.error?.message ?? "request failed",
+      body?.error?.message ?? "请求失败，请重试",
       body?.error?.details,
     );
   }

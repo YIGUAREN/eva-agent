@@ -62,10 +62,14 @@ export function budgetDecisionError(error: {
   }
   if (error.code === "invalid_request" && typeof error.details?.field === "string") {
     const field = error.details.field;
+    const label = FIELD_LABELS[field] ?? field;
     return {
       kind: "field",
       field,
-      message: message || `${FIELD_LABELS[field] ?? field} 必须严格大于已消费值`,
+      message:
+        message && field
+          ? message.split(field).join(label)
+          : message || `${label} 必须严格大于已消费值`,
     };
   }
   return { kind: "message", message: message || "预算决策提交失败" };
