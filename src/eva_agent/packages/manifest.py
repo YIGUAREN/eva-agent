@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import zipfile
+import zlib
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -61,6 +66,7 @@ class PackageManifest(BaseModel):
 
 
 def write_manifest(root: Path, manifest: PackageManifest) -> Path:
+    _validated_member_names(manifest.files)
     root.mkdir(parents=True, exist_ok=True)
     path = root / MANIFEST_NAME
     path.write_bytes(canonical_json(manifest.model_dump(mode="json")))
@@ -74,9 +80,11 @@ def read_manifest(root: Path) -> PackageManifest:
     except (OSError, ValueError) as exc:
         raise PackageError(f"cannot read {MANIFEST_NAME}: {exc}") from None
     try:
-        return PackageManifest.model_validate(raw)
+        manifest = PackageManifest.model_validate(raw)
     except ValidationError as exc:
         raise PackageError(f"invalid {MANIFEST_NAME}: {exc}") from None
+    _validated_member_names(manifest.files)
+    return manifest
 
 
 def _relative_files(root: Path) -> set[str]:
@@ -85,8 +93,7 @@ def _relative_files(root: Path) -> set[str]:
 
 def verify_tree(root: Path, manifest: PackageManifest) -> None:
     """Every listed member exists with its recorded hash and nothing else is present."""
-    for name in manifest.files:
-        _member_name(name)
+    _validated_member_names(manifest.files)
     for name in manifest.files:
         path = root / name
         if path.exists() and not path.is_file():
@@ -122,11 +129,36 @@ def _member_name(name: str) -> str:
         parts = safe_member_parts(name)
     except ExtractionError as exc:
         raise PackageError(f"invalid member name {name!r}: {exc.reason}") from None
-    return "/".join(parts)
+    normalized = "/".join(parts)
+    if normalized != name:
+        # A name that only becomes safe by dropping ``.``/empty components would
+        # be written under a different name than the manifest records, so reject
+        # it instead of silently repairing a package.
+        raise PackageError(f"invalid member name {name!r}: not normalized")
+    return normalized
+
+
+def _validated_member_names(names: Iterable[str]) -> list[str]:
+    """Validate manifest keys, rejecting unsafe or self-referential member names."""
+    checked: list[str] = []
+    for name in names:
+        normalized = _member_name(name)
+        if normalized == MANIFEST_NAME:
+            raise PackageError(f"package may not list {MANIFEST_NAME} as a member")
+        checked.append(normalized)
+    return checked
 
 
 def write_zip(root: Path, destination: Path, *, manifest: PackageManifest) -> Path:
-    names = [_member_name(name) for name in (MANIFEST_NAME, *sorted(manifest.files))]
+    names = [MANIFEST_NAME, *sorted(_validated_member_names(manifest.files))]
+    if len(names) > MAX_PACKAGE_FILES:
+        raise PackageError(f"package has {len(names)} files; the limit is {MAX_PACKAGE_FILES}")
+    try:
+        expanded = sum((root / name).stat().st_size for name in names)
+    except OSError as exc:
+        raise PackageError(f"cannot read package member: {exc}") from None
+    if expanded > MAX_PACKAGE_BYTES:
+        raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in names:
@@ -134,41 +166,70 @@ def write_zip(root: Path, destination: Path, *, manifest: PackageManifest) -> Pa
     return destination
 
 
-def extract_zip(source: Path, destination: Path) -> PackageManifest:
-    """Extract a package into ``destination`` with layout limits, then verify its hashes."""
+def _extract_zip_into(source: Path, staging: Path) -> PackageManifest:
     try:
-        archive = zipfile.ZipFile(source)
-    except (OSError, zipfile.BadZipFile) as exc:
+        with zipfile.ZipFile(source) as archive:
+            entries = archive.infolist()
+            # Directory entries consume the same budget as payload files, so a
+            # directory-heavy archive cannot slip past the file cap.
+            if len(entries) > MAX_PACKAGE_FILES:
+                raise PackageError(f"package has {len(entries)} files; the limit is {MAX_PACKAGE_FILES}")
+            members = [info for info in entries if not info.is_dir()]
+            seen: set[str] = set()
+            total = 0
+            names: list[str] = []
+            for info in members:
+                name = _member_name(info.filename)
+                folded = name.casefold()
+                if folded in seen:
+                    raise PackageError(f"duplicate package member {name}")
+                seen.add(folded)
+                if (info.external_attr >> 16) & 0o170000 == _SYMLINK_MODE:
+                    raise PackageError(f"package member is a symlink: {name}")
+                total += info.file_size
+                if total > MAX_PACKAGE_BYTES:
+                    raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
+                names.append(name)
+            staging.mkdir(parents=True, exist_ok=True)
+            written = 0
+            for info, name in zip(members, names, strict=True):
+                target = staging / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as reader, target.open("wb") as writer:
+                    while chunk := reader.read(1 << 20):
+                        written += len(chunk)
+                        if written > MAX_PACKAGE_BYTES:
+                            raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
+                        writer.write(chunk)
+    except (OSError, zipfile.BadZipFile, zlib.error, EOFError, RuntimeError, NotImplementedError) as exc:
+        # Corrupt, encrypted or unsupported archives surface raw exceptions from
+        # ``zipfile``/``zlib``; fail closed so callers only see ``PackageError``.
         raise PackageError(f"not a zip package: {exc}") from None
-    with archive:
-        members = [info for info in archive.infolist() if not info.is_dir()]
-        if len(members) > MAX_PACKAGE_FILES:
-            raise PackageError(f"package has {len(members)} files; the limit is {MAX_PACKAGE_FILES}")
-        seen: set[str] = set()
-        total = 0
-        names: list[str] = []
-        for info in members:
-            name = _member_name(info.filename)
-            if name in seen:
-                raise PackageError(f"duplicate package member {name}")
-            seen.add(name)
-            if (info.external_attr >> 16) & 0o170000 == _SYMLINK_MODE:
-                raise PackageError(f"package member is a symlink: {name}")
-            total += info.file_size
-            if total > MAX_PACKAGE_BYTES:
-                raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
-            names.append(name)
-        destination.mkdir(parents=True, exist_ok=True)
-        written = 0
-        for info, name in zip(members, names, strict=True):
-            target = destination / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info) as reader, target.open("wb") as writer:
-                while chunk := reader.read(1 << 20):
-                    written += len(chunk)
-                    if written > MAX_PACKAGE_BYTES:
-                        raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
-                    writer.write(chunk)
-    manifest = read_manifest(destination)
-    verify_tree(destination, manifest)
+    manifest = read_manifest(staging)
+    verify_tree(staging, manifest)
+    return manifest
+
+
+def extract_zip(source: Path, destination: Path) -> PackageManifest:
+    """Extract a package into ``destination`` with layout limits, then verify its hashes.
+
+    Extraction and verification run in a sibling staging directory that is moved
+    into place only on success. On any failure both the staging directory and
+    ``destination`` are removed, so an unverified partial tree is never left behind.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.parent / f".{destination.name}.tmp-{uuid4().hex}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir()
+    try:
+        manifest = _extract_zip_into(source, staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+    shutil.rmtree(destination, ignore_errors=True)
+    try:
+        os.replace(staging, destination)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return manifest

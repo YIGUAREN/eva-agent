@@ -7,6 +7,7 @@ import pytest
 
 from eva_agent.packages.manifest import (
     MANIFEST_NAME,
+    MAX_PACKAGE_FILES,
     FileEntry,
     PackageError,
     PackageManifest,
@@ -121,6 +122,25 @@ def test_extract_zip_rejects_path_traversal(tmp_path) -> None:
         extract_zip(archive, tmp_path / "out")
 
 
+def test_extract_zip_counts_directory_entries_toward_the_file_cap(tmp_path) -> None:
+    archive = tmp_path / "directories.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        for index in range(MAX_PACKAGE_FILES):
+            handle.writestr(f"dir-{index}/", "")
+        handle.writestr("payload.json", "{}")
+    with pytest.raises(PackageError, match=f"{MAX_PACKAGE_FILES + 1} files"):
+        extract_zip(archive, tmp_path / "out")
+
+
+def test_extract_zip_rejects_case_insensitive_duplicate_members(tmp_path) -> None:
+    archive = tmp_path / "duplicate.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("plan.json", "{}")
+        handle.writestr("PLAN.JSON", "{}")
+    with pytest.raises(PackageError, match="duplicate package member"):
+        extract_zip(archive, tmp_path / "out")
+
+
 def test_extract_zip_rejects_a_symlink_member(tmp_path) -> None:
     archive = tmp_path / "link.zip"
     info = zipfile.ZipInfo("link.json")
@@ -138,6 +158,65 @@ def test_extract_zip_rejects_a_tampered_member(tmp_path) -> None:
     (source / "plan.json").write_text('{"plan": 9}', encoding="utf-8")
     write_zip(source, archive, manifest=manifest)
     with pytest.raises(PackageError, match="hash mismatch for plan.json"):
+        extract_zip(archive, tmp_path / "out")
+
+
+def test_extract_zip_leaves_no_partial_tree_on_failure(tmp_path) -> None:
+    source = tmp_path / "package"
+    manifest = _tree(source)
+    archive = write_zip(source, tmp_path / "package.zip", manifest=manifest)
+    (source / "plan.json").write_text('{"plan": 9}', encoding="utf-8")
+    write_zip(source, archive, manifest=manifest)
+    destination = tmp_path / "out"
+    with pytest.raises(PackageError, match="hash mismatch for plan.json"):
+        extract_zip(archive, destination)
+    assert not destination.exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["package", "package.zip"]
+    (source / "plan.json").write_text('{"plan": 1}', encoding="utf-8")
+    write_zip(source, archive, manifest=manifest)
+    assert extract_zip(archive, destination) == manifest
+
+
+def _stored_zip(path: Path) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as handle:
+        handle.writestr("plan.json", "{}")
+
+
+def test_extract_zip_translates_an_encrypted_member(tmp_path) -> None:
+    archive = tmp_path / "encrypted.zip"
+    _stored_zip(archive)
+    raw = bytearray(archive.read_bytes())
+    local = raw.index(b"PK\x03\x04")
+    central = raw.index(b"PK\x01\x02")
+    raw[local + 6] |= 0x1
+    raw[central + 8] |= 0x1
+    archive.write_bytes(raw)
+    with pytest.raises(PackageError, match="not a zip package"):
+        extract_zip(archive, tmp_path / "out")
+
+
+def test_extract_zip_translates_unsupported_compression(tmp_path) -> None:
+    archive = tmp_path / "method.zip"
+    _stored_zip(archive)
+    raw = bytearray(archive.read_bytes())
+    local = raw.index(b"PK\x03\x04")
+    central = raw.index(b"PK\x01\x02")
+    raw[local + 8 : local + 10] = (99).to_bytes(2, "little")
+    raw[central + 10 : central + 12] = (99).to_bytes(2, "little")
+    archive.write_bytes(raw)
+    with pytest.raises(PackageError, match="not a zip package"):
+        extract_zip(archive, tmp_path / "out")
+
+
+def test_extract_zip_translates_a_bad_crc(tmp_path) -> None:
+    archive = tmp_path / "crc.zip"
+    _stored_zip(archive)
+    raw = bytearray(archive.read_bytes())
+    local = raw.index(b"PK\x03\x04")
+    data_start = local + 30 + len("plan.json")
+    raw[data_start] ^= 0xFF
+    archive.write_bytes(raw)
+    with pytest.raises(PackageError, match="not a zip package"):
         extract_zip(archive, tmp_path / "out")
 
 
@@ -187,11 +266,62 @@ def test_verify_tree_rejects_a_manifest_key_outside_the_root(tmp_path, name: str
         verify_tree(tmp_path, manifest)
 
 
+def test_write_zip_enforces_the_member_cap(tmp_path) -> None:
+    files = {f"file-{index}.json": FileEntry(sha256="0" * 64, size=0) for index in range(MAX_PACKAGE_FILES)}
+    manifest = _manifest(files)
+    with pytest.raises(PackageError, match=f"{MAX_PACKAGE_FILES + 1} files"):
+        write_zip(tmp_path / "source", tmp_path / "many.zip", manifest=manifest)
+
+
+def test_write_zip_enforces_the_size_cap(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    payload = b"x" * 5000
+    (source / "big.bin").write_bytes(payload)
+    manifest = _manifest({"big.bin": FileEntry(sha256=sha256_bytes(payload), size=len(payload))})
+    write_manifest(source, manifest)
+    monkeypatch.setattr("eva_agent.packages.manifest.MAX_PACKAGE_BYTES", 4096)
+    with pytest.raises(PackageError, match="expands past 4096 bytes"):
+        write_zip(source, tmp_path / "big.zip", manifest=manifest)
+
+
+def test_write_zip_rejects_listing_the_manifest_itself(tmp_path) -> None:
+    manifest = _manifest({MANIFEST_NAME: FileEntry(sha256="0" * 64, size=0)})
+    with pytest.raises(PackageError, match=MANIFEST_NAME):
+        write_zip(tmp_path / "source", tmp_path / "out.zip", manifest=manifest)
+
+
+@pytest.mark.parametrize("name", ["a//b.json", "a/./b.json", "./plan.json", "dir/"])
+def test_manifest_keys_must_be_normalized(tmp_path, name: str) -> None:
+    manifest = _manifest({name: FileEntry(sha256="0" * 64, size=0)})
+    with pytest.raises(PackageError, match="invalid member name"):
+        write_manifest(tmp_path / "root", manifest)
+    with pytest.raises(PackageError, match="invalid member name"):
+        write_zip(tmp_path / "source", tmp_path / "out.zip", manifest=manifest)
+
+
 @pytest.mark.parametrize("name", ["../escape.json", "C:escape.json"])
 def test_write_zip_rejects_unsafe_member_names(tmp_path, name: str) -> None:
     manifest = _manifest({name: FileEntry(sha256="0" * 64, size=0)})
     with pytest.raises(PackageError, match="invalid member name"):
         write_zip(tmp_path / "source", tmp_path / "out.zip", manifest=manifest)
+
+
+@pytest.mark.parametrize("name", ["../escape.json", "C:escape.json", "C:/secret"])
+def test_write_manifest_rejects_unsafe_keys(tmp_path, name: str) -> None:
+    manifest = _manifest({name: FileEntry(sha256="0" * 64, size=0)})
+    with pytest.raises(PackageError, match="invalid member name"):
+        write_manifest(tmp_path / "root", manifest)
+
+
+@pytest.mark.parametrize("name", ["../escape.json", "C:escape.json"])
+def test_read_manifest_rejects_unsafe_keys(tmp_path, name: str) -> None:
+    manifest = _manifest({name: FileEntry(sha256="0" * 64, size=0)})
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / MANIFEST_NAME).write_bytes(canonical_json(manifest.model_dump(mode="json")))
+    with pytest.raises(PackageError, match="invalid member name"):
+        read_manifest(root)
 
 
 def test_manifest_is_frozen_and_forbids_extra_fields(tmp_path) -> None:
