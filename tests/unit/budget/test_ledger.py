@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from eva_agent.budget.ledger import BudgetLedger
+from eva_agent.budget.ledger import BudgetLedger, _lock_for
 from eva_agent.budget.types import BudgetExhausted, RunUsage
 from eva_agent.domain.budget import Budget
 
@@ -153,11 +153,65 @@ def test_wall_clock_exhaustion_blocks_requests_and_scans() -> None:
     assert scan_exc.value.reason == "max_wall_clock_s"
 
 
-def test_ledgers_for_one_run_share_a_lock() -> None:
+async def test_ledgers_for_one_run_share_state_and_a_lock() -> None:
     store = FakeStore()
     first = BudgetLedger(money_budget(), store=store, run_id="run-shared-lock")
     second = BudgetLedger(money_budget(), store=store, run_id="run-shared-lock")
-    assert first._lock is second._lock
+    assert first._run_state is second._run_state
+    assert _lock_for("run-shared-lock") is _lock_for("run-shared-lock")
+
+
+def test_unlimited_and_empty_run_ids_do_not_share_state() -> None:
+    unlimited_first = BudgetLedger(money_budget(), unlimited=True, run_id="run-unlimited")
+    unlimited_second = BudgetLedger(money_budget(), unlimited=True, run_id="run-unlimited")
+    assert unlimited_first._run_state is not unlimited_second._run_state
+
+    empty_first = BudgetLedger(money_budget(), store=FakeStore(), run_id="")
+    empty_second = BudgetLedger(money_budget(), store=FakeStore(), run_id="")
+    assert empty_first._run_state is not empty_second._run_state
+
+
+async def test_two_ledgers_for_one_run_do_not_lose_updates() -> None:
+    store = FakeStore()
+    first = BudgetLedger(money_budget(), store=store, run_id="run-race", throttle_s=0.0)
+    second = BudgetLedger(money_budget(), store=store, run_id="run-race", throttle_s=0.0)
+    await asyncio.gather(
+        first.reserve(Decimal("0.1"), kind="first"),
+        second.reserve(Decimal("0.1"), kind="second"),
+    )
+    assert store.saved[-1].reserved_usd == Decimal("0.200000")
+
+
+async def test_later_ledger_does_not_move_the_stored_clock_backwards() -> None:
+    now = [0.0]
+    store = FakeStore()
+    first = BudgetLedger(money_budget(), store=store, run_id="run-clock", clock=lambda: now[0], throttle_s=0.0)
+    now[0] = 2.0
+    await first.reserve(Decimal("0.1"), kind="first")
+    second = BudgetLedger(money_budget(), store=store, run_id="run-clock", clock=lambda: now[0], throttle_s=0.0)
+    now[0] = 3.0
+    await second.reserve(Decimal("0.1"), kind="second")
+    clocks = [usage.spent_wall_clock_s for usage in store.saved]
+    assert clocks == sorted(clocks)
+    assert clocks[-1] == pytest.approx(3.0)
+
+
+def test_reusing_a_run_across_event_loops_does_not_raise() -> None:
+    store = SlowStore()
+
+    async def use() -> None:
+        # Contention forces the lock to bind to this loop, which is where a
+        # process-global lock would leak a reference to a previous loop.
+        first = BudgetLedger(money_budget(), store=store, run_id="run-multi-loop", throttle_s=0.0)
+        second = BudgetLedger(money_budget(), store=store, run_id="run-multi-loop", throttle_s=0.0)
+        await asyncio.gather(
+            first.reserve(Decimal("0.1"), kind="first"),
+            second.reserve(Decimal("0.1"), kind="second"),
+        )
+
+    asyncio.run(use())
+    asyncio.run(use())
+    assert store.saved[-1].reserved_usd == Decimal("0.400000")
 
 
 async def test_ledgers_for_one_run_serialize_persistence() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from eva_agent.budget.types import (
@@ -18,17 +19,39 @@ from eva_agent.domain.budget import Budget
 
 ZERO = Decimal("0")
 
-# Every ledger for the same run must share one lock so their read-modify-write
-# persistence calls cannot interleave.  Creation happens without an ``await``,
-# so the event loop cannot switch tasks in the middle of the get/insert pair.
-_RUN_LOCKS: dict[str, asyncio.Lock] = {}
+# Locks live on the event loop that uses them, so a fresh ``asyncio.run`` never
+# inherits a lock bound to a previous loop.
+_RUN_LOCKS_ATTR = "_eva_budget_run_locks"
+
+
+@dataclass
+class _RunState:
+    """Mutable state shared by every enforced ledger for one run id."""
+
+    usage: RunUsage = field(default_factory=RunUsage)
+    started: float = 0.0
+    last_persist: float = 0.0
+    dirty: bool = False
+    estimated: bool = False
+
+
+# Process-level state per run.  Every enforced ledger with the same non-empty
+# run_id reads and writes this entry, so one instance can never persist a stale
+# snapshot over another instance's update.
+_RUN_STATES: dict[str, _RunState] = {}
 
 
 def _lock_for(run_id: str) -> asyncio.Lock:
-    lock = _RUN_LOCKS.get(run_id)
+    """Return the lock for this run on the current event loop, creating it lazily."""
+    loop = asyncio.get_running_loop()
+    locks = getattr(loop, _RUN_LOCKS_ATTR, None)
+    if not isinstance(locks, dict):
+        locks = {}
+        setattr(loop, _RUN_LOCKS_ATTR, locks)
+    lock: asyncio.Lock | None = locks.get(run_id)
     if lock is None:
         lock = asyncio.Lock()
-        _RUN_LOCKS[run_id] = lock
+        locks[run_id] = lock
     return lock
 
 
@@ -54,12 +77,17 @@ class BudgetLedger:
         self._unlimited = unlimited
         self._clock = clock
         self._throttle_s = throttle_s
-        self._state = state or RunUsage()
-        self._started = clock()
-        self._last_persist = clock()
-        self._dirty = False
-        self._estimated = False
-        self._lock = _lock_for(run_id)
+        started = clock()
+        if not unlimited and run_id != "":
+            shared = _RUN_STATES.get(run_id)
+            if shared is None:
+                shared = _RunState(usage=state or RunUsage(), started=started, last_persist=started)
+                _RUN_STATES[run_id] = shared
+            # A later ledger joins the existing run state; it must not reload
+            # over it or reset the elapsed baseline.
+            self._run_state = shared
+        else:
+            self._run_state = _RunState(usage=state or RunUsage(), started=started, last_persist=started)
 
     @classmethod
     def unlimited(cls, budget: Budget) -> BudgetLedger:
@@ -71,34 +99,32 @@ class BudgetLedger:
 
     @property
     def estimated(self) -> bool:
-        return self._estimated
+        return self._run_state.estimated
 
     def update_budget(self, budget: Budget) -> None:
         self._budget = budget
 
     def _elapsed(self) -> float:
-        # The state stores the wall clock loaded from the store at construction;
+        # The usage stores the wall clock loaded from the store at construction;
         # mutators must leave it untouched or the baseline is re-added each time.
-        return self._state.spent_wall_clock_s + max(0.0, self._clock() - self._started)
+        return self._run_state.usage.spent_wall_clock_s + max(0.0, self._clock() - self._run_state.started)
 
     def _remaining(self) -> Decimal:
+        usage = self._run_state.usage
         if self._unlimited:
             return Decimal("Infinity")
         return max(
             ZERO,
-            quantize_money(Decimal(str(self._budget.max_cost_usd)))
-            - self._state.spent_usd
-            - self._state.reserved_usd,
+            quantize_money(Decimal(str(self._budget.max_cost_usd))) - usage.spent_usd - usage.reserved_usd,
         )
 
     def _check_cost(self, estimate: Decimal) -> None:
+        usage = self._run_state.usage
         if self._unlimited:
             return
-        if self._state.spent_usd + self._state.reserved_usd + estimate > quantize_money(
-            Decimal(str(self._budget.max_cost_usd))
-        ):
+        if usage.spent_usd + usage.reserved_usd + estimate > quantize_money(Decimal(str(self._budget.max_cost_usd))):
             raise BudgetExhausted(
-                spent=self._state.spent_usd,
+                spent=usage.spent_usd,
                 remaining=self._remaining(),
                 reason="max_cost_usd",
             )
@@ -108,7 +134,7 @@ class BudgetLedger:
             return
         if self._elapsed() > self._budget.max_wall_clock_s:
             raise BudgetExhausted(
-                spent=self._state.spent_usd,
+                spent=self._run_state.usage.spent_usd,
                 remaining=self._remaining(),
                 reason="max_wall_clock_s",
             )
@@ -119,12 +145,13 @@ class BudgetLedger:
             raise ValueError("estimate must be non-negative")
         self._check_wall_clock()
         self._check_cost(estimate)
-        self._state = RunUsage(
-            spent_usd=self._state.spent_usd,
-            reserved_usd=self._state.reserved_usd + estimate,
-            spent_wall_clock_s=self._state.spent_wall_clock_s,
-            target_requests=self._state.target_requests,
-            aig_requests=self._state.aig_requests,
+        usage = self._run_state.usage
+        self._run_state.usage = RunUsage(
+            spent_usd=usage.spent_usd,
+            reserved_usd=usage.reserved_usd + estimate,
+            spent_wall_clock_s=usage.spent_wall_clock_s,
+            target_requests=usage.target_requests,
+            aig_requests=usage.aig_requests,
         )
         self._touch()
 
@@ -135,34 +162,36 @@ class BudgetLedger:
         spent = estimate if actual is None else quantize_money(actual)
         if spent < ZERO:
             raise ValueError("actual must be non-negative")
-        reserved = max(ZERO, self._state.reserved_usd - estimate)
-        self._state = RunUsage(
-            spent_usd=self._state.spent_usd + spent,
+        usage = self._run_state.usage
+        reserved = max(ZERO, usage.reserved_usd - estimate)
+        self._run_state.usage = RunUsage(
+            spent_usd=usage.spent_usd + spent,
             reserved_usd=reserved,
-            spent_wall_clock_s=self._state.spent_wall_clock_s,
-            target_requests=self._state.target_requests,
-            aig_requests=self._state.aig_requests,
+            spent_wall_clock_s=usage.spent_wall_clock_s,
+            target_requests=usage.target_requests,
+            aig_requests=usage.aig_requests,
         )
         if actual is None:
-            self._estimated = True
+            self._run_state.estimated = True
         self._touch()
 
     def _reserve_requests_sync(self, count: int) -> None:
         if count < 0:
             raise ValueError("count must be non-negative")
         self._check_wall_clock()
-        if not self._unlimited and self._state.target_requests + count > self._budget.max_target_requests:
+        usage = self._run_state.usage
+        if not self._unlimited and usage.target_requests + count > self._budget.max_target_requests:
             raise BudgetExhausted(
-                spent=self._state.spent_usd,
+                spent=usage.spent_usd,
                 remaining=self._remaining(),
                 reason="max_target_requests",
             )
-        self._state = RunUsage(
-            spent_usd=self._state.spent_usd,
-            reserved_usd=self._state.reserved_usd,
-            spent_wall_clock_s=self._state.spent_wall_clock_s,
-            target_requests=self._state.target_requests + count,
-            aig_requests=self._state.aig_requests,
+        self._run_state.usage = RunUsage(
+            spent_usd=usage.spent_usd,
+            reserved_usd=usage.reserved_usd,
+            spent_wall_clock_s=usage.spent_wall_clock_s,
+            target_requests=usage.target_requests + count,
+            aig_requests=usage.aig_requests,
         )
         self._touch()
 
@@ -173,76 +202,80 @@ class BudgetLedger:
         if estimate < ZERO:
             raise ValueError("estimate must be non-negative")
         self._check_wall_clock()
+        usage = self._run_state.usage
         # AIG scans hit the target too, so they share the max_target_requests pool.
-        if not self._unlimited and self._state.target_requests + count > self._budget.max_target_requests:
+        if not self._unlimited and usage.target_requests + count > self._budget.max_target_requests:
             raise BudgetExhausted(
-                spent=self._state.spent_usd,
+                spent=usage.spent_usd,
                 remaining=self._remaining(),
                 reason="max_target_requests",
             )
         self._check_cost(estimate)
-        self._state = RunUsage(
-            spent_usd=self._state.spent_usd,
-            reserved_usd=self._state.reserved_usd + estimate,
-            spent_wall_clock_s=self._state.spent_wall_clock_s,
-            target_requests=self._state.target_requests + count,
-            aig_requests=self._state.aig_requests + count,
+        self._run_state.usage = RunUsage(
+            spent_usd=usage.spent_usd,
+            reserved_usd=usage.reserved_usd + estimate,
+            spent_wall_clock_s=usage.spent_wall_clock_s,
+            target_requests=usage.target_requests + count,
+            aig_requests=usage.aig_requests + count,
         )
         self._touch()
 
     def _touch(self) -> None:
-        self._dirty = True
+        self._run_state.dirty = True
 
     async def reserve(self, estimate: Decimal, *, kind: str) -> None:
         del kind
-        async with self._lock:
+        async with _lock_for(self._run_id):
             self._reserve_sync(estimate)
             await self._persist()
 
     async def settle(self, estimate: Decimal, actual: Decimal | None, *, kind: str) -> None:
         del kind
-        async with self._lock:
+        async with _lock_for(self._run_id):
             self._settle_sync(estimate, actual)
             await self._persist()
 
     async def reserve_requests(self, n: int) -> None:
-        async with self._lock:
+        async with _lock_for(self._run_id):
             self._reserve_requests_sync(n)
             await self._persist()
 
     async def reserve_scan(self, count: int, estimate: Decimal) -> None:
-        async with self._lock:
+        async with _lock_for(self._run_id):
             self._reserve_scan_sync(count, estimate)
             await self._persist()
 
     def snapshot(self) -> BudgetSnapshot:
+        usage = self._run_state.usage
         return BudgetSnapshot(
-            spent_usd=self._state.spent_usd,
-            reserved_usd=self._state.reserved_usd,
+            spent_usd=usage.spent_usd,
+            reserved_usd=usage.reserved_usd,
             remaining_usd=self._remaining(),
             spent_wall_clock_s=self._elapsed(),
-            target_requests=self._state.target_requests,
-            aig_requests=self._state.aig_requests,
-            estimated=self._estimated,
+            target_requests=usage.target_requests,
+            aig_requests=usage.aig_requests,
+            estimated=self._run_state.estimated,
         )
 
     async def _persist(self, *, force: bool = False) -> None:
         if self._store is None or self._run_id == "":
             return
         now = self._clock()
-        if not force and (not self._dirty or now - self._last_persist < self._throttle_s):
+        run_state = self._run_state
+        if not force and (not run_state.dirty or now - run_state.last_persist < self._throttle_s):
             return
+        usage = run_state.usage
         state = RunUsage(
-            spent_usd=self._state.spent_usd,
-            reserved_usd=self._state.reserved_usd,
+            spent_usd=usage.spent_usd,
+            reserved_usd=usage.reserved_usd,
             spent_wall_clock_s=self._elapsed(),
-            target_requests=self._state.target_requests,
-            aig_requests=self._state.aig_requests,
+            target_requests=usage.target_requests,
+            aig_requests=usage.aig_requests,
         )
         await self._store.save(self._run_id, state)
-        self._last_persist = now
-        self._dirty = False
+        run_state.last_persist = now
+        run_state.dirty = False
 
     async def flush(self) -> None:
-        async with self._lock:
+        async with _lock_for(self._run_id):
             await self._persist(force=True)
