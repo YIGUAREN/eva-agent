@@ -6,10 +6,12 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eva_agent.domain.run import RunStatus
+from eva_agent.packages import run_bundle as run_bundle_module
 from eva_agent.packages.manifest import (
     FileEntry,
     PackageError,
     PackageManifest,
+    sha256_bytes,
     sha256_file,
     write_manifest,
     write_zip,
@@ -196,3 +198,159 @@ async def test_import_rejects_a_traversal_run_id(tmp_path) -> None:
     archive = _bundle_with_run_id(tmp_path, "../evil")
     with pytest.raises(PackageError):
         await import_run_bundle(config=fake_config(tmp_path), archive=archive, public=True)
+
+
+async def test_builder_filters_non_public_artifacts_passed_directly(tmp_path) -> None:
+    config, run_row = await _completed_run(tmp_path)
+    report = await ReportRepository(_factory).get("run-1")
+    repository = ArtifactRepository(_factory)
+    target = artifact_file(config.storage.data_dir, "run-1", "secret.txt")
+    target.write_text("internal only", encoding="utf-8")
+    await repository.add(
+        artifact_id="art-secret",
+        run_id="run-1",
+        name="secret.txt",
+        sha256=sha256_file(target),
+        size_bytes=target.stat().st_size,
+        content_type="text/plain",
+        visibility="internal",
+    )
+    secret = await repository.get("run-1", "secret.txt")
+    assert secret is not None
+    # Feed an unfiltered list: the builder must re-filter ``visibility`` itself.
+    artifacts = [*(await repository.list_public("run-1")), secret]
+
+    archive, manifest = await build_run_bundle(
+        config=config,
+        run_row=run_row,
+        report=report,
+        artifacts=artifacts,
+        out_dir=tmp_path / "out",
+    )
+
+    with zipfile.ZipFile(archive) as bundle:
+        names = set(bundle.namelist())
+        run_document = json.loads(bundle.read("run.json"))
+    assert "artifacts/secret.txt" not in names
+    assert "artifacts/secret.txt" not in manifest.files
+    assert all(item["name"] != "secret.txt" for item in run_document["artifacts"])
+
+
+async def test_bundle_redacts_the_data_dir_in_isolation(tmp_path) -> None:
+    config, run_row = await _completed_run(tmp_path)
+    # A word character directly before the path stops ``redact_markdown_paths``
+    # (it only matches at a token boundary), so only the data-dir replacement can
+    # remove this occurrence.
+    markdown = f"prefix{config.storage.data_dir}suffix"
+    await ReportRepository(_factory).upsert(
+        "run-1", REPORT_VERSION, {"version": REPORT_VERSION}, markdown
+    )
+    report = await ReportRepository(_factory).get("run-1")
+
+    archive, _ = await build_run_bundle(
+        config=config,
+        run_row=run_row,
+        report=report,
+        artifacts=[],
+        out_dir=tmp_path / "out",
+    )
+
+    with zipfile.ZipFile(archive) as bundle:
+        rendered = bundle.read("report.md").decode("utf-8")
+    assert "<data>" in rendered
+    assert str(config.storage.data_dir) not in rendered
+
+
+async def test_bundle_manifest_matches_the_archive_members(tmp_path) -> None:
+    config, run_row = await _completed_run(tmp_path)
+    report = await ReportRepository(_factory).get("run-1")
+    artifacts = await ArtifactRepository(_factory).list_public("run-1")
+    archive, manifest = await build_run_bundle(
+        config=config,
+        run_row=run_row,
+        report=report,
+        artifacts=artifacts,
+        out_dir=tmp_path / "out",
+    )
+
+    with zipfile.ZipFile(archive) as bundle:
+        members = {
+            name: bundle.read(name)
+            for name in bundle.namelist()
+            if name != "manifest.json"
+        }
+    assert set(manifest.files) == set(members)
+    for name, data in members.items():
+        entry = manifest.files[name]
+        assert entry.size == len(data)
+        assert entry.sha256 == sha256_bytes(data)
+
+
+async def test_builder_verifies_the_staged_tree(tmp_path, monkeypatch) -> None:
+    config, run_row = await _completed_run(tmp_path)
+    report = await ReportRepository(_factory).get("run-1")
+    artifacts = await ArtifactRepository(_factory).list_public("run-1")
+    calls: list[tuple[object, PackageManifest]] = []
+    monkeypatch.setattr(
+        run_bundle_module, "verify_tree", lambda root, manifest: calls.append((root, manifest))
+    )
+
+    await build_run_bundle(
+        config=config,
+        run_row=run_row,
+        report=report,
+        artifacts=artifacts,
+        out_dir=tmp_path / "out",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1].run_id == "run-1"
+
+
+async def test_failed_archive_write_leaves_the_previous_bundle_intact(
+    tmp_path, monkeypatch
+) -> None:
+    config, run_row = await _completed_run(tmp_path)
+    report = await ReportRepository(_factory).get("run-1")
+    artifacts = await ArtifactRepository(_factory).list_public("run-1")
+    out_dir = tmp_path / "out"
+    archive, _ = await build_run_bundle(
+        config=config,
+        run_row=run_row,
+        report=report,
+        artifacts=artifacts,
+        out_dir=out_dir,
+    )
+    original = archive.read_bytes()
+
+    def failing_write(root, destination, *, manifest):
+        destination.write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(run_bundle_module, "write_zip", failing_write)
+    with pytest.raises(OSError, match="disk full"):
+        await build_run_bundle(
+            config=config,
+            run_row=run_row,
+            report=report,
+            artifacts=artifacts,
+            out_dir=out_dir,
+        )
+
+    assert archive.read_bytes() == original
+    assert not [path for path in out_dir.iterdir() if ".tmp-" in path.name]
+
+
+async def test_builder_rejects_an_invalid_run_id(tmp_path) -> None:
+    config, run_row = await _completed_run(tmp_path)
+    report = await ReportRepository(_factory).get("run-1")
+    run_row.id = "../evil"
+
+    with pytest.raises(ValueError, match="invalid run_id"):
+        await build_run_bundle(
+            config=config,
+            run_row=run_row,
+            report=report,
+            artifacts=[],
+            out_dir=tmp_path / "out",
+        )

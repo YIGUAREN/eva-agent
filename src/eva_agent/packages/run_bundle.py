@@ -1,8 +1,15 @@
-"""Export a public run as a portable bundle, and import one back."""
+"""Export a public run as a portable bundle, and import one back.
+
+A bundle is an admin-level artifact, equivalent to the admin report endpoint
+rather than the public API whitelist: it deliberately carries the run's spend
+(``usage.spent_usd`` in ``report.json``) and budget (``budget_json`` in
+``run.json``) so ``import-run`` can restore the run.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -49,7 +56,12 @@ ARCHIVE_SUFFIX = ".run-bundle.zip"
 
 
 def _internal_hosts(config: AppConfig) -> tuple[str, ...]:
-    """Return the configured AIG host so the public serializers can redact it."""
+    """Return the configured AIG host so the public serializers can redact it.
+
+    Deliberately mirrors ``_internal_hosts`` in ``server.routes.runs``: importing
+    the HTTP routes layer from ``packages`` would drag the server into bundle
+    code, and no neutral shared module owns this config-to-host mapping yet.
+    """
     aig = config.aig
     if aig is None:
         return ()
@@ -106,6 +118,9 @@ async def build_run_bundle(
     artifacts: list[ArtifactRow],
     out_dir: Path,
 ) -> tuple[Path, PackageManifest]:
+    # Validate up front so the archive name and the manifest run_id are
+    # self-contained, rather than only being checked incidentally per artifact.
+    validate_run_id(run_row.id)
     if run_row.status != RunStatus.COMPLETED.value:
         raise PackageError("only completed runs can be exported")
     if not run_row.is_public:
@@ -168,10 +183,18 @@ async def build_run_bundle(
         write_manifest(workdir, manifest)
         verify_tree(workdir, manifest)
         out_dir.mkdir(parents=True, exist_ok=True)
-        archive = write_zip(
-            workdir, out_dir / f"{run_row.id}{ARCHIVE_SUFFIX}", manifest=manifest
-        )
-        return archive, manifest
+        destination = out_dir / f"{run_row.id}{ARCHIVE_SUFFIX}"
+        # Write beside the destination and move it into place only on success,
+        # so a mid-write failure cannot truncate a previous bundle with the same
+        # name. This mirrors the staging pattern in ``manifest.extract_zip``.
+        staging = out_dir / f".{destination.name}.tmp-{uuid4().hex}"
+        try:
+            write_zip(workdir, staging, manifest=manifest)
+            os.replace(staging, destination)
+        except BaseException:
+            staging.unlink(missing_ok=True)
+            raise
+        return destination, manifest
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

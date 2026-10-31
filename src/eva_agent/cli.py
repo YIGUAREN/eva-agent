@@ -242,8 +242,16 @@ def _open_manager(config: AppConfig) -> AbstractAsyncContextManager[RunManager]:
 
 
 async def _export_run(args: argparse.Namespace, config: AppConfig) -> int:
-    async with _open_manager(config) as manager:
-        archive, manifest = await manager.export_run_bundle(args.run_id, Path(args.out))
+    try:
+        async with _open_manager(config) as manager:
+            archive, manifest = await manager.export_run_bundle(args.run_id, Path(args.out))
+    except OSError as exc:
+        # ``str(OSError)`` embeds the path; the OS reason is enough and safe.
+        print(
+            f"error: cannot write run bundle: {exc.strerror or type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return 1
     print(
         json.dumps(
             {
