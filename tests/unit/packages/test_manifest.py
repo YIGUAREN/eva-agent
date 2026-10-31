@@ -15,6 +15,7 @@ from eva_agent.packages.manifest import (
     PackageManifest,
     canonical_json,
     extract_zip,
+    pretty_json,
     read_manifest,
     sha256_bytes,
     verify_tree,
@@ -74,10 +75,12 @@ def _tree(root: Path) -> PackageManifest:
     return manifest
 
 
-def test_manifest_round_trips_through_canonical_json(tmp_path) -> None:
+def test_manifest_round_trips_through_pretty_json(tmp_path) -> None:
     manifest = _tree(tmp_path)
     raw = (tmp_path / MANIFEST_NAME).read_bytes()
-    assert raw == canonical_json(manifest.model_dump(mode="json"))
+    assert raw == pretty_json(manifest.model_dump(mode="json"))
+    assert raw.endswith(b"\n")
+    assert json.loads(raw) == manifest.model_dump(mode="json")
     assert read_manifest(tmp_path) == manifest
 
 

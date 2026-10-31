@@ -71,14 +71,34 @@ async def test_build_grader_package_writes_every_declared_member(write_run, arch
     assert "usage" in package.report
 
 
-async def test_build_grader_package_readme_is_chinese(write_run, archive_dir):
+async def test_build_grader_package_json_members_are_pretty_printed(write_run, archive_dir):
+    config, run_row = await write_run()
+    archive, _ = await build_grader_package(config=config, run_row=run_row, out_dir=archive_dir)
+    with zipfile.ZipFile(archive) as z:
+        for member in ("plan.json", "input.json", "report.json", "snapshots/gradings.json", "manifest.json"):
+            raw = z.read(member)
+            assert raw.endswith(b"\n"), member
+            assert b"\n  " in raw, member
+            json.loads(raw)
+
+
+async def test_build_grader_package_readme_documents_fields_in_chinese(write_run, archive_dir):
     config, run_row = await write_run()
     archive, _ = await build_grader_package(config=config, run_row=run_row, out_dir=archive_dir)
     with zipfile.ZipFile(archive) as z:
         readme = z.read("README.md").decode("utf-8")
     assert any("一" <= character <= "鿿" for character in readme)
-    for member in ("plan.json", "input.json", "snapshots/gradings.json", "report.json"):
+    assert "字段说明" in readme
+    for member in ("plan.json", "input.json", "snapshots/gradings.json", "report.json", "manifest.json"):
         assert member in readme
+    for field in (
+        "max_cost_usd",
+        "dimension_limits",
+        "outcomes",
+        "truncated_dimensions",
+        "replayable",
+    ):
+        assert field in readme
     assert "eva replay" in readme
     assert "# Grader package" not in readme
 

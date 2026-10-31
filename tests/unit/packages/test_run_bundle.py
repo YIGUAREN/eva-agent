@@ -205,6 +205,25 @@ async def test_bundle_carries_only_public_artifacts(write_run, tmp_path) -> None
     assert not any("secret" in name for name in names)
 
 
+async def test_bundle_json_members_are_pretty_printed(write_run, tmp_path) -> None:
+    config, run_row, factory = await _published_run(write_run)
+    report = await ReportRepository(factory).get(run_row.id)
+    artifacts = await ArtifactRepository(factory).list_public(run_row.id)
+    archive, _ = await build_run_bundle(
+        config=config,
+        run_row=run_row,
+        report=report,
+        artifacts=artifacts,
+        out_dir=tmp_path / "out",
+    )
+    with zipfile.ZipFile(archive) as bundle:
+        for name in ("run.json", "report.json", "manifest.json"):
+            raw = bundle.read(name)
+            assert raw.endswith(b"\n"), name
+            assert b"\n  " in raw, name
+            json.loads(raw)
+
+
 async def test_bundle_redacts_paths_and_secrets(write_run, tmp_path) -> None:
     config, run_row, factory = await _published_run(write_run)
     report = await ReportRepository(factory).get(run_row.id)
