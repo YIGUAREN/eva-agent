@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from eva_agent.adapters.aig.errors import AigError, AigTimeout
+from eva_agent.adapters.aig.errors import AigError, AigTimeout, AigUnavailable
 from eva_agent.config.settings import AigSettings, AigSkillScanSettings, MissingSecretError, ModelConfig
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.security.audit import noop_audit_sink
@@ -13,6 +13,7 @@ from eva_agent.tools.aig import (
     AIG_TOOL_TIMEOUT_MARGIN_S,
     AigAgentScanInput,
     AigPackageError,
+    AigScanInput,
     AigSkillScanInput,
     build_run_aig_agent_scan_tool,
     build_run_aig_scan_tool,
@@ -51,6 +52,23 @@ SKILL_RESULT = {
     "result": {"readme": "", "score": 100, "language": "YAML", "results": [], "llm": "judge"},
 }
 
+ATTACHMENT = "attachment_0123456789abcdef0123456789abcdef_1793422813849140825_1793422813.csv"
+CSV_BYTES = b"\xef\xbb\xbfstatus,modelName\ncompleted,demo\n"
+MODEL_RESULT = {
+    "result": {
+        "msgType": "json",
+        "content": [
+            {
+                "modelName": "demo-echo",
+                "total": 2,
+                "jailbreak": 1,
+                "score": 50.0,
+                "attachment": ATTACHMENT,
+            }
+        ],
+    }
+}
+
 
 class FakeClient:
     def __init__(
@@ -59,13 +77,16 @@ class FakeClient:
         *,
         wait_error: Exception | None = None,
         upload_error: Exception | None = None,
+        download_error: Exception | None = None,
     ) -> None:
         self.result_payload = result
         self.wait_error = wait_error
         self.upload_error = upload_error
+        self.download_error = download_error
         self.bodies: list[dict] = []
         self.uploads: list[tuple[str, bytes]] = []
         self.waits: list[tuple[str, float]] = []
+        self.downloaded: list[tuple[str, str]] = []
 
     async def create(self, body: dict) -> str:
         self.bodies.append(body)
@@ -85,6 +106,12 @@ class FakeClient:
             raise self.upload_error
         self.uploads.append((filename, content))
         return "pkg_1793423249288665728_1793423249.zip"
+
+    async def download(self, session_id: str, file_url: str) -> bytes:
+        if self.download_error is not None:
+            raise self.download_error
+        self.downloaded.append((session_id, file_url))
+        return CSV_BYTES
 
 
 class RecordingAudit:
@@ -107,6 +134,27 @@ def agent_target() -> TargetSpec:
         header_env={"Authorization": "AGENT_TOKEN"},
         request_template={"message": "{{prompt}}"},
         response_path="$.reply",
+    )
+
+
+def model_target() -> TargetSpec:
+    return TargetSpec(
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="demo-echo",
+        base_url="http://demo:8100/v1",
+    )
+
+
+def model_tool(client: FakeClient, *, data_dir: Path, audit=None):
+    return build_run_aig_scan_tool(
+        client=client,
+        settings=AigSettings(),
+        eval_model=EVAL,
+        env={"JUDGE_KEY": "judge-token"},
+        audit=audit or noop_audit_sink,
+        data_dir=str(data_dir),
     )
 
 
@@ -377,6 +425,59 @@ async def test_skill_scan_wraps_a_read_failure_without_leaking_the_path(
     assert str(evidence_root) not in str(excinfo.value)
     assert "SKILL.md" not in str(excinfo.value)
     assert [event.action for event in audit.events] == ["active_scan.failed"]
+
+
+@pytest.mark.asyncio
+async def test_model_redteam_scan_saves_the_attachment_csv(tmp_path: Path) -> None:
+    client = FakeClient(MODEL_RESULT)
+    audit = RecordingAudit()
+
+    output = await model_tool(client, data_dir=tmp_path, audit=audit).handler(
+        AigScanInput(
+            run_id="run-1",
+            target=model_target(),
+            scan_base_url="http://demo:8100/v1",
+            authorization_ref="demo",
+            max_wait_s=30.0,
+        )
+    )
+
+    csv_path = tmp_path / "runs" / "run-1" / "aig" / f"{output.session_id}.csv"
+    assert client.downloaded == [(output.session_id, ATTACHMENT)]
+    assert csv_path.read_bytes() == CSV_BYTES
+    assert [event.action for event in audit.events] == ["active_scan.started", "active_scan.completed"]
+    details = json.dumps([event.detail for event in audit.events])
+    assert ATTACHMENT not in details
+    assert "completed,demo" not in details
+
+
+@pytest.mark.asyncio
+async def test_attachment_failure_keeps_the_scan_result(tmp_path: Path) -> None:
+    client = FakeClient(MODEL_RESULT, download_error=AigUnavailable("boom"))
+    audit = RecordingAudit()
+
+    output = await model_tool(client, data_dir=tmp_path, audit=audit).handler(
+        AigScanInput(
+            run_id="run-1",
+            target=model_target(),
+            scan_base_url="http://demo:8100/v1",
+            authorization_ref="demo",
+            max_wait_s=30.0,
+        )
+    )
+
+    assert output.reports
+    assert not (tmp_path / "runs" / "run-1" / "aig" / f"{output.session_id}.csv").exists()
+    assert [event.action for event in audit.events] == [
+        "active_scan.started",
+        "active_scan.attachment_failed",
+        "active_scan.completed",
+    ]
+    failed = audit.events[1]
+    assert failed.detail == {"reason": "AigUnavailable"}
+    assert failed.scan_kind == "model_redteam_report"
+    assert ATTACHMENT not in json.dumps([event.detail for event in audit.events])
+    assert "boom" not in json.dumps([event.detail for event in audit.events])
 
 
 def test_skill_tool_budget_covers_four_http_timeouts(tmp_path: Path) -> None:

@@ -10,6 +10,11 @@ from typing import Any, Protocol
 
 import httpx
 
+from eva_agent.adapters.aig.attachments import (
+    ATTACHMENT_NAME,
+    DOWNLOAD_PATH,
+    MAX_ATTACHMENT_BYTES,
+)
 from eva_agent.adapters.aig.errors import AigRejected, AigTimeout, AigUnavailable
 from eva_agent.config.settings import AigSettings
 
@@ -128,3 +133,21 @@ class AigClient:
         if not isinstance(file_url, str) or _FILE_URL.fullmatch(file_url) is None:
             raise AigUnavailable("AIG upload response has an invalid fileUrl")
         return file_url
+
+    async def download(self, session_id: str, file_url: str) -> bytes:
+        if _SESSION_ID.fullmatch(session_id) is None or ATTACHMENT_NAME.fullmatch(file_url) is None:
+            raise AigUnavailable("AIG download request has an invalid name")
+        try:
+            async with self._client() as client:
+                response = await client.post(
+                    DOWNLOAD_PATH.format(session_id=session_id),
+                    json={"fileUrl": file_url},
+                )
+        except httpx.HTTPError as exc:
+            raise AigUnavailable(f"AIG transport failed: {type(exc).__name__}") from None
+        if not 200 <= response.status_code < 300:
+            raise AigUnavailable(f"AIG returned HTTP {response.status_code}")
+        content = response.content
+        if not content or len(content) > MAX_ATTACHMENT_BYTES or b"<html" in content[:512].lower():
+            raise AigUnavailable("AIG returned an invalid attachment")
+        return content

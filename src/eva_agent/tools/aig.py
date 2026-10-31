@@ -8,10 +8,11 @@ import json
 import zipfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, Field
 
+from eva_agent.adapters.aig.attachments import attachment_names
 from eva_agent.adapters.aig.body import (
     build_agent_scan_body,
     build_create_body,
@@ -30,7 +31,7 @@ from eva_agent.adapters.aig.models import (
 from eva_agent.config.settings import AigSettings, MissingSecretError, ModelConfig, resolve_api_key
 from eva_agent.domain.audit import AuditEvent
 from eva_agent.domain.target import TargetSpec
-from eva_agent.runtime.artifacts import run_paths
+from eva_agent.runtime.artifacts import RunPaths, run_paths
 from eva_agent.security.audit import AuditSink
 from eva_agent.tools.evidence import EvidenceAccessError, resolve_evidence_path
 from eva_agent.tools.registry import ToolSpec
@@ -120,6 +121,10 @@ class _Auditor:
         self.terminal = True
         await self.record(self._event("active_scan.completed", "completed", detail))
 
+    async def attachment_failed(self, reason: str) -> None:
+        # Attachment metadata is sensitive: record only a static reason.
+        await self.record(self._event("active_scan.attachment_failed", "failed", {"reason": reason}))
+
 
 class AigScanInput(BaseModel):
     run_id: str = Field(min_length=1)
@@ -207,6 +212,36 @@ async def _run_lifecycle(
     return session_id, parsed, raw_path
 
 
+class _AttachmentClient(Protocol):
+    """The download capability the attachment step needs from the scan client."""
+
+    async def download(self, session_id: str, file_url: str) -> bytes: ...
+
+
+async def _save_attachment(
+    *,
+    auditor: _Auditor,
+    client: _AttachmentClient,
+    paths: RunPaths,
+    raw_path: Path,
+) -> None:
+    """Fetch AIG's model-redteam CSV; a failure never fails the scan."""
+    try:
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        await auditor.attachment_failed("unreadable_result")
+        return
+    names = attachment_names(payload if isinstance(payload, dict) else {})
+    if not names:
+        return
+    session_id = raw_path.stem
+    try:
+        content = await client.download(session_id, names[0])
+        (paths.aig_dir / f"{session_id}.csv").write_bytes(content)
+    except (AigError, OSError) as exc:
+        await auditor.attachment_failed(type(exc).__name__)
+
+
 def _package_archive(root: str, files: list[str], *, limit: int) -> bytes:
     """Zip the listed evidence files; refuse anything that escapes the root or the size cap."""
     buffer = io.BytesIO()
@@ -282,6 +317,12 @@ def build_run_aig_scan_tool(
                 parse=parse_result,
                 aig_dir=paths.aig_dir,
                 max_wait_s=payload.max_wait_s,
+            )
+            await _save_attachment(
+                auditor=auditor,
+                client=cast(_AttachmentClient, client),
+                paths=paths,
+                raw_path=raw_path,
             )
             total = sum(report.total for report in reports)
             jailbreak = sum(report.jailbreak for report in reports)
