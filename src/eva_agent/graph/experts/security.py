@@ -154,10 +154,18 @@ class SecurityExpert:
                 if kind != "skill_scan":
                     return self._failed(f"security 被动检查失败：{type(exc).__name__}")
                 passive = failed_passive(expected_outcomes=len(rows), reason=type(exc).__name__)
+        threat_not_scored = False
         if skill_rows:
-            passive = merge_passive(passive, await self._threat(run_id, evidence, skill_rows))
+            threat = await self._threat(run_id, evidence, skill_rows)
+            if threat.score is None:
+                # A threat pass that produced no score could not speak for the
+                # package's content either, so it takes the same cap. Its own
+                # failure reason already sits in the merged passive errors.
+                threat_not_scored = True
+            passive = merge_passive(passive, threat)
         if threat_unavailable is not None:
             passive = _with_passive_error(passive, threat_unavailable)
+        threat_gap = threat_unavailable or ("threat_not_scored" if threat_not_scored else None)
 
         active = await self._active(
             run_id,
@@ -169,7 +177,7 @@ class SecurityExpert:
             requester_is_admin=requester_is_admin,
         )
         spec_count = len(passive_specs(rows)) + (1 if skill_rows else 0)
-        return self._result(passive, active, spec_count, threat_unavailable=threat_unavailable)
+        return self._result(passive, active, spec_count, threat_unavailable=threat_gap)
 
     async def _passive(
         self,
@@ -458,6 +466,7 @@ class SecurityExpert:
             # The reported cap must always be the cap actually applied, for
             # agent scans (no passive score) just as for skill-only uploads.
             score = min(score, cap)
+        applied_cap = cap if score is not None else None
 
         passive_metrics = (
             passive.metrics
@@ -484,8 +493,9 @@ class SecurityExpert:
         else:
             status = "partial"
 
+        threat_note = f"（威胁分析不可用：{threat_unavailable}）" if threat_unavailable is not None else ""
         if status == "failed":
-            summary = "security 被动与主动检查都没有可用结果"
+            summary = "security 被动与主动检查都没有可用结果" + threat_note
             error = "no usable security score"
         elif status == "ok":
             label = f"被动 {passive_score:.3f}，" if passive_score is not None else ""
@@ -496,10 +506,7 @@ class SecurityExpert:
             summary = f"security 部分完成：被动 {passive_label}，主动 {active_status}"
             if active_metrics.get("refused_reason"):
                 summary += f"（拒绝原因：{active_metrics['refused_reason']}）"
-            # An unavailable threat pass always adds a passive error, so the
-            # status is partial and this note always reaches the rendered report.
-            if threat_unavailable is not None:
-                summary += f"（威胁分析不可用：{threat_unavailable}）"
+            summary += threat_note
             error = None
 
         findings: list[Finding] = list(passive.findings) if passive is not None else []
@@ -520,7 +527,7 @@ class SecurityExpert:
             metrics={
                 "passive": passive_metrics,
                 "active": active_metrics,
-                "score_cap": cap,
+                "score_cap": applied_cap,
                 "audit_error": audit_error,
                 "grader_count": spec_count,
             },

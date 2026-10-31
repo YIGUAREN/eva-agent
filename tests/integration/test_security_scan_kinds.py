@@ -562,6 +562,57 @@ async def test_threat_unavailable_caps_the_score_and_names_the_reason(tmp_path: 
     assert skipped == [{"reason": "too_many_packages"}]
 
 
+async def test_threat_unavailable_names_the_reason_even_without_a_score(tmp_path: Path) -> None:
+    files = [EvidenceFile(path="SKILL.md", size=1, sha256=_DIGEST)]
+    files.extend(EvidenceFile(path=f"pkg-{index}/SKILL.md", size=1, sha256=_DIGEST) for index in range(50))
+    bundle = EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=str(tmp_path / "evidence"),
+        files=files,
+        manifest_sha256=_DIGEST,
+    )
+    tools, _ = skill_tools()
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy(), aig_configured=False)
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    assert result.status == "failed"
+    assert result.score is None
+    # A cap that was never applied must not be reported as if it had been.
+    assert result.metrics["score_cap"] is None
+    assert "too_many_packages" in result.summary
+
+
+async def test_a_threat_pass_without_a_score_is_capped(tmp_path: Path) -> None:
+    _, bundle = skill_upload(tmp_path, qa='{"query": "q", "response": "safe answer"}\n')
+    tools, _ = skill_tools(fail_on="threat_analysis")
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    # Passive graded 0.8, but the package's own content was never assessed.
+    assert result.status == "partial"
+    assert result.score == 0.5
+    assert result.metrics["score_cap"] == 0.5
+    assert "threat_not_scored" in result.summary
+
+
 async def test_not_configured_audit_row_carries_the_run_authorization(tmp_path: Path) -> None:
     tools = ToolRegistry()
     tools.register(build_read_evidence_tool(1_000_000))
