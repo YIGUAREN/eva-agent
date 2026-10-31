@@ -243,6 +243,39 @@ def _load_member[T](workdir: Path, name: str, parse: Callable[[str], T]) -> T:
         raise PackageError(f"cannot read {name}: {_error_detail(exc)}") from None
 
 
+def _validate_report(report: dict[str, Any]) -> None:
+    """Reject a report whose nested shape replay would read unsafely.
+
+    Replay treats the report as recorded data, so a hash-valid package with a
+    malformed report must fail closed here instead of surfacing as a
+    ``TypeError``/``AttributeError`` while comparing. Nothing is coerced or
+    repaired: anything replay cannot read raises ``PackageError``.
+    """
+    dimensions = report.get("dimensions")
+    if dimensions is None:
+        return
+    if not isinstance(dimensions, list):
+        raise PackageError("report.json dimensions must be a list")
+    for entry in dimensions:
+        if not isinstance(entry, dict):
+            raise PackageError("report.json dimensions entries must be objects")
+        if not isinstance(entry.get("dimension"), str):
+            raise PackageError("report.json dimension entry has no dimension name")
+        metrics = entry.get("metrics")
+        if metrics is not None and not isinstance(metrics, dict):
+            raise PackageError("report.json dimension metrics must be an object or null")
+        findings = entry.get("findings")
+        if findings is not None and not isinstance(findings, list):
+            raise PackageError("report.json dimension findings must be a list")
+        error = entry.get("error")
+        if error is not None and not isinstance(error, str):
+            raise PackageError("report.json dimension error must be a string or null")
+        if isinstance(metrics, dict):
+            active = metrics.get("active")
+            if active is not None and not isinstance(active, dict):
+                raise PackageError("report.json dimension metrics.active must be an object or null")
+
+
 def read_grader_package(archive: Path) -> GraderPackage:
     with tempfile.TemporaryDirectory(prefix="eva-replay-") as temporary:
         workdir = Path(temporary) / "package"
@@ -254,4 +287,5 @@ def read_grader_package(archive: Path) -> GraderPackage:
         report = _load_member(workdir, "report.json", json.loads)
         if not isinstance(report, dict):
             raise PackageError("report.json is not an object")
+        _validate_report(report)
     return GraderPackage(manifest=manifest, plan=plan, inputs=inputs, snapshots=snapshots, report=report)

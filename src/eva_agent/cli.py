@@ -257,7 +257,6 @@ async def _replay(args: argparse.Namespace, _config: AppConfig | None) -> int:
     package = read_grader_package(Path(args.package))
     result = replay_package(package)
     out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "matched": result.matched,
         "compared": result.compared,
@@ -268,14 +267,22 @@ async def _replay(args: argparse.Namespace, _config: AppConfig | None) -> int:
         ],
     }
     encoded = json.dumps(payload, ensure_ascii=False, indent=2)
-    (out_dir / "replay.json").write_text(encoded, encoding="utf-8")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "replay.json").write_text(encoded, encoding="utf-8")
+    except OSError as exc:
+        # ``str(OSError)`` embeds the path; the OS reason is enough and safe.
+        print(f"error: cannot write replay result: {exc.strerror or type(exc).__name__}", file=sys.stderr)
+        return 1
     print(encoded)
     return 0 if result.matched else 1
 
 
 async def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "replay":
+        # Replay is fully offline: it never reads config, pricing, model keys, or .env.
         return await _replay(args, None)
+    load_dotenv()
     config = load_config(Path(args.config))
     if args.command == "export-grader-package":
         return await _export_grader_package(args, config)
@@ -291,7 +298,6 @@ async def _dispatch(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    load_dotenv()
     args = build_parser().parse_args(argv)
     try:
         return asyncio.run(_dispatch(args))
