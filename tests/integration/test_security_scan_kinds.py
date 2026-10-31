@@ -271,6 +271,26 @@ def agent_output(*, score: int = 40) -> AigAgentScanOutput:
     )
 
 
+def zero_test_agent_output() -> AigAgentScanOutput:
+    report = AigAgentReport.model_validate(
+        {
+            "schema_version": "agent-security-report@1",
+            "agent_name": "agent",
+            "score": 100,
+            "risk_type": "safe",
+            "total_tests": 0,
+            "vulnerable_tests": 0,
+            "results": [],
+            "owasp_agentic_2026_top10": [],
+        }
+    )
+    return AigAgentScanOutput(
+        session_id="sess-agent",
+        report=report,
+        raw_result_path="/runs/run-1/aig/sess-agent.json",
+    )
+
+
 def skill_output() -> AigSkillScanOutput:
     report = AigSkillReport.model_validate(
         {
@@ -374,6 +394,28 @@ async def test_agent_scan_high_finding_caps_the_score(tmp_path: Path) -> None:
     assert result.metrics["score_cap"] == 0.5
     assert result.score == 0.5
     assert result.status == "ok"
+
+
+async def test_zero_test_agent_scan_does_not_end_ok(tmp_path: Path) -> None:
+    tools = ToolRegistry()
+    tools.register(build_read_evidence_tool(1_000_000))
+    agent_tool = FakeScanTool(zero_test_agent_output())
+    register(tools, "run_aig_agent_scan", AigAgentScanInput, AigAgentScanOutput, agent_tool)
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=target_evidence(tmp_path, agent_target()),
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    assert result.status == "failed"
+    assert result.score is None
+    assert result.error == "no usable security score"
 
 
 def skill_upload(tmp_path: Path, *, qa: str | None = None) -> tuple[Path, EvidenceBundle]:

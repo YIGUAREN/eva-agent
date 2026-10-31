@@ -58,6 +58,24 @@ def summarize_agent_scan(
     session_id: str,
     raw_result_path: str,
 ) -> ActiveSummary:
+    if report.total_tests == 0:
+        # A scan that never exercised the target cannot vouch for it; AIG still
+        # reports a perfect score for it, so refuse to turn that into a pass.
+        return ActiveSummary(
+            score=None,
+            metrics={
+                "kind": "agent_scan",
+                "session_id": session_id,
+                "asr": None,
+                "jailbreak": 0,
+                "total": 0,
+                "risk_type": report.risk_type,
+                "vulnerabilities": [],
+                "severity_counts": {},
+                "degraded": False,
+                "refused_reason": None,
+            },
+        )
     severities: list[_Severity] = [_AGENT_SEVERITY[item.level] for item in report.results]
     findings = [
         Finding(

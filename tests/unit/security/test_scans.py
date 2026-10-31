@@ -47,6 +47,25 @@ def test_agent_summary_uses_the_report_score_and_counts() -> None:
     assert finding.remediation is None or "model remediation" not in finding.remediation
 
 
+def test_agent_summary_with_zero_tests_produces_no_score() -> None:
+    report = agent_report(
+        score=100,
+        total_tests=0,
+        vulnerable_tests=0,
+        results=[],
+        owasp_agentic_2026_top10=[],
+    )
+
+    summary = summarize_agent_scan(report, session_id="sess-1", raw_result_path="/runs/r/aig/sess-1.json")
+
+    assert summary.score is None
+    assert summary.metrics["total"] == 0
+    assert summary.metrics["jailbreak"] == 0
+    assert summary.metrics["vulnerabilities"] == []
+    assert summary.metrics["severity_counts"] == {}
+    assert summary.findings == []
+
+
 def test_agent_summary_drops_non_identifier_owasp_entries() -> None:
     report = agent_report(
         results=[
