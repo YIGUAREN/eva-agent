@@ -52,6 +52,7 @@ async def test_public_report_keeps_spend_and_keeps_admin_usage(
         "fresh": 1,
         "budget_enforced": True,
         "spent_usd": 12.345678,
+        "reserved_usd": 9.99,
         "debug_internal": "admin-only",
     }
     payload = {
@@ -93,6 +94,9 @@ async def test_public_report_keeps_spend_and_keeps_admin_usage(
         "budget_enforced",
     } & set(body["report"]["usage"])
     assert "debug_internal" not in response.text
+    # Non-whitelisted usage keys (reservations, request counts, ...) stay hidden.
+    assert "reserved_usd" not in response.text
+    assert "9.99" not in response.text
     assert "- 已花费：12.345678 USD" in body["markdown"]
     assert "- 预算：" not in body["markdown"]
     # Sample counts are not spend and carry no paths or hosts, so they remain
@@ -213,8 +217,8 @@ async def test_public_report_drops_hostile_usage_values_but_admin_keeps_them(
 
 @pytest.mark.parametrize(
     "spent",
-    [True, -1, "12", float("nan"), float("inf")],
-    ids=["bool", "negative", "string", "nan", "inf"],
+    [True, -1, "12", float("nan"), float("inf"), 10**400],
+    ids=["bool", "negative", "string", "nan", "inf", "huge-int"],
 )
 async def test_public_report_drops_invalid_spend_values(
     client: AsyncClient, state: AppState, spent: object

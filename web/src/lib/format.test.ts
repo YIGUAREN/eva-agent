@@ -12,5 +12,6 @@ describe("spend", () => {
   });
   it("returns null for a non-finite value", () => {
     expect(spend(Number.NaN)).toBeNull();
+    expect(spend(Number.POSITIVE_INFINITY)).toBeNull();
   });
 });

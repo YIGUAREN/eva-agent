@@ -41,12 +41,21 @@ def _valid_usage_value(key: str, value: object) -> bool:
         return isinstance(value, bool)
     if key in _PUBLIC_USAGE_MONEY_KEYS:
         # bool is an int subclass and a hostile producer may send NaN/inf/negatives.
-        return (
-            isinstance(value, int | float)
-            and not isinstance(value, bool)
-            and math.isfinite(value)
-            and value >= 0
-        )
+        # A huge int such as ``10**400`` raises OverflowError when converted to a
+        # float, so it cannot be a finite JSON number either: drop it rather than
+        # letting the conversion escape as a 500.
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            if value < 0:
+                return False
+            try:
+                return math.isfinite(float(value))
+            except OverflowError:
+                return False
+        if isinstance(value, float):
+            return math.isfinite(value) and value >= 0
+        return False
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
