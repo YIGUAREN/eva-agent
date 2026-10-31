@@ -386,6 +386,43 @@ async def test_skill_scan_refuses_an_oversized_package_before_uploading(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_skill_scan_rejects_an_oversized_member_without_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    files = write_package(evidence_root)
+    (evidence_root / "big.bin").write_bytes(b"0" * 4_096)
+    client = FakeClient(SKILL_RESULT)
+    audit = RecordingAudit()
+    settings = AigSettings(skill_scan=AigSkillScanSettings(max_package_bytes=1_024))
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes_guard(self: Path) -> bytes:
+        if self.name == "big.bin":
+            raise AssertionError("an oversized member must be rejected before read_bytes")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_guard)
+
+    tool = skill_tool(client, data_dir=tmp_path, audit=audit, settings=settings)
+    with pytest.raises(AigPackageError, match="exceeds 1024 bytes"):
+        await tool.handler(
+            AigSkillScanInput(
+                run_id="run-1",
+                root=str(evidence_root),
+                files=[*files, "big.bin"],
+                authorization_ref="ticket-42",
+                max_wait_s=30.0,
+            )
+        )
+
+    assert client.uploads == []
+    assert [event.action for event in audit.events] == ["active_scan.failed"]
+    assert audit.events[0].detail == {"error_type": "AigPackageError"}
+
+
+@pytest.mark.asyncio
 async def test_skill_scan_rejects_a_file_outside_the_evidence_root(tmp_path: Path) -> None:
     evidence_root = tmp_path / "evidence"
     evidence_root.mkdir()

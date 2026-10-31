@@ -267,6 +267,14 @@ def _package_archive(root: str, files: list[str], *, limit: int) -> bytes:
                 except ValueError:
                     raise AigPackageError("skill package member escapes the evidence root") from None
                 try:
+                    size = path.stat().st_size
+                except OSError:
+                    raise AigPackageError("skill package member is not readable") from None
+                # Check the remaining budget before reading so an oversized
+                # member never has to be allocated (or read) at all.
+                if size > limit - total:
+                    raise AigPackageError(f"skill package exceeds {limit} bytes")
+                try:
                     data = path.read_bytes()
                 except OSError:
                     raise AigPackageError("skill package member is not readable") from None
