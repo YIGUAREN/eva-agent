@@ -1,0 +1,393 @@
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
+
+from eva_agent.adapters.aig.models import AigAgentReport, AigReport, AigSkillReport
+from eva_agent.config.settings import AigScanSettings, AigSettings
+from eva_agent.domain.budget import Budget
+from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
+from eva_agent.domain.plan import Dimension, DimensionPlan
+from eva_agent.domain.probe import ProbeRecord
+from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
+from eva_agent.domain.run import InputKind
+from eva_agent.domain.target import TargetKind, TargetSpec
+from eva_agent.graph.dependencies import GraphDependencies
+from eva_agent.graph.events import noop_event_sink
+from eva_agent.graph.experts.security import SecurityExpert
+from eva_agent.security.scan_policy import ScanDecision, ScanPolicy
+from eva_agent.security.target_policy import SecurityPolicy
+from eva_agent.tools.aig import (
+    AigAgentScanInput,
+    AigAgentScanOutput,
+    AigScanInput,
+    AigScanOutput,
+    AigSkillScanInput,
+    AigSkillScanOutput,
+)
+from eva_agent.tools.evidence import build_read_evidence_tool
+from eva_agent.tools.graders import RunGradersInput
+from eva_agent.tools.registry import ToolRegistry, ToolSpec
+from eva_agent.tools.target import ReadTargetProbeInput, ReadTargetProbeOutput
+from tests.support.runtime import FakePlanner
+
+_DIGEST = "0" * 64
+
+
+class RecordingPolicy(ScanPolicy):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.calls: list[dict] = []
+
+    def decide(self, **kwargs: Any) -> ScanDecision:
+        self.calls.append(kwargs)
+        return super().decide(**kwargs)
+
+
+class FakeScanTool:
+    def __init__(self, output) -> None:
+        self.output = output
+        self.calls: list[Any] = []
+        self.spec = None
+
+    async def __call__(self, payload):
+        self.calls.append(payload)
+        return self.output
+
+
+class RecordingAudit:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def record(self, event) -> None:
+        self.events.append(event)
+
+
+def register(
+    registry: ToolRegistry,
+    name: str,
+    input_model: type[BaseModel],
+    output_model: type[BaseModel],
+    handler: Callable[[Any], Awaitable[Any]],
+) -> None:
+    registry.register(
+        ToolSpec(
+            name=name,
+            description=f"fake {name}",
+            input_model=input_model,
+            output_model=output_model,
+            permission="admin",
+            timeout_s=10.0,
+            side_effects=True,
+            idempotent=False,
+            handler=handler,
+        )
+    )
+
+
+def register_graders(registry: ToolRegistry) -> None:
+    async def graders(payload: RunGradersInput) -> GraderRunOutput:
+        return GraderRunOutput(
+            outcomes=[
+                GraderSampleOutcome(
+                    grader=spec.name,
+                    sample_index=index,
+                    score=0.0 if spec.name == "threat_analysis" else 0.8,
+                )
+                for spec in payload.specs
+                for index in range(len(payload.rows))
+            ]
+        )
+
+    registry.register(
+        ToolSpec(
+            name="run_graders",
+            description="fake graders",
+            input_model=RunGradersInput,
+            output_model=GraderRunOutput,
+            permission="internal",
+            timeout_s=10.0,
+            side_effects=False,
+            idempotent=False,
+            handler=graders,
+        )
+    )
+
+
+def register_target_probe(registry: ToolRegistry) -> None:
+    async def probe(_payload: ReadTargetProbeInput) -> ReadTargetProbeOutput:
+        return ReadTargetProbeOutput(
+            records=[
+                ProbeRecord(
+                    index=0,
+                    prompt="q",
+                    started_at=datetime.now(UTC),
+                    status_code=200,
+                    latency_ms=5,
+                    response_text="safe answer",
+                )
+            ]
+        )
+
+    registry.register(
+        ToolSpec(
+            name="read_target_probe",
+            description="fake target probe",
+            input_model=ReadTargetProbeInput,
+            output_model=ReadTargetProbeOutput,
+            permission="public_read",
+            timeout_s=10.0,
+            side_effects=False,
+            idempotent=True,
+            handler=probe,
+        )
+    )
+
+
+def security_plan() -> DimensionPlan:
+    return DimensionPlan(dimension=Dimension.SECURITY, enabled=True, sample_size=2)
+
+
+def security_budget() -> Budget:
+    return Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=10)
+
+
+def scan_policy() -> RecordingPolicy:
+    return RecordingPolicy(
+        SecurityPolicy(
+            active_scan_enabled=True,
+            requester_is_admin=False,
+            demo_targets=[],
+            allowlist=["http://127.0.0.1:8100"],
+        ),
+        aig=AigSettings(
+            scan=AigScanSettings(datasets=["d"], num_prompts=2, random_seed=1),
+        ),
+        eval_model_available=True,
+    )
+
+
+def dependencies(tmp_path: Path, *, tools: ToolRegistry, policy: ScanPolicy) -> GraphDependencies:
+    return GraphDependencies(
+        planner=FakePlanner(),
+        tools=tools,
+        catalog_ids=frozenset(),
+        data_dir=str(tmp_path / "data"),
+        max_input_bytes=1_000_000,
+        max_dataset_rows=100,
+        default_sample_size=5,
+        scan_policy=policy,
+        audit=RecordingAudit(),
+        aig_configured=True,
+        event_sink=noop_event_sink,
+    )
+
+
+def agent_target() -> TargetSpec:
+    return TargetSpec(
+        name="agent",
+        kind=TargetKind.AGENT_HTTP,
+        provider="demo",
+        model="agent",
+        url="http://127.0.0.1:8100/run",
+        method="POST",
+        request_template={"prompt": "{{prompt}}"},
+        response_path="$.output",
+    )
+
+
+def model_target() -> TargetSpec:
+    return TargetSpec(
+        name="demo",
+        kind=TargetKind.OPENAI_COMPATIBLE,
+        provider="demo",
+        model="demo-echo",
+        base_url="http://127.0.0.1:8100/v1",
+    )
+
+
+def target_evidence(tmp_path: Path, target: TargetSpec) -> EvidenceBundle:
+    return EvidenceBundle(
+        kind=InputKind.TARGET,
+        root=str(tmp_path / "evidence"),
+        target=target,
+        target_prompts=["q"],
+        manifest_sha256=_DIGEST,
+    )
+
+
+def upload_evidence(root: Path, *paths: str) -> EvidenceBundle:
+    return EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=str(root),
+        files=[EvidenceFile(path=path, size=(root / path).stat().st_size, sha256=_DIGEST) for path in paths],
+        manifest_sha256=_DIGEST,
+    )
+
+
+def agent_output() -> AigAgentScanOutput:
+    report = AigAgentReport.model_validate(
+        {
+            "schema_version": "agent-security-report@1",
+            "agent_name": "agent",
+            "score": 40,
+            "risk_type": "high",
+            "total_tests": 4,
+            "vulnerable_tests": 1,
+            "results": [
+                {
+                    "id": "f-1",
+                    "type": "tool_abuse",
+                    "title": "Tool abuse",
+                    "description": "untrusted prose",
+                    "level": "HIGH",
+                    "owasp": ["ASI02"],
+                    "suggestion": "untrusted prose",
+                }
+            ],
+            "owasp_agentic_2026_top10": [],
+        }
+    )
+    return AigAgentScanOutput(
+        session_id="sess-agent",
+        report=report,
+        raw_result_path="/runs/run-1/aig/sess-agent.json",
+    )
+
+
+def skill_output() -> AigSkillScanOutput:
+    report = AigSkillReport.model_validate(
+        {
+            "score": 30,
+            "language": "Markdown",
+            "readme": "untrusted prose",
+            "results": [
+                {
+                    "title": "Suspicious script",
+                    "description": "untrusted prose",
+                    "risk_type": "T04: Embedded Malicious Code",
+                    "level": "High",
+                    "suggestion": "untrusted prose",
+                    "file": "scripts/run.py",
+                    "line_start": 1,
+                }
+            ],
+        }
+    )
+    return AigSkillScanOutput(
+        session_id="sess-skill",
+        report=report,
+        raw_result_path="/runs/run-1/aig/sess-skill.json",
+    )
+
+
+def model_output() -> AigScanOutput:
+    report = AigReport.model_validate(
+        {
+            "modelName": "demo-echo",
+            "total": 2,
+            "jailbreak": 1,
+            "score": 50.0,
+            "extraBody": {
+                "vulnerabilityResults": [{"vulnerability": "Harmful Content", "total": 2, "jailbreak": 1, "asr": 0.5}]
+            },
+        }
+    )
+    return AigScanOutput(
+        session_id="sess-model",
+        reports=[report],
+        datasets=["d"],
+        num_prompts=2,
+        raw_result_path="/runs/run-1/aig/sess-model.json",
+    )
+
+
+async def test_agent_target_runs_agent_scan_with_the_run_authorization(tmp_path: Path) -> None:
+    tools = ToolRegistry()
+    tools.register(build_read_evidence_tool(1_000_000))
+    agent_tool = FakeScanTool(agent_output())
+    model_tool = FakeScanTool(model_output())
+    register(tools, "run_aig_agent_scan", AigAgentScanInput, AigAgentScanOutput, agent_tool)
+    register(tools, "run_aig_scan", AigScanInput, AigScanOutput, model_tool)
+    policy = scan_policy()
+    deps = dependencies(tmp_path, tools=tools, policy=policy)
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=target_evidence(tmp_path, agent_target()),
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    assert result.status == "ok"
+    assert result.metrics["active"]["kind"] == "agent_scan"
+    call = policy.calls[0]
+    assert call["scan_kind"] == "agent_scan"
+    assert call["requester_is_admin"] is True
+    assert call["authorization_ref"] == "ticket-42"
+    assert call["probe_count"] == 0
+    assert model_tool.calls == []
+    assert agent_tool.calls[0].authorization_ref == "ticket-42"
+
+
+async def test_skill_upload_runs_threat_analysis_and_a_skill_scan(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir()
+    (root / "SKILL.md").write_text("# Greeter\n\nSay hello.\n", encoding="utf-8")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+    bundle = upload_evidence(root, "SKILL.md", "scripts/run.py")
+
+    tools = ToolRegistry()
+    tools.register(build_read_evidence_tool(1_000_000))
+    register_graders(tools)
+    skill_tool = FakeScanTool(skill_output())
+    register(tools, "run_aig_skill_scan", AigSkillScanInput, AigSkillScanOutput, skill_tool)
+    policy = scan_policy()
+    deps = dependencies(tmp_path, tools=tools, policy=policy)
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    assert result.metrics["passive"]["by_grader"]["threat_analysis"] == 0.0
+    assert result.metrics["active"]["kind"] == "skill_scan"
+    assert policy.calls[0]["scan_kind"] == "skill_scan"
+    assert skill_tool.calls[0].files == [item.path for item in bundle.files]
+
+
+async def test_scan_kind_reaches_the_policy_for_a_model_target(tmp_path: Path) -> None:
+    tools = ToolRegistry()
+    tools.register(build_read_evidence_tool(1_000_000))
+    register_target_probe(tools)
+    register_graders(tools)
+    model_tool = FakeScanTool(model_output())
+    register(tools, "run_aig_scan", AigScanInput, AigScanOutput, model_tool)
+    policy = scan_policy()
+    deps = dependencies(tmp_path, tools=tools, policy=policy)
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=target_evidence(tmp_path, model_target()),
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-9",
+        requester_is_admin=True,
+    )
+
+    assert result.metrics["active"]["kind"] == "model_redteam_report"
+    assert policy.calls[0]["scan_kind"] == "model_redteam_report"
+    assert policy.calls[0]["authorization_ref"] == "ticket-9"
+    assert len(model_tool.calls) == 1

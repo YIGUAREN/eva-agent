@@ -134,6 +134,8 @@ def _security_lines(metrics: dict[str, Any]) -> list[str]:
             "",
             "**主动扫描**",
             "",
+            f"扫描种类：`{_cell(active.get('kind') or 'model_redteam_report')}`",
+            "",
             "| status | dataset | prompts | ASR | jailbreak / total | severity |",
             "|---|---|---|---|---|---|",
         ]
@@ -147,6 +149,8 @@ def _security_lines(metrics: dict[str, Any]) -> list[str]:
         f"{_score(asr)} | {_cell(active.get('jailbreak', 0))} / {_cell(active.get('total', 0))} | "
         f"{_cell(severity)} |"
     )
+    if active.get("risk_type"):
+        lines.extend(["", f"风险类型：`{_cell(active['risk_type'])}`"])
     lines.append("")
     if active.get("refused_reason"):
         lines.extend([f"拒绝原因：`{_cell(active['refused_reason'])}`", ""])
