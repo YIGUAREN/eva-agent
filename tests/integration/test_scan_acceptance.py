@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import zipfile
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import httpx
+from fastapi import FastAPI
 
 from eva_agent.config.settings import (
     AigAgentScanSettings,
@@ -16,6 +21,7 @@ from eva_agent.config.settings import (
     AigSkillScanSettings,
     ModelConfig,
 )
+from eva_agent.domain.audit import AuditEvent
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
 from eva_agent.domain.run import InputKind, RunInput
@@ -88,6 +94,9 @@ SKILL_RESULT = {
     }
 }
 
+AGENT_TOKEN = "agent-header-secret"
+AGENT_TOKEN_ENV = "AGENT_TOKEN"
+
 AGENT_TARGET = TargetSpec(
     name="demo-agent",
     kind=TargetKind.AGENT_HTTP,
@@ -97,9 +106,8 @@ AGENT_TARGET = TargetSpec(
     method="POST",
     request_template={"message": "{{prompt}}"},
     response_path="$.answer",
+    header_env={"Authorization": AGENT_TOKEN_ENV},
 )
-
-AGENT_TOKEN = "agent-header-secret"
 
 
 class ScanClient:
@@ -129,18 +137,21 @@ class ScanClient:
 
 class RecordingAudit:
     def __init__(self) -> None:
-        self.events: list[object] = []
+        self.events: list[AuditEvent] = []
 
-    async def record(self, event: object) -> None:
+    async def record(self, event: AuditEvent) -> None:
         self.events.append(event)
 
 
 def scan_policy(*, demo_name: str | None = None) -> ScanPolicy:
+    # The static policy must never authorize a scan on its own: every test run
+    # has to derive both admin status and the authorization ref from its own
+    # created_by/authorization_ref values.
     return ScanPolicy(
         SecurityPolicy(
             active_scan_enabled=True,
-            requester_is_admin=True,
-            authorization_ref="ticket-8",
+            requester_is_admin=False,
+            authorization_ref="policy-static-ref",
             demo_targets=(
                 [
                     DemoTarget(
@@ -223,7 +234,7 @@ def agent_dependencies(tmp_path: Path, client: ScanClient, audit: RecordingAudit
             client=client,
             settings=AigSettings(agent_scan=AigAgentScanSettings(num_prompts=2)),
             eval_model=eval_model(),
-            env={"JUDGE_KEY": "judge-secret"},
+            env={"JUDGE_KEY": "judge-secret", AGENT_TOKEN_ENV: AGENT_TOKEN},
             audit=audit,
             data_dir=str(tmp_path / "data"),
         )
@@ -236,7 +247,7 @@ def agent_dependencies(tmp_path: Path, client: ScanClient, audit: RecordingAudit
         audit=audit,
         aig_configured=True,
         targets={"demo-agent": AGENT_TARGET},
-        env={"JUDGE_KEY": "judge-secret", "AGENT_TOKEN": AGENT_TOKEN},
+        env={"JUDGE_KEY": "judge-secret", AGENT_TOKEN_ENV: AGENT_TOKEN},
     )
 
 
@@ -307,10 +318,88 @@ def security_of(report: dict) -> dict:
     return next(item for item in report["dimensions"] if item["dimension"] == "security")
 
 
-async def test_agent_target_run_completes_an_agent_scan(tmp_path: Path) -> None:
+def string_values(value: Any) -> list[str]:
+    """Collect every string value in a JSON-like payload (not its repr/encoding)."""
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in string_values(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in string_values(item)]
+    if isinstance(value, str):
+        return [value]
+    return []
+
+
+def audit_rows(audit: RecordingAudit, stored: Iterable[object]) -> list[dict[str, object]]:
+    """Flatten in-memory audit events and persisted audit rows into one comparable shape."""
+    rows: list[dict[str, object]] = [
+        {
+            "action": event.action,
+            "outcome": event.outcome,
+            "scan_kind": event.scan_kind,
+            "authorization_ref": event.authorization_ref,
+            "detail": event.detail,
+        }
+        for event in audit.events
+    ]
+    rows.extend(
+        {
+            "action": getattr(event, "action", None),
+            "outcome": getattr(event, "outcome", None),
+            "scan_kind": getattr(event, "scan_kind", None),
+            "authorization_ref": getattr(event, "authorization_ref", None),
+            "detail": getattr(event, "detail_json", None),
+        }
+        for event in stored
+    )
+    return rows
+
+
+async def assert_unauthenticated_artifact_is_rejected(app: FastAPI, run_id: str, name: str) -> None:
+    # A fresh client has no session cookie; the admin route's current_session
+    # dependency must reject it before the artifact lookup runs.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
+    ) as anonymous:
+        denied = await anonymous.get(f"/api/runs/{run_id}/artifacts/{name}")
+    assert denied.status_code == 401, denied.text
+    assert denied.json() == {"error": {"code": "unauthenticated", "message": "login required"}}
+
+
+def assert_scan_audit(
+    rows: list[dict[str, object]],
+    *,
+    scan_kind: str,
+    authorization_ref: str,
+) -> None:
+    requested = [
+        row
+        for row in rows
+        if row["action"] == "active_scan.requested" and row["scan_kind"] == scan_kind
+    ]
+    assert len(requested) == 1, rows
+    assert requested[0]["outcome"] == "allowed"
+    assert requested[0]["authorization_ref"] == authorization_ref
+
+    # The tool audits the finished scan under the same action name it owns.
+    completed = [
+        row
+        for row in rows
+        if row["action"] == "active_scan.completed" and row["scan_kind"] == scan_kind
+    ]
+    assert len(completed) == 1, rows
+    assert completed[0]["outcome"] == "completed"
+    assert completed[0]["authorization_ref"] == authorization_ref
+
+
+async def test_agent_target_run_completes_an_agent_scan(
+    tmp_path: Path,
+    client: httpx.AsyncClient,
+    state: AppState,
+    test_app: FastAPI,
+) -> None:
     audit = RecordingAudit()
-    client = ScanClient(AGENT_RESULT)
-    dependencies = agent_dependencies(tmp_path, client, audit)
+    scan_client = ScanClient(AGENT_RESULT)
+    dependencies = agent_dependencies(tmp_path, scan_client, audit)
     async with RunManager.open(runtime_config(tmp_path), dependencies=dependencies) as manager:
         await manager.start(
             RunInput(kind=InputKind.TARGET, target_ref="demo-agent", target_prompts=["a", "b"]),
@@ -330,18 +419,69 @@ async def test_agent_target_run_completes_an_agent_scan(tmp_path: Path) -> None:
     assert active["session_id"] == "session-1"
     assert security["metrics"]["passive"]["status"] == "not_applicable"
     assert any(finding["severity"] == "high" for finding in security["findings"])
-    assert client.bodies and client.bodies[0]["type"] == "agent_scan"
-    rendered = str(report)
-    assert "untrusted model prose" not in rendered
-    assert AGENT_TOKEN not in rendered
-    # The run data dir lives under tmp_path; the public view of the same report
-    # must never expose that absolute path.
-    assert (tmp_path / "data" / "runs" / "run-agent" / "report.json").is_file()
-    assert str(tmp_path) not in str(sanitize_public_payload(report))
+    assert scan_client.bodies and scan_client.bodies[0]["type"] == "agent_scan"
+
+    # L2: the header value is resolved from the env only to build AIG's
+    # agent_config; it must never be persisted anywhere else.
+    agent_config = scan_client.bodies[0]["content"]["agent_config"]
+    assert AGENT_TOKEN in agent_config
+
+    # L1 positive controls: the admin-only artifact carries the untrusted prose,
+    # and the raw report really carries (and points at) the absolute run path.
+    raw_artifact_path = tmp_path / "data" / "runs" / "run-agent" / "aig" / "session-1.json"
+    assert raw_artifact_path.is_file()
+    raw_artifact = raw_artifact_path.read_text(encoding="utf-8")
+    assert "untrusted model prose" in raw_artifact
+    assert active["raw_result_path"] == str(raw_artifact_path)
+    assert str(tmp_path) in active["raw_result_path"]
+
+    public_report = sanitize_public_payload(report)
+    public_active = security_of(public_report)["metrics"]["active"]
+    assert "raw_result_path" not in public_active
+    public_values = string_values(public_report)
+    assert not any(str(tmp_path) in value for value in public_values)
+    assert not any("untrusted model prose" in value for value in public_values)
+
+    # M2: the scan audit trail proves the per-run authorization actually decided
+    # the scan, and no fallback ref or secret leaked into it.
+    rows = audit_rows(audit, await state.audit.list_for_run("run-agent"))
+    assert_scan_audit(rows, scan_kind="agent_scan", authorization_ref="demo-agent")
+    audit_text = json.dumps(rows, ensure_ascii=False, default=str)
+    assert "policy-static-ref" not in audit_text
+    assert AGENT_TOKEN not in audit_text
+    assert "judge-secret" not in audit_text
+
+    run_events = await state.runs.list_events("run-agent")
+    event_text = json.dumps(
+        [{"type": event.type, "payload": event.payload_json} for event in run_events],
+        ensure_ascii=False,
+        default=str,
+    )
+    assert AGENT_TOKEN not in event_text
+    assert "judge-secret" not in event_text
+
+    # M3: registering the agent artifact must not make it readable anonymously.
+    raw_bytes = raw_artifact_path.read_bytes()
+    await state.artifacts.add(
+        artifact_id="art-agent-session-1",
+        run_id="run-agent",
+        name="aig/session-1.json",
+        sha256=hashlib.sha256(raw_bytes).hexdigest(),
+        size_bytes=len(raw_bytes),
+        content_type="application/json",
+        visibility="admin",
+    )
+    await login(client)
+    allowed = await client.get("/api/runs/run-agent/artifacts/aig/session-1.json")
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.headers["content-type"].startswith("application/json")
+    await assert_unauthenticated_artifact_is_rejected(
+        test_app, "run-agent", "aig/session-1.json"
+    )
 
 
 async def test_skill_upload_run_runs_threat_analysis_and_a_skill_scan(
-    client: httpx.AsyncClient, state: AppState, tmp_path: Path
+    client: httpx.AsyncClient, state: AppState, tmp_path: Path, test_app: FastAPI
 ) -> None:
     csrf = await login(client)
     uploaded = await client.post(
@@ -390,7 +530,9 @@ async def test_skill_upload_run_runs_threat_analysis_and_a_skill_scan(
         assert completed.json()["status"] == "completed", completed.text
         response = await client.get(f"/api/runs/{run_id}/report")
         assert response.status_code == 200
-        report = response.json()["report"]
+        admin_payload = response.json()
+        report = admin_payload["report"]
+        admin_markdown = admin_payload["markdown"]
     finally:
         await manager.close()
 
@@ -401,6 +543,35 @@ async def test_skill_upload_run_runs_threat_analysis_and_a_skill_scan(
     assert scan_client.uploads == [f"{run_id}-skill.zip"]
     assert scan_client.bodies and scan_client.bodies[0]["type"] == "skill_scan"
 
+    # L1 positive control: the admin report and its markdown really carry the
+    # absolute run path that the public view must strip.
+    admin_active = security["metrics"]["active"]
+    assert str(tmp_path) in admin_active["raw_result_path"]
+    assert Path(admin_active["raw_result_path"]).is_relative_to(tmp_path)
+    assert str(tmp_path) in admin_markdown
+
+    raw_artifact_path = tmp_path / "data" / "runs" / run_id / "aig" / "session-1.json"
+    assert raw_artifact_path.is_file()
+    raw_artifact = raw_artifact_path.read_text(encoding="utf-8")
+    assert "untrusted model prose" in raw_artifact
+
+    # M2: both the requested decision and the tool's finished-scan row prove the
+    # API-recorded created_by and the request body's ticket-8 ref were used.
+    rows = audit_rows(audit, await state.audit.list_for_run(run_id))
+    assert_scan_audit(rows, scan_kind="skill_scan", authorization_ref="ticket-8")
+    audit_text = json.dumps(rows, ensure_ascii=False, default=str)
+    assert "policy-static-ref" not in audit_text
+    assert "judge-secret" not in audit_text
+
+    run_events = await state.runs.list_events(run_id)
+    event_text = json.dumps(
+        [{"type": event.type, "payload": event.payload_json} for event in run_events],
+        ensure_ascii=False,
+        default=str,
+    )
+    assert "judge-secret" not in event_text
+    assert "policy-static-ref" not in event_text
+
     published = await client.post(
         f"/api/runs/{run_id}/publish",
         json={"published": True},
@@ -409,11 +580,22 @@ async def test_skill_upload_run_runs_threat_analysis_and_a_skill_scan(
     assert published.status_code == 200, published.text
     public = await client.get(f"/api/public/runs/{run_id}/report")
     assert public.status_code == 200, public.text
-    rendered = public.text
-    assert "untrusted model prose" not in rendered
-    assert str(tmp_path) not in rendered
-    assert "ticket-8" not in rendered
+    public_payload = public.json()
+    public_report = public_payload["report"]
+    public_markdown = public_payload["markdown"]
+    public_active = security_of(public_report)["metrics"]["active"]
+    assert "raw_result_path" not in public_active
+    assert str(tmp_path) not in public_markdown
+    assert "untrusted model prose" not in public_markdown
+    public_values = string_values(public_report)
+    assert not any(str(tmp_path) in value for value in public_values)
+    assert not any("untrusted model prose" in value for value in public_values)
 
+    # M3: authenticated download works, but a cookie-less client is rejected by
+    # the route's admin-session dependency (401, not 403).
     raw = await client.get(f"/api/runs/{run_id}/artifacts/aig/session-1.json")
-    assert raw.status_code == 200
+    assert raw.status_code == 200, raw.text
     assert raw.headers["content-type"].startswith("application/json")
+    await assert_unauthenticated_artifact_is_rejected(
+        test_app, run_id, "aig/session-1.json"
+    )
