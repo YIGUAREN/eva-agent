@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from eva_agent import cli
-from eva_agent.packages.manifest import PackageManifest
+from eva_agent.packages.manifest import PackageError, PackageManifest
 from tests.support.runtime import fake_config
 
 
@@ -53,11 +53,26 @@ async def test_export_grader_package_prints_the_package_summary(
 
     monkeypatch.setattr(cli, "build_grader_package", fake_build)
     monkeypatch.setattr(cli, "RunManager", _FakeManager)
+    config = fake_config(tmp_path)
     code = await cli._export_grader_package(
-        argparse.Namespace(run_id="run-1", out=str(tmp_path)), fake_config(tmp_path)
+        argparse.Namespace(run_id="run-1", out=str(tmp_path)), config
     )
     assert code == 0
     assert calls["run_row"] == "row"
+    assert calls["out_dir"] == tmp_path
+    assert calls["config"] is config
     payload = json.loads(capsys.readouterr().out)
     assert payload["replayable"] is True
     assert payload["package"].endswith("run-1.grader-package.zip")
+
+
+def test_main_reports_a_package_error_without_a_traceback(monkeypatch, capsys):
+    async def failing_dispatch(args):
+        raise PackageError("unsafe package")
+
+    monkeypatch.setattr(cli, "_dispatch", failing_dispatch)
+    code = cli.main(["export-grader-package", "run-1", "--out", "out"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.strip() == "error: unsafe package"
+    assert "Traceback" not in captured.err

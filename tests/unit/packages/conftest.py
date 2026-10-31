@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -17,6 +19,8 @@ from eva_agent.packages.inputs import collect_package_input
 from eva_agent.packages.manifest import (
     FileEntry,
     PackageManifest,
+    canonical_json,
+    sha256_bytes,
     sha256_file,
     write_manifest,
     write_zip,
@@ -97,6 +101,44 @@ async def write_run(tmp_path: Path):
         )
         await engine.dispose()
         return config, run_row
+
+    return _make
+
+
+@pytest.fixture
+def write_archive(tmp_path: Path):
+    """Build an archive from explicit members and an independent manifest file list.
+
+    ``declared`` lets a test list a member in the manifest that the archive does not
+    contain, so the extraction layer's missing-member check is exercised.
+    """
+
+    def _make(
+        members: dict[str, bytes],
+        *,
+        declared: list[str] | None = None,
+        kind: Literal["grader_package", "run_bundle"] = "grader_package",
+    ) -> Path:
+        names = list(members) if declared is None else list(declared)
+        manifest = PackageManifest(
+            kind=kind,
+            run_id="run-1",
+            created_at=utcnow().isoformat(),
+            report_version=4,
+            files={
+                name: FileEntry(
+                    sha256=sha256_bytes(members.get(name, b"")),
+                    size=len(members.get(name, b"")),
+                )
+                for name in names
+            },
+        )
+        archive = tmp_path / "package.zip"
+        with zipfile.ZipFile(archive, "w") as handle:
+            handle.writestr("manifest.json", canonical_json(manifest.model_dump(mode="json")))
+            for name, data in members.items():
+                handle.writestr(name, data)
+        return archive
 
     return _make
 
