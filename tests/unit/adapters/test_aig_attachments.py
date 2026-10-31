@@ -133,7 +133,10 @@ async def test_download_stops_an_oversized_body_mid_stream() -> None:
     assert "OK" not in message
 
 
-@pytest.mark.parametrize("media_type", ["text/html", "application/json"])
+@pytest.mark.parametrize(
+    "media_type",
+    ["text/html", "application/json", "text/xml", "application/xml"],
+)
 async def test_download_rejects_document_content_types(media_type: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=CSV, headers={"content-type": media_type})
