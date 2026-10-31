@@ -8,16 +8,18 @@ import hashlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-from eva_agent.domain.run import RunStatus
+from eva_agent.domain.run import InputKind, RunInput, RunStatus
 from eva_agent.runtime.artifacts import RunPaths, run_paths
 from eva_agent.runtime.manager import RunManager, RunStateError
+from eva_agent.runtime.uploads import upload_paths, validate_upload_id
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.models import RunCommandRow
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
+from eva_agent.storage.uploads import UPLOAD_EXTRACTED, UploadRepository
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,7 @@ class RunWorker:
         runs: RunRepository,
         reports: ReportRepository,
         artifacts: ArtifactRepository,
+        uploads: UploadRepository,
         data_dir: str,
         poll_interval_s: float = 0.5,
         stale_after_s: float = 600.0,
@@ -87,6 +90,7 @@ class RunWorker:
         self.runs = runs
         self.reports = reports
         self.artifacts = artifacts
+        self.uploads = uploads
         self.data_dir = data_dir
         self.poll_interval_s = poll_interval_s
         self.stale_after_s = stale_after_s
@@ -106,6 +110,7 @@ class RunWorker:
             runs=RunRepository(factory),
             reports=ReportRepository(factory),
             artifacts=ArtifactRepository(factory),
+            uploads=UploadRepository(factory),
             data_dir=data_dir,
             poll_interval_s=poll_interval_s,
         )
@@ -150,6 +155,9 @@ class RunWorker:
 
         if command.kind == "start":
             if status is RunStatus.QUEUED:
+                run_input = RunInput.model_validate(row.input_json)
+                if run_input.kind is InputKind.UPLOAD:
+                    await self._copy_upload(command.run_id, run_input)
                 await self.manager.start_existing(command.run_id)
             elif status is RunStatus.RUNNING:
                 await self._resume(command.run_id)
@@ -187,6 +195,41 @@ class RunWorker:
                 await asyncio.sleep(0.05 if attempt == 0 else 0.1)
             else:
                 break
+
+    async def _copy_upload(self, run_id: str, run_input: RunInput) -> None:
+        """Copy a sandbox-extracted upload into the run workspace, verifying each file."""
+        upload_id = run_input.upload_id or ""
+        try:
+            validate_upload_id(upload_id)
+        except ValueError:
+            # Never echo an untrusted id: it may be an absolute path.
+            raise RunStateError("upload id is invalid") from None
+        row = await self.uploads.get(upload_id)
+        if row is None or row.status != UPLOAD_EXTRACTED or row.manifest is None:
+            raise RunStateError(f"upload '{upload_id}' is not ready")
+        source_root = upload_paths(self.data_dir, upload_id).extracted.resolve()
+        destination_root = run_paths(self.data_dir, run_id).evidence.resolve()
+        for item in row.manifest.get("files", []):
+            raw_path = str(item["path"])
+            relative = PurePosixPath(raw_path)
+            if (
+                "\\" in raw_path
+                or relative.is_absolute()
+                or (relative.parts and len(relative.parts[0]) == 2 and relative.parts[0][1] == ":")
+                or ".." in relative.parts
+            ):
+                raise RunStateError("upload manifest contains an unsafe path")
+            source = source_root.joinpath(*relative.parts).resolve()
+            if not source.is_relative_to(source_root) or not source.is_file():
+                raise RunStateError("upload file is missing")
+            data = source.read_bytes()
+            if hashlib.sha256(data).hexdigest() != item["sha256"]:
+                raise RunStateError("upload file checksum mismatch")
+            target = destination_root.joinpath(*relative.parts).resolve()
+            if not target.is_relative_to(destination_root):
+                raise RunStateError("upload manifest contains an unsafe path")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
 
     async def _resume(self, run_id: str) -> None:
         """Resume a RUNNING run, failing it when it has no checkpoint to resume from."""

@@ -1,9 +1,17 @@
 import asyncio
+import hashlib
 import json
+import zipfile
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from eva_agent.domain.run import RunStatus
+from eva_agent.domain.run import InputKind, RunInput, RunStatus
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.manager import RunManager
+from eva_agent.runtime.uploads import upload_paths
+from eva_agent.sandbox.extract import extract_archive
+from eva_agent.storage.commands import RunCommandRepository
+from eva_agent.storage.uploads import UploadRepository
 from eva_agent.worker.runner import RunWorker, _public_error
 from tests.support.runtime import budget, dependencies, fake_config, paste_input
 
@@ -362,3 +370,104 @@ async def test_malformed_report_version_is_recorded_not_fatal(tmp_path) -> None:
     commands = await worker.commands.list_for_run(run_id)
     assert commands[-1].status == "done"
     await manager.close()
+
+
+async def _seed_upload(
+    tmp_path: Path,
+    factory,
+    upload_id: str,
+    *,
+    manifest_sha256: str | None = None,
+) -> None:
+    paths = upload_paths(tmp_path / "data", upload_id)
+    paths.root.mkdir(parents=True)
+    with zipfile.ZipFile(paths.package, "w") as archive:
+        archive.writestr("a.txt", b"hello")
+    manifest = extract_archive(paths.package, paths.extracted)
+    if manifest_sha256 is not None:
+        manifest["files"][0]["sha256"] = manifest_sha256
+    repo = UploadRepository(factory)
+    await repo.create(
+        upload_id,
+        filename="p.zip",
+        size_bytes=paths.package.stat().st_size,
+        sha256=hashlib.sha256(paths.package.read_bytes()).hexdigest(),
+        format="zip",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    await repo.mark_extracted(upload_id, manifest)
+
+
+async def _run_upload(manager: RunManager, upload_id: str) -> str:
+    run_id = await manager.create_run(
+        RunInput(kind=InputKind.UPLOAD, upload_id=upload_id),
+        budget(),
+    )
+    await RunCommandRepository(manager.session_factory).enqueue(run_id, "start")
+    return run_id
+
+
+async def test_worker_copies_upload_evidence_before_start(tmp_path: Path) -> None:
+    config = fake_config(tmp_path)
+    manager = RunManager(config, dependencies=dependencies(tmp_path))
+    await manager.setup()
+    try:
+        upload_id = "upload_test1"
+        await _seed_upload(tmp_path, manager.session_factory, upload_id)
+        run_id = await _run_upload(manager, upload_id)
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir, poll_interval_s=0.01)
+
+        assert await worker.tick() is True
+
+        assert (run_paths(config.storage.data_dir, run_id).evidence / "a.txt").read_bytes() == b"hello"
+        row = await worker.runs.get(run_id)
+        assert row is not None and row.status == "waiting_approval"
+    finally:
+        await manager.close()
+
+
+async def test_worker_rejects_unsafe_manifest_paths(tmp_path: Path) -> None:
+    config = fake_config(tmp_path)
+    manager = RunManager(config, dependencies=dependencies(tmp_path))
+    await manager.setup()
+    try:
+        upload_id = "upload_unsafe"
+        await _seed_upload(tmp_path, manager.session_factory, upload_id)
+        repo = UploadRepository(manager.session_factory)
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir, poll_interval_s=0.01)
+        digest = hashlib.sha256(b"hello").hexdigest()
+        for unsafe in ("../escape.txt", "/abs.txt", "..\\escape.txt", "C:/escape.txt"):
+            await repo.mark_extracted(
+                upload_id,
+                {"format": "zip", "files": [{"path": unsafe, "size": 5, "sha256": digest}]},
+            )
+            run_id = await _run_upload(manager, upload_id)
+
+            assert await worker.tick() is True
+
+            commands = await worker.commands.list_for_run(run_id)
+            assert commands[-1].status == "failed"
+            assert "unsafe" in (commands[-1].error or "")
+            assert not run_paths(config.storage.data_dir, run_id).evidence.exists()
+    finally:
+        await manager.close()
+
+
+async def test_worker_fails_the_command_on_a_checksum_mismatch(tmp_path: Path) -> None:
+    config = fake_config(tmp_path)
+    manager = RunManager(config, dependencies=dependencies(tmp_path))
+    await manager.setup()
+    try:
+        upload_id = "upload_badsum"
+        await _seed_upload(tmp_path, manager.session_factory, upload_id, manifest_sha256="0" * 64)
+        run_id = await _run_upload(manager, upload_id)
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir, poll_interval_s=0.01)
+
+        assert await worker.tick() is True
+
+        commands = await worker.commands.list_for_run(run_id)
+        assert commands[-1].status == "failed"
+        assert "checksum" in (commands[-1].error or "")
+        assert not (run_paths(config.storage.data_dir, run_id).evidence / "a.txt").exists()
+    finally:
+        await manager.close()
