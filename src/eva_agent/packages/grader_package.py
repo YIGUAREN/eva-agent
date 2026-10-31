@@ -13,7 +13,7 @@ from typing import Any
 
 from eva_agent.config.settings import AppConfig
 from eva_agent.domain.evidence import SKILL_MANIFEST_NAMES
-from eva_agent.domain.plan import EvalPlan
+from eva_agent.domain.plan import Dimension, EvalPlan
 from eva_agent.packages.inputs import (
     EvidenceSnapshot,
     PackageInput,
@@ -73,9 +73,25 @@ def _plan_from_row(run_row: RunRow) -> EvalPlan:
     return EvalPlan.model_validate(run_row.plan_json)
 
 
-def _replay_blockers(snapshot_blockers: list[str], report: dict, evidence: EvidenceSnapshot) -> list[str]:
+def _dimension_input_count(inputs: PackageInput, dimension: str, limit: int) -> int:
+    """How many inputs the expert for *dimension* graded.
+
+    Quality and security slice ``rows``; cost and latency slice the probe
+    records. An empty slice means the expert failed instead of summarizing.
+    """
+    if dimension in (Dimension.QUALITY.value, Dimension.SECURITY.value):
+        return len(inputs.rows[:limit])
+    return len(inputs.probe_records[:limit])
+
+
+def _replay_blockers(
+    snapshot_blockers: list[str], report: dict, evidence: EvidenceSnapshot, inputs: PackageInput
+) -> list[str]:
     """Every reason this package cannot be replayed offline and compared exactly."""
     blockers = list(snapshot_blockers)
+    for dimension, limit in inputs.dimension_limits.items():
+        if _dimension_input_count(inputs, dimension, limit) == 0:
+            blockers.append(f"{dimension}: the dimension has no inputs to replay")
     for dimension in report.get("truncated_dimensions") or []:
         blockers.append(f"{dimension}: the dimension was truncated by the budget")
     for item in report.get("dimensions") or []:
@@ -192,7 +208,7 @@ async def build_grader_package(
     if not paths.report_json.is_file():
         raise PackageError("run has no report.json; only completed runs can be packaged")
     report = _report_payload(paths.report_json)
-    blockers = _replay_blockers(snapshot_blockers, report, inputs.evidence)
+    blockers = _replay_blockers(snapshot_blockers, report, inputs.evidence, inputs)
     workdir = Path(tempfile.mkdtemp(prefix="eva-package-"))
     try:
         (workdir / "snapshots").mkdir(parents=True)
