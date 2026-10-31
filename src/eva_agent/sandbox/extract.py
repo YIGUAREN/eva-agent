@@ -139,6 +139,15 @@ def _safe_parts(name: str, limits: ExtractionLimits, *, allow_empty: bool = Fals
     return parts
 
 
+def safe_member_parts(name: str) -> tuple[str, ...]:
+    """Return the validated path components of an untrusted archive member name.
+
+    Raises ``ExtractionError`` when the name is absolute, traverses upwards, or
+    is not representable as a relative file path on Windows.
+    """
+    return _safe_parts(name, ExtractionLimits())
+
+
 def _reject_unsafe_unicode_path_extra(info: zipfile.ZipInfo) -> None:
     """Reject a 0x7075 Unicode-path extra field that hides an unsafe name.
 

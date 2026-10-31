@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from eva_agent.sandbox.extract import ExtractionError, safe_member_parts
 
 MANIFEST_NAME = "manifest.json"
 MAX_PACKAGE_BYTES = 25 * 1024 * 1024
@@ -84,6 +85,12 @@ def _relative_files(root: Path) -> set[str]:
 
 def verify_tree(root: Path, manifest: PackageManifest) -> None:
     """Every listed member exists with its recorded hash and nothing else is present."""
+    for name in manifest.files:
+        _member_name(name)
+    for name in manifest.files:
+        path = root / name
+        if path.exists() and not path.is_file():
+            raise PackageError(f"member is not a file: {name}")
     expected = set(manifest.files)
     actual = _relative_files(root)
     actual.discard(MANIFEST_NAME)
@@ -96,24 +103,31 @@ def verify_tree(root: Path, manifest: PackageManifest) -> None:
     for name in sorted(expected):
         entry = manifest.files[name]
         path = root / name
-        if path.stat().st_size != entry.size:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise PackageError(f"cannot read member {name}: {exc}") from None
+        if size != entry.size:
             raise PackageError(f"size mismatch for {name}")
-        if sha256_file(path) != entry.sha256:
+        try:
+            digest = sha256_file(path)
+        except OSError as exc:
+            raise PackageError(f"cannot read member {name}: {exc}") from None
+        if digest != entry.sha256:
             raise PackageError(f"hash mismatch for {name}")
 
 
 def _member_name(name: str) -> str:
-    if "\\" in name:
-        raise PackageError(f"invalid member name {name!r}")
-    path = PurePosixPath(name)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise PackageError(f"invalid member name {name!r}")
-    return path.as_posix()
+    try:
+        parts = safe_member_parts(name)
+    except ExtractionError as exc:
+        raise PackageError(f"invalid member name {name!r}: {exc.reason}") from None
+    return "/".join(parts)
 
 
 def write_zip(root: Path, destination: Path, *, manifest: PackageManifest) -> Path:
+    names = [_member_name(name) for name in (MANIFEST_NAME, *sorted(manifest.files))]
     destination.parent.mkdir(parents=True, exist_ok=True)
-    names = [MANIFEST_NAME, *sorted(manifest.files)]
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in names:
             archive.write(root / name, arcname=name)
@@ -143,13 +157,18 @@ def extract_zip(source: Path, destination: Path) -> PackageManifest:
             total += info.file_size
             if total > MAX_PACKAGE_BYTES:
                 raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
-            names.append(info.filename)
+            names.append(name)
         destination.mkdir(parents=True, exist_ok=True)
+        written = 0
         for info, name in zip(members, names, strict=True):
-            target = destination / _member_name(name)
+            target = destination / name
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as reader, target.open("wb") as writer:
-                shutil.copyfileobj(reader, writer)
+                while chunk := reader.read(1 << 20):
+                    written += len(chunk)
+                    if written > MAX_PACKAGE_BYTES:
+                        raise PackageError(f"package expands past {MAX_PACKAGE_BYTES} bytes")
+                    writer.write(chunk)
     manifest = read_manifest(destination)
     verify_tree(destination, manifest)
     return manifest
