@@ -217,10 +217,20 @@ def require_sandbox_token(env: Mapping[str, str] | None = None) -> str:
 
 def validate_sandbox_url(value: str) -> str:
     """Return *value* when it is a usable http(s) base URL."""
+    # urlsplit silently strips some ASCII whitespace and control characters
+    # (e.g. "\t", "\r", "\n") and accepts "host\x00" as a hostname, so reject
+    # them on the raw value before parsing.
+    if any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        raise ConfigError("web.sandbox_runner_url must be a valid http(s) URL")
     try:
         parts = urlsplit(value)
+        # ``parts.port`` raises ValueError for a non-numeric or out-of-range
+        # port; force evaluation inside this try so it becomes a ConfigError.
+        port = parts.port
     except ValueError:
         raise ConfigError("web.sandbox_runner_url must be a valid http(s) URL") from None
     if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ConfigError("web.sandbox_runner_url must be a valid http(s) URL")
+    if port == 0:
         raise ConfigError("web.sandbox_runner_url must be a valid http(s) URL")
     return value

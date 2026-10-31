@@ -82,7 +82,21 @@ def test_require_sandbox_token(monkeypatch) -> None:
     assert require_sandbox_token() == "t" * 32
 
 
-@pytest.mark.parametrize("value", ["", "not-a-url", "ftp://host", "http://"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "not-a-url",
+        "ftp://host",
+        "http://",
+        "http://host:abc",
+        "http://host:99999",
+        "http://host:0",
+        "http://host\x00",
+        "http://host name",
+        "http://host\n8090",
+    ],
+)
 def test_validate_sandbox_url_rejects(value: str) -> None:
     with pytest.raises(ConfigError, match="sandbox_runner_url"):
         validate_sandbox_url(value)
@@ -90,3 +104,8 @@ def test_validate_sandbox_url_rejects(value: str) -> None:
 
 def test_validate_sandbox_url_accepts_http() -> None:
     assert validate_sandbox_url("http://sandbox-runner:8090") == "http://sandbox-runner:8090"
+
+
+@pytest.mark.parametrize("value", ["http://sandbox-runner", "https://sandbox-runner", "https://host:8443"])
+def test_validate_sandbox_url_accepts_urls_without_a_port(value: str) -> None:
+    assert validate_sandbox_url(value) == value

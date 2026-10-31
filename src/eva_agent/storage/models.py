@@ -155,7 +155,7 @@ class ArtifactRow(Base):
 class UploadRow(Base):
     __tablename__ = "uploads"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     filename: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))

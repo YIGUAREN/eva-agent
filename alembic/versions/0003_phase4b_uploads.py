@@ -20,7 +20,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "uploads",
-        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("id", sa.String(length=64), nullable=False),
         sa.Column("filename", sa.String(length=255), nullable=False),
         sa.Column("size_bytes", sa.BigInteger(), nullable=False),
         sa.Column("sha256", sa.String(length=64), nullable=False),
