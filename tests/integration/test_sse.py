@@ -173,6 +173,42 @@ async def test_public_sse_neutralizes_non_dict_budget_payloads(
     assert admin_by_type["budget.exhausted"]["payload"] == payload
 
 
+@pytest.mark.parametrize(
+    ("event_type", "payload", "expected_public"),
+    [
+        ("budget.exhausted", {"dimension": {"spent_usd": 12.345678}}, {}),
+        (
+            "budget.gate",
+            {"truncated_dimensions": [{"spent_usd": 12.345678}, "quality"]},
+            {"truncated_dimensions": ["quality"]},
+        ),
+        ("budget.gate", {"truncated_dimensions": {"spent_usd": 12.345678}}, {}),
+    ],
+)
+async def test_public_sse_type_checks_allowlisted_budget_event_values(
+    client: AsyncClient,
+    state: AppState,
+    event_type: str,
+    payload: dict[str, object],
+    expected_public: dict[str, object],
+) -> None:
+    run_id = await _completed_run(client, state)
+    await state.runs.append_event(run_id, event_type, payload)
+
+    response = await client.get(f"/api/public/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    by_type = {event["type"]: event for event in _events(response.text)}
+    assert by_type[event_type]["payload"] == expected_public
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/events", headers=csrf_headers(csrf))
+    admin_by_type = {event["type"]: event for event in _events(admin.text)}
+    assert admin_by_type[event_type]["payload"] == payload
+
+
 async def test_public_sse_redacts_the_configured_internal_host(tmp_path: Path) -> None:
     config = fake_config(tmp_path).model_copy(
         update={"aig": AigSettings(base_url="http://aig.internal:8100")}

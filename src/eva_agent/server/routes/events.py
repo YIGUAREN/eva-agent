@@ -42,15 +42,13 @@ _PUBLIC_BUDGET_MONEY_KEYS = frozenset(
     }
 )
 
-# Public budget events expose an explicit shape instead of denylisting names:
-# ``budget.exhausted`` carries spent_usd/remaining_usd and ``budget.gate``
-# carries spent/remaining/finalize_estimate. A key allowlist is immune to
-# casing/suffix variants, nested money objects, and malformed non-dict
-# payloads. Admin streams keep the full payloads unchanged.
-_PUBLIC_BUDGET_EVENT_KEYS: dict[str, frozenset[str]] = {
-    "budget.exhausted": frozenset({"dimension"}),
-    "budget.gate": frozenset({"truncated_dimensions"}),
-}
+# Public budget events expose an explicit, type-checked shape instead of
+# denylisting names: ``budget.exhausted`` carries spent_usd/remaining_usd and
+# ``budget.gate`` carries spent/remaining/finalize_estimate. Allowlisting keys
+# is immune to casing/suffix variants and nested money objects, and checking
+# the surviving values means a hostile object cannot hide behind an allowed
+# key. Admin streams keep the full payloads unchanged.
+_PUBLIC_BUDGET_EVENT_TYPES = frozenset({"budget.exhausted", "budget.gate"})
 
 
 def _without_budget_money(value: object) -> object:
@@ -66,19 +64,27 @@ def _without_budget_money(value: object) -> object:
 
 
 def _public_event_payload(event_type: str, payload: object) -> object:
-    """Reduce public budget events to their allowlisted keys.
+    """Reduce public budget events to their allowlisted, type-checked shape.
 
-    ``budget.exhausted`` may expose only ``dimension`` and ``budget.gate`` only
-    ``truncated_dimensions``. Other event types keep the generic money-key
-    denylist. A non-dict budget payload cannot be allowlisted, so it becomes
-    an empty object for public readers.
+    ``budget.exhausted`` exposes ``dimension`` only when it is a string;
+    ``budget.gate`` exposes ``truncated_dimensions`` only when it is a list,
+    filtered down to its string items. Any malformed budget payload or value
+    becomes an empty object. Other event types keep the generic money-key
+    denylist.
     """
-    allowed = _PUBLIC_BUDGET_EVENT_KEYS.get(event_type)
-    if allowed is None:
+    if event_type not in _PUBLIC_BUDGET_EVENT_TYPES:
         return _without_budget_money(payload)
     if not isinstance(payload, dict):
         return {}
-    return {key: value for key, value in payload.items() if key in allowed}
+    if event_type == "budget.exhausted":
+        dimension = payload.get("dimension")
+        return {"dimension": dimension} if isinstance(dimension, str) else {}
+    truncated = payload.get("truncated_dimensions")
+    if not isinstance(truncated, list):
+        return {}
+    return {
+        "truncated_dimensions": [item for item in truncated if isinstance(item, str)]
+    }
 
 
 def _cursor(raw: str | None) -> int:
