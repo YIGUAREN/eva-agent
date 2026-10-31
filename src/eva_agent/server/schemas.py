@@ -138,10 +138,16 @@ _ABSOLUTE_PATH_PATTERNS = (
 )
 
 # Run-relative AIG artifact names, e.g. data/runs/<id>/aig/<session>.json or aig/<session>.csv.
-# They are admin-only artifacts, so public output must never carry them.
+# They are admin-only artifacts, so public output must never carry them. The
+# leading segments are capped because this runs on public, attacker-influenced
+# text: an unbounded prefix rescans to end-of-token from every segment start
+# (O(segments^2)). Real run paths are ~6 segments; a deeper path is still
+# caught by starting at a later segment. The lookahead accepts a sentence-final
+# period ("aig/x.json.") while keeping a real extension ("aig/x.json.bak")
+# un-redacted.
 _AIG_ARTIFACT_PATH = re.compile(
-    r"(?<![A-Za-z0-9._-])(?:[A-Za-z0-9._-]+[\\/])*(?i:aig)[\\/][A-Za-z0-9_-]{1,128}\.(?:json|csv)"
-    r"(?![A-Za-z0-9._-])"
+    r"(?<![A-Za-z0-9._-])(?:[A-Za-z0-9._-]+[\\/]){0,64}(?i:aig)[\\/][A-Za-z0-9_-]{1,128}"
+    r"\.(?:json|csv)(?![A-Za-z0-9_-]|\.[A-Za-z0-9])"
 )
 _PUBLIC_PATH_PATTERNS = (*_ABSOLUTE_PATH_PATTERNS, _AIG_ARTIFACT_PATH)
 
@@ -167,22 +173,28 @@ def redact_markdown_paths(text: str) -> str:
     The absolute-path token regex stops at a space unless a later separator
     proves the space belongs to the path, so a line ending in a spaced
     component or a UNC share would leak its tail (``<path> File.jsonl``). Per
-    line, this keeps the text before the first path and the ``#<digits>`` line
-    reference, then drops the remainder. Over-redacting the rest of the line is
-    intentional. Run-relative AIG artifact names are exact, space-free tokens,
-    so they are replaced in place without dropping the rest of the line.
+    line, this keeps the text before the first absolute path and the
+    ``#<digits>`` line reference, then drops the remainder. Over-redacting the
+    rest of the line is intentional. The absolute patterns run before the AIG
+    substitution because an absolute locator such as ``/home/u/data/aig/x.json``
+    must be replaced whole; running the AIG pattern first would leave the
+    leading drive or slash half-eaten (``/<path>``). Run-relative AIG artifact
+    names are exact, space-free tokens, so they are replaced in place without
+    dropping the rest of the line.
     """
     redacted: list[str] = []
     for line in text.split("\n"):
-        line = _AIG_ARTIFACT_PATH.sub("<path>", line)
-        matches = [match for pattern in _PUBLIC_PATH_PATTERNS if (match := pattern.search(line))]
-        if not matches:
-            redacted.append(line)
-            continue
-        first = min(matches, key=lambda match: match.start())
-        reference = re.match(r"#\d+", line[first.end() :])
-        suffix = reference.group(0) if reference else ""
-        redacted.append(f"{line[:first.start()]}<path>{suffix}")
+        matches = [
+            match
+            for pattern in _PUBLIC_PATH_PATTERNS
+            if pattern is not _AIG_ARTIFACT_PATH and (match := pattern.search(line))
+        ]
+        if matches:
+            first = min(matches, key=lambda match: match.start())
+            reference = re.match(r"#\d+", line[first.end() :])
+            suffix = reference.group(0) if reference else ""
+            line = f"{line[:first.start()]}<path>{suffix}"
+        redacted.append(_AIG_ARTIFACT_PATH.sub("<path>", line))
     return "\n".join(redacted)
 
 
