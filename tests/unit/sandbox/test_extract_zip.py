@@ -52,28 +52,34 @@ def test_rejects_unsafe_names(tmp_path: Path, name: str, reason: str) -> None:
     assert not (tmp_path / "out").exists()
 
 
+def _patch_member_name(path: Path, stored: bytes, declared: bytes) -> None:
+    """Rewrite a member name in both the local header and central directory.
+
+    ``zipfile`` sanitizes names on read (NUL truncation; backslash rewriting on
+    Windows), so the raw declared name has to be injected into the archive
+    bytes after creation. The substitution keeps byte lengths equal so every
+    other offset stays valid.
+    """
+    assert len(stored) == len(declared)
+    data = path.read_bytes()
+    assert data.count(stored) == 2
+    path.write_bytes(data.replace(stored, declared))
+
+
 @pytest.mark.parametrize(
-    ("name", "reason"),
+    ("stored", "declared"),
     [
-        ("a\x00b.txt", "invalid_path"),
-        ("a\\b.txt", "invalid_path"),
+        (b"aXb.txt", b"a\x00b.txt"),
+        (b"a-b.txt", b"a\\b.txt"),
     ],
 )
-def test_rejects_names_zipfile_would_sanitize(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, reason: str
-) -> None:
-    """NUL and backslash names must fail closed even when they reach us.
-
-    CPython's zipfile truncates at NUL and, on Windows, rewrites backslashes
-    to slashes while reading, so its public reader never exposes these names.
-    Disable that read-time normalization to simulate an archive produced by a
-    foreign tool and prove the extractor still rejects them.
-    """
-    monkeypatch.setattr(zipfile, "_sanitize_filename", lambda value: value)
-    package = _zip(tmp_path / "p.bin", {name: b"x"})
+def test_rejects_names_zipfile_would_sanitize(tmp_path: Path, stored: bytes, declared: bytes) -> None:
+    """Raw declared NUL and backslash names must fail closed."""
+    package = _zip(tmp_path / "p.bin", {stored.decode("ascii"): b"x"})
+    _patch_member_name(package, stored, declared)
     with pytest.raises(ExtractionError) as caught:
         extract_archive(package, tmp_path / "out")
-    assert caught.value.reason == reason
+    assert caught.value.reason == "invalid_path"
     assert not (tmp_path / "out").exists()
 
 
@@ -148,3 +154,131 @@ def test_failed_extraction_leaves_no_output(tmp_path: Path) -> None:
     with pytest.raises(ExtractionError):
         extract_archive(package, destination)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["NUL", "CON", "nul.txt", "COM1", "LPT0", "LPT9.log", "CONIN$", "aux.tar.gz"],
+)
+def test_rejects_windows_reserved_device_names(tmp_path: Path, name: str) -> None:
+    package = _zip(tmp_path / "p.bin", {name: b"x"})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "dir/a:b.txt",
+        "dir/a<b.txt",
+        "dir/a>b.txt",
+        'dir/a"b.txt',
+        "dir/a|b.txt",
+        "dir/a?b.txt",
+        "dir/a*b.txt",
+        "dir/bad\x01.txt",
+        "dir/bad\x7f.txt",
+        "dir/trailing.",
+        "dir/trailing ",
+    ],
+)
+def test_rejects_windows_invalid_characters_and_trailing(tmp_path: Path, name: str) -> None:
+    package = _zip(tmp_path / "p.bin", {name: b"x"})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_entry_declared_on_later_volume(tmp_path: Path) -> None:
+    package = _zip(tmp_path / "p.bin", {"a.txt": b"x"})
+    data = bytearray(package.read_bytes())
+    index = data.find(b"PK\x01\x02")
+    assert index != -1
+    data[index + 34 : index + 36] = (1).to_bytes(2, "little")
+    package.write_bytes(bytes(data))
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "unsupported_format"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("offset", [4, 6])
+def test_rejects_eocd_disk_numbers(tmp_path: Path, offset: int) -> None:
+    package = _zip(tmp_path / "p.bin", {"a.txt": b"x"})
+    data = bytearray(package.read_bytes())
+    index = data.rfind(b"PK\x05\x06")
+    assert index != -1
+    data[index + offset : index + offset + 2] = (1).to_bytes(2, "little")
+    package.write_bytes(bytes(data))
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "unsupported_format"
+    assert not (tmp_path / "out").exists()
+
+
+def test_maps_filesystem_errors_to_invalid_path(tmp_path: Path) -> None:
+    package = _zip(tmp_path / "p.bin", {"a": b"x", "a/b": b"y"})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name")
+def test_rejects_duplicate_member_paths(tmp_path: Path) -> None:
+    package = tmp_path / "p.bin"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("a.txt", b"good")
+        archive.writestr("a.txt", b"evil")
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_case_folded_duplicate_member_paths(tmp_path: Path) -> None:
+    package = tmp_path / "p.bin"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("A.txt", b"good")
+        archive.writestr("a.txt", b"evil")
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+def test_skips_root_directory_member(tmp_path: Path) -> None:
+    package = tmp_path / "p.bin"
+    with zipfile.ZipFile(package, "w") as archive:
+        root = zipfile.ZipInfo("./")
+        root.external_attr = (stat.S_IFDIR | 0o755) << 16
+        archive.writestr(root, b"")
+        archive.writestr("a.txt", b"x")
+    manifest = extract_archive(package, tmp_path / "out")
+    assert [item["path"] for item in manifest["files"]] == ["a.txt"]
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"x"
+
+
+def test_rejects_file_member_with_empty_normalized_name(tmp_path: Path) -> None:
+    package = _zip(tmp_path / "p.bin", {".": b"x"})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+def test_replace_failure_removes_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    package = _zip(tmp_path / "p.bin", {"a.txt": b"x"})
+    destination = tmp_path / "out"
+
+    def _fail(source: Path, target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("eva_agent.sandbox.extract.os.replace", _fail)
+    with pytest.raises(OSError):
+        extract_archive(package, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".out.tmp-*"))

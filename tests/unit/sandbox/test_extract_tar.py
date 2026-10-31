@@ -92,3 +92,70 @@ def test_rejects_tar_file_count(tmp_path: Path) -> None:
     with pytest.raises(ExtractionError) as caught:
         extract_archive(package, tmp_path / "out", limits=ExtractionLimits(max_files=1))
     assert caught.value.reason == "too_many_files"
+
+
+@pytest.mark.parametrize("name", ["NUL", "nul.txt", "COM1", "LPT0", "CONIN$"])
+def test_rejects_windows_reserved_device_names(tmp_path: Path, name: str) -> None:
+    package = _tar(tmp_path / "p.tar", {name: b"x"})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("name", ["dir/a:b.txt", "dir/bad\x01.txt", "dir/trailing."])
+def test_rejects_windows_invalid_components(tmp_path: Path, name: str) -> None:
+    package = _tar(tmp_path / "p.tar", {name: b"x"})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_duplicate_member_paths(tmp_path: Path) -> None:
+    package = tmp_path / "p.tar"
+    with tarfile.open(package, "w") as archive:
+        for payload in (b"good", b"evil"):
+            info = tarfile.TarInfo("a.txt")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+def test_rejects_case_folded_duplicate_member_paths(tmp_path: Path) -> None:
+    package = tmp_path / "p.tar"
+    with tarfile.open(package, "w") as archive:
+        for name in ("A.txt", "a.txt"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("root_name", [".", "./"])
+def test_skips_root_directory_member(tmp_path: Path, root_name: str) -> None:
+    package = tmp_path / "p.tar"
+    with tarfile.open(package, "w") as archive:
+        root = tarfile.TarInfo(root_name)
+        root.type = tarfile.DIRTYPE
+        archive.addfile(root)
+        info = tarfile.TarInfo("./a.txt")
+        info.size = 1
+        archive.addfile(info, io.BytesIO(b"x"))
+    manifest = extract_archive(package, tmp_path / "out")
+    assert [item["path"] for item in manifest["files"]] == ["a.txt"]
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"x"
+
+
+def test_rejects_file_member_with_empty_normalized_name(tmp_path: Path) -> None:
+    package = _tar(tmp_path / "p.tar", {".": b"x"})
+    with pytest.raises(ExtractionError) as caught:
+        extract_archive(package, tmp_path / "out")
+    assert caught.value.reason == "invalid_path"
+    assert not (tmp_path / "out").exists()
