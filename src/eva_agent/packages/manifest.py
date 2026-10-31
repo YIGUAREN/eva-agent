@@ -33,6 +33,15 @@ def _reason(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+def _redacted_loc(loc: tuple[int | str, ...]) -> str:
+    """Render a validation ``loc`` without echoing path-like (attacker-supplied) parts."""
+    parts = (
+        "<redacted>" if any(char in str(part) for char in "/\\:") else str(part)
+        for part in loc
+    )
+    return ".".join(parts) or "<root>"
+
+
 def canonical_json(payload: Any) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -89,8 +98,7 @@ def read_manifest(root: Path) -> PackageManifest:
         manifest = PackageManifest.model_validate(raw)
     except ValidationError as exc:
         details = "; ".join(
-            f"{'.'.join(str(part) for part in error['loc']) or '<root>'}: {error['msg']}"
-            for error in exc.errors()
+            f"{_redacted_loc(error['loc'])}: {error['msg']}" for error in exc.errors()
         )
         raise PackageError(f"invalid {MANIFEST_NAME}: {details}") from None
     _validated_member_names(manifest.files)
@@ -138,13 +146,14 @@ def _member_name(name: str) -> str:
     try:
         parts = safe_member_parts(name)
     except ExtractionError as exc:
-        raise PackageError(f"invalid member name {name!r}: {exc.reason}") from None
+        # Never echo ``name``: it is attacker-controlled and may be an absolute path.
+        raise PackageError(f"invalid member name: {exc.reason}") from None
     normalized = "/".join(parts)
     if normalized != name:
         # A name that only becomes safe by dropping ``.``/empty components would
         # be written under a different name than the manifest records, so reject
         # it instead of silently repairing a package.
-        raise PackageError(f"invalid member name {name!r}: not normalized")
+        raise PackageError("invalid member name: not normalized")
     return normalized
 
 

@@ -36,6 +36,7 @@ from eva_agent.packages.manifest import (
     FileEntry,
     PackageError,
     PackageManifest,
+    _redacted_loc,
     canonical_json,
     extract_zip,
     sha256_file,
@@ -257,8 +258,7 @@ def _reason(exc: BaseException) -> str:
 def _validation_message(exc: ValidationError) -> str:
     """Summarize a validation failure without echoing the offending input value."""
     details = "; ".join(
-        f"{'.'.join(str(part) for part in error['loc']) or '<root>'}: {error['msg']}"
-        for error in exc.errors()
+        f"{_redacted_loc(error['loc'])}: {error['msg']}" for error in exc.errors()
     )
     return f"bundle payload is invalid: {details}"
 
