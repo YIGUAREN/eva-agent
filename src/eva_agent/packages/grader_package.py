@@ -37,24 +37,22 @@ from eva_agent.packages.snapshots import SnapshotSet, collect_snapshots
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.storage.models import RunRow, utcnow
 
-README = """# Grader package
+README = """# 评测包
 
-This package records one evaluation run so it can be replayed offline.
+本包记录一次评测运行，用于离线复现校验。
 
-- `plan.json` — the approved plan.
-- `input.json` — the run input, the exact grading rows, the probe records and the price rows.
-- `snapshots/gradings.json` — recorded grader outcomes; replay never calls a model.
-- `report.json` — the report produced by the run.
+- `plan.json` —— 本次运行批准的评测计划。
+- `input.json` —— 运行输入、实际参与评分的样本行、探测（probe）记录与价格行。
+- `snapshots/gradings.json` —— 已记录的评分器输出；复现过程不会调用任何模型。
+- `report.json` —— 本次运行生成的报告。
 
-Run `eva replay <package.zip> --out <dir>` to verify the package.
+执行 `eva replay <包.zip> --out <目录>` 校验本包。
 
-Replay compares only fields it can re-derive: quality `score`, `confidence` and
-`metrics`; security `metrics.passive` (plus `score` and `confidence` when no
-score cap applies and no active scan ran); and cost and latency `status`,
-`score`, `confidence`, `summary`, `metrics`, `findings`, `error` and
-`truncated_reason`. It does not compare `usage`, `evidence` locators,
-`generated_at`, the report-level `overall_score`, `probe`, or
-`evidence_summary`.
+复现只比较可重新推导的字段：质量维度的 `score`、`confidence` 与 `metrics`；安全维度的
+`metrics.passive`（未触发分数上限且未执行主动扫描时，另比较 `score` 与 `confidence`）；
+成本与延迟维度的 `status`、`score`、`confidence`、`summary`、`metrics`、`findings`、
+`error` 与 `truncated_reason`。以下字段不参与比较：`usage`、证据定位信息（locator）、
+`generated_at`、报告级 `overall_score`、`probe`、`evidence_summary`。
 """
 
 _MEMBER_NAMES = ("README.md", "input.json", "plan.json", "report.json", "snapshots/gradings.json")
