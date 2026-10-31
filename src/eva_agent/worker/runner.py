@@ -259,13 +259,14 @@ class RunWorker:
         try:
             if await self.manager.paused_at_budget_gate(run_id):
                 # The process died between the gate checkpoint and _sync.  The
-                # checkpoint is the authority, so reconcile instead of letting
-                # resume fail (which would wrongly fail the run).
-                await self.runs.claim(
-                    run_id,
-                    from_statuses=(RunStatus.RUNNING,),
-                    to_status=RunStatus.WAITING_BUDGET,
-                )
+                # helper parks the row only while the gate is still pending; a
+                # recorded decision keeps the row RUNNING so it stays replayable.
+                await self.manager.converge_from_checkpoint(run_id)
+                return
+            # The checkpoint may already be at END while the row still says
+            # RUNNING (the process died before _sync).  Converge instead of
+            # re-invoking a graph that already finished.
+            if await self.manager.converge_from_checkpoint(run_id):
                 return
             await self.manager.resume(run_id)
         except RunStateError as exc:

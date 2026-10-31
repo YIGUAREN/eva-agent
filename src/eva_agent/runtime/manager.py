@@ -331,6 +331,56 @@ class RunManager:
         """
         return "budget_gate" in await self._paused_nodes(run_id)
 
+    async def _has_pending_budget_gate(self, run_id: str) -> bool:
+        if self._decisions is None:
+            return False
+        return await self._decisions.latest_gate(run_id) is not None
+
+    async def converge_from_checkpoint(self, run_id: str) -> bool:
+        """Reconcile a RUNNING row with the checkpoint when the graph ran ahead.
+
+        A resume (or a gate pause) can finish in the graph before ``_sync``
+        persists the row: the process may die between the graph returning and
+        the sync, or the sync may fail.  The checkpoint is then the authority,
+        and this helper converges the row without invoking the graph again.
+        Only RUNNING rows are touched, so a duplicate submission still reports
+        the current state instead of resuming.
+
+        Single-writer assumption (Minor 3): one worker process and one active
+        command per run, so the compare-and-set claims here cannot race a
+        second writer.  Returns True when the row changed.
+        """
+        repo = self._require_repo()
+        row = await repo.get(run_id)
+        if row is None or RunStatus(row.status) is not RunStatus.RUNNING:
+            return False
+        snapshot = await self._require_graph().aget_state(self._thread(run_id))
+        if not snapshot.values:
+            return False
+        next_nodes = set(snapshot.next or ())
+        if "budget_gate" in next_nodes:
+            # Park the row only when the gate is still pending.  A recorded
+            # decision means the row must stay RUNNING so the replay path can
+            # finish the run (Minor 2).
+            if not await self._has_pending_budget_gate(run_id):
+                return False
+            return await repo.claim(
+                run_id,
+                from_statuses=(RunStatus.RUNNING,),
+                to_status=RunStatus.WAITING_BUDGET,
+            )
+        if "approve" in next_nodes:
+            return await repo.claim(
+                run_id,
+                from_statuses=(RunStatus.RUNNING,),
+                to_status=RunStatus.WAITING_APPROVAL,
+            )
+        if next_nodes:
+            # Still mid-graph with work queued: only a real resume can advance it.
+            return False
+        # The graph reached END, so the checkpoint values carry the final state.
+        return await self._sync(run_id, snapshot.values)
+
     async def _sync(self, run_id: str, values: dict[str, Any]) -> bool:
         try:
             return await self._sync_values(run_id, values)
@@ -662,7 +712,11 @@ class RunManager:
                 # graph resumed; replay the recorded decision instead of treating
                 # the missing gate as "already resumed".
                 return await self._replay_recorded_decision(run_id)
-            # A duplicate delivery after a successful resume is idempotent.
+            # A duplicate delivery after a successful resume is idempotent, but
+            # the first delivery may have finished the graph without persisting
+            # the row (the process died or _sync failed).  Converge from the
+            # checkpoint before reporting the current state.
+            await self.converge_from_checkpoint(run_id)
             return await self.status(run_id)
         if not paused_at_gate:
             raise RunStateError(f"run '{run_id}' is not waiting for a budget decision")
@@ -726,6 +780,21 @@ class RunManager:
             {**gate, "decision": decision},
         )
         if not recorded:
+            # Another delivery already decided this gate.  Never leave the row
+            # claimed RUNNING with no resume: replay the stored decision when the
+            # checkpoint is still parked, otherwise converge from the checkpoint,
+            # and finally release the claim so a later retry can finish the run.
+            if (
+                await self._decisions.latest_decision(run_id) is not None
+                and await self.paused_at_budget_gate(run_id)
+            ):
+                return await self._replay_recorded_decision(run_id)
+            if not await self.converge_from_checkpoint(run_id):
+                await repo.claim(
+                    run_id,
+                    from_statuses=(RunStatus.RUNNING,),
+                    to_status=RunStatus.WAITING_BUDGET,
+                )
             return await self.status(run_id)
         await self._apply_recorded_extension(run_id, decision)
         values = await self._invoke_resume(run_id, decision)

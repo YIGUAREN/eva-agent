@@ -267,16 +267,38 @@ async def decide_run_budget(
     state = get_state(request)
     row = await _load_run(state, run_id)
     action = f"run.budget.{payload.action}"
-    # A terminal run or an already-recorded decision means this submission is a
-    # replay: report the current state instead of deciding twice.  Anything else
-    # out of WAITING_BUDGET/RUNNING is a real state error, not silent success.
+    # A terminal run cannot be decided again; report the current state.
     if row.status in {
         RunStatus.COMPLETED.value,
         RunStatus.FAILED.value,
         RunStatus.CANCELLED.value,
-    } or await state.decisions.latest_decision(run_id) is not None:
+    }:
         return {"run_id": run_id, "status": row.status, "queued": ""}
+    recorded = await state.decisions.latest_decision(run_id)
     gate = await state.decisions.latest_gate(run_id)
+    if recorded is not None and gate is None:
+        # The latest gate already carries a decision, so this submission must
+        # not decide again.  A RUNNING row means the resume finished in the
+        # graph but the row was never synced: queue a recovery so the worker
+        # converges from the checkpoint and runs post-processing exactly once.
+        recovery = dict(recorded.payload_json.get("decision") or {})
+        if row.status == RunStatus.RUNNING.value and recovery:
+            try:
+                await state.commands.enqueue(run_id, "budget_decision", recovery)
+            except ActiveCommandExists:
+                await _audit_rejection(state, row, action)
+                raise ApiError(409, "command_pending", "another command is already pending") from None
+            await state.audit.record(
+                AuditEvent(
+                    run_id=run_id,
+                    actor="admin",
+                    action=action,
+                    outcome="accepted",
+                    authorization_ref=row.authorization_ref,
+                )
+            )
+            return {"run_id": run_id, "status": row.status, "queued": "budget_decision"}
+        return {"run_id": run_id, "status": row.status, "queued": ""}
     if gate is None or row.status not in {
         RunStatus.WAITING_BUDGET.value,
         # A RUNNING row with a pending gate is the crash window between the gate

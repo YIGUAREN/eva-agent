@@ -10,6 +10,7 @@ from eva_agent.budget.types import RunUsage
 from eva_agent.config.settings import AppConfig, PricingSettings
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.run import RunStatus
+from eva_agent.pricing import PricingTable
 from eva_agent.runtime.budget_decisions import BudgetOverrunRequired, InvalidBudgetExtension
 from eva_agent.runtime.manager import RunManager, RunStateError
 from eva_agent.server.state import AppState
@@ -190,6 +191,31 @@ async def test_cancel_while_waiting_budget_enqueues_the_cancel(
     assert commands[-1].kind == "cancel"
 
 
+async def test_route_enqueues_a_recovery_for_a_resumed_but_unsynced_run(
+    client: AsyncClient, state: AppState
+) -> None:
+    run_id, csrf = await _waiting_run(client, state)
+    # The decision resumed the graph, but _sync never persisted the result: the
+    # row stays RUNNING and no pending gate remains.  The duplicate submission
+    # must not silently succeed; it enqueues the recorded decision so the worker
+    # converges the row and runs post-processing.
+    decision = {"action": "summarize", "confirm_overrun": True}
+    await state.decisions.decide(run_id, 1, "summarize", {"decision": decision})
+    await state.runs.set_status(run_id, RunStatus.RUNNING)
+
+    response = await client.post(
+        f"/api/runs/{run_id}/budget/decision",
+        json={"action": "summarize", "confirm_overrun": True},
+        headers=csrf_headers(csrf),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["queued"] == "budget_decision"
+    commands = await state.commands.list_for_run(run_id)
+    assert commands[-1].kind == "budget_decision"
+    assert commands[-1].payload_json == decision
+
+
 async def test_decide_claims_the_gate_row_exactly_once(tmp_path: Path) -> None:
     config = fake_config(tmp_path)
     engine = create_engine(config.storage.url)
@@ -366,6 +392,26 @@ async def test_concurrent_decisions_replay_the_crash_window_once(tmp_path: Path)
         assert {view.status for view in views} == {RunStatus.COMPLETED}
 
 
+async def test_concurrent_decisions_on_a_parked_run_resume_once(tmp_path: Path) -> None:
+    """Minor 4: two native duplicate submissions resume a normally parked run once."""
+    config = _priced_config(tmp_path)
+    async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
+        run_id = await _gate_run(manager, "run-gate-native-concurrent")
+        real_graph = manager._graph
+        counting = _CountingGraph(real_graph)
+        manager._graph = counting
+        try:
+            views = await asyncio.gather(
+                manager.decide_budget(run_id, action="summarize", confirm_overrun=True),
+                manager.decide_budget(run_id, action="summarize", confirm_overrun=True),
+            )
+        finally:
+            manager._graph = real_graph
+
+        assert counting.calls == 1
+        assert {view.status for view in views} == {RunStatus.COMPLETED}
+
+
 async def test_resume_recorded_decision_replays_only_a_running_row(tmp_path: Path) -> None:
     config = _priced_config(tmp_path)
     async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
@@ -430,6 +476,137 @@ async def test_sync_failure_after_the_gate_pause_leaves_the_run_recoverable(
         assert view.status is RunStatus.COMPLETED
 
 
+async def test_resume_finished_before_sync_converges_to_completed_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Important 1: the resume reached END but _sync failed, leaving the row RUNNING."""
+    config = _priced_config(tmp_path)
+    async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
+        run_id = await _gate_run(manager, "run-gate-finished-before-sync-fail")
+        repo = manager._require_repo()
+
+        async def boom(*args: object, **kwargs: object) -> None:
+            raise OSError("database is locked")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(repo, "set_plan", boom)
+            with pytest.raises(OSError):
+                await manager.decide_budget(run_id, action="summarize", confirm_overrun=True)
+
+        # The graph is at END, the decision is recorded, but the row was never synced.
+        assert (await manager.status(run_id)).status is RunStatus.RUNNING
+        assert not await manager.paused_at_budget_gate(run_id)
+
+        view = await manager.decide_budget(run_id, action="summarize", confirm_overrun=True)
+
+        assert view.status is RunStatus.COMPLETED
+
+
+async def test_worker_recovers_a_run_that_finished_before_sync(tmp_path: Path) -> None:
+    """Important 1: a worker retry must converge and run post-processing exactly once."""
+    config = _priced_config(tmp_path)
+    async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
+        run_id = await _gate_run(manager, "run-gate-worker-finished-before-sync")
+        repo = manager._require_repo()
+        decisions = manager._decisions
+        assert decisions is not None
+        gate = await decisions.latest_gate(run_id)
+        assert gate is not None
+        decision = {"action": "summarize", "confirm_overrun": True}
+        assert await repo.claim(
+            run_id,
+            from_statuses=(RunStatus.WAITING_BUDGET,),
+            to_status=RunStatus.RUNNING,
+        )
+        assert await decisions.decide(
+            run_id, int(gate.seq), "summarize", {**dict(gate.payload_json), "decision": decision}
+        )
+        # The process dies after the graph reaches END but before _sync persists it.
+        await manager._invoke_resume(run_id, decision)
+        assert (await manager.status(run_id)).status is RunStatus.RUNNING
+        assert not await manager.paused_at_budget_gate(run_id)
+
+        commands = RunCommandRepository(manager.session_factory)
+        await commands.enqueue(run_id, "budget_decision", decision)
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir, poll_interval_s=0.01)
+
+        assert await worker.tick() is True
+
+        assert (await manager.status(run_id)).status is RunStatus.COMPLETED
+        assert await worker.reports.get(run_id) is not None
+        assert await worker.artifacts.get(run_id, "report.json") is not None
+
+        # Replaying the recovery must not duplicate report/artifact rows.
+        await commands.enqueue(run_id, "budget_decision", decision)
+        assert await worker.tick() is True
+        assert await worker.artifacts.get(run_id, "report.json") is not None
+
+
+async def test_worker_resume_keeps_a_decided_gate_replayable(tmp_path: Path) -> None:
+    """Minor 2: reconciling must not park a row whose decision is already recorded."""
+    config = _priced_config(tmp_path)
+    async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
+        run_id = await _gate_run(manager, "run-gate-resume-replayable")
+        real_graph = manager._graph
+        manager._graph = _DyingGraph(real_graph)
+        try:
+            with pytest.raises(_ProcessDeath):
+                await manager.decide_budget(run_id, action="summarize", confirm_overrun=True)
+        finally:
+            manager._graph = real_graph
+
+        # RUNNING, decision recorded, checkpoint still parked at the gate.
+        assert (await manager.status(run_id)).status is RunStatus.RUNNING
+        assert await manager.paused_at_budget_gate(run_id)
+
+        commands = RunCommandRepository(manager.session_factory)
+        await commands.enqueue(run_id, "resume")
+        worker = RunWorker.from_manager(manager, data_dir=config.storage.data_dir, poll_interval_s=0.01)
+        assert await worker.tick() is True
+
+        # Only a RUNNING row can replay, so the reconcile must leave it RUNNING.
+        assert (await manager.status(run_id)).status is RunStatus.RUNNING
+
+        counting = _CountingGraph(real_graph)
+        manager._graph = counting
+        try:
+            await commands.enqueue(
+                run_id,
+                "budget_decision",
+                {"action": "summarize", "confirm_overrun": True},
+            )
+            assert await worker.tick() is True
+        finally:
+            manager._graph = real_graph
+
+        assert counting.calls == 1
+        assert (await manager.status(run_id)).status is RunStatus.COMPLETED
+
+
+async def test_lost_decision_claim_remains_recoverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Minor 5: `decide` returning False must not leave the row claimed RUNNING."""
+    config = _priced_config(tmp_path)
+    async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
+        run_id = await _gate_run(manager, "run-gate-lost-decision")
+        decisions = manager._decisions
+        assert decisions is not None
+
+        async def lost(*args: object, **kwargs: object) -> bool:
+            return False
+
+        with monkeypatch.context() as patch:
+            patch.setattr(decisions, "decide", lost)
+            view = await manager.decide_budget(run_id, action="summarize", confirm_overrun=True)
+
+        assert view.status is RunStatus.WAITING_BUDGET
+
+        # A later retry can still decide and finish the run.
+        final = await manager.decide_budget(run_id, action="summarize", confirm_overrun=True)
+        assert final.status is RunStatus.COMPLETED
+
+
 async def test_worker_reconciles_a_wedged_run_instead_of_failing_it(tmp_path: Path) -> None:
     config = _priced_config(tmp_path)
     async with RunManager.open(config, dependencies=dependencies(tmp_path), enforce_budget=True) as manager:
@@ -451,12 +628,22 @@ async def test_worker_reconciles_a_wedged_run_instead_of_failing_it(tmp_path: Pa
         assert rows[-1].status == "done"
 
 
-async def test_unenforced_manager_does_not_load_the_pricing_table(tmp_path: Path) -> None:
+async def test_unenforced_manager_does_not_load_the_pricing_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loads: list[Path] = []
+
+    def record(path: Path) -> PricingTable:
+        loads.append(path)
+        raise AssertionError("pricing must not load without budget enforcement")
+
+    monkeypatch.setattr(PricingTable, "load", staticmethod(record))
     config = fake_config(tmp_path).model_copy(
         update={"pricing": PricingSettings(path=str(tmp_path / "missing-pricing.yaml"))}
     )
-    async with RunManager.open(config, dependencies=dependencies(tmp_path)) as manager:
-        assert manager._estimator is not None
+    async with RunManager.open(config, dependencies=dependencies(tmp_path)):
+        pass
+    assert loads == []
 
 
 async def test_worker_budget_decision_command_resumes_the_run(tmp_path: Path) -> None:
