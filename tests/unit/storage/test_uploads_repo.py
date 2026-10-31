@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import String
+
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
 from eva_agent.storage.models import UploadRow
 from eva_agent.storage.uploads import (
@@ -51,7 +53,9 @@ async def test_get_unknown_upload_returns_none(tmp_path) -> None:
 def test_upload_id_column_accepts_64_characters() -> None:
     # PostgreSQL enforces VARCHAR length; generated ids are ``upload_<32 hex>``
     # (39 chars) and the validator allows up to 64, so 36 would reject every row.
-    assert UploadRow.__table__.c.id.type.length == 64
+    column_type = UploadRow.__table__.c.id.type
+    assert isinstance(column_type, String)
+    assert column_type.length == 64
 
 
 async def test_upload_id_round_trips_at_maximum_lengths(tmp_path) -> None:
