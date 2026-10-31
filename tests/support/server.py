@@ -18,6 +18,7 @@ from eva_agent.storage.audit import AuditRepository
 from eva_agent.storage.budget import BudgetDecisionRepository, RunUsageRepository
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
+from eva_agent.storage.packages import GraderPackageRepository
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
 from eva_agent.storage.sessions import AdminSessionRepository
@@ -61,6 +62,7 @@ async def build_test_app(
         reports=ReportRepository(factory),
         artifacts=ArtifactRepository(factory),
         uploads=UploadRepository(factory),
+        packages=GraderPackageRepository(factory),
         sandbox=sandbox_client,
         audit=AuditRepository(factory),
         admin_password_hash=hash_password(password),

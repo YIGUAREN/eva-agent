@@ -15,6 +15,7 @@ from eva_agent.server.sandbox import SandboxClient
 from eva_agent.storage.audit import AuditRepository
 from eva_agent.storage.budget import BudgetDecisionRepository, RunUsageRepository
 from eva_agent.storage.commands import RunCommandRepository
+from eva_agent.storage.packages import GraderPackageRepository
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
 from eva_agent.storage.sessions import AdminSessionRepository
@@ -38,6 +39,7 @@ class AppState:
     reports: ReportRepository
     artifacts: ArtifactRepository
     uploads: UploadRepository
+    packages: GraderPackageRepository
     sandbox: SandboxClient
     audit: AuditRepository
     admin_password_hash: str
