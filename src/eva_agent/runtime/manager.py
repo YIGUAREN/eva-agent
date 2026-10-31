@@ -32,7 +32,7 @@ from eva_agent.graph.build import build_graph
 from eva_agent.graph.dependencies import GateStore, GraphDependencies
 from eva_agent.graph.plan_validation import parse_plan_edit
 from eva_agent.packages.manifest import PackageManifest
-from eva_agent.packages.run_bundle import build_run_bundle
+from eva_agent.packages.run_bundle import ImportResult, build_run_bundle, import_run_bundle
 from eva_agent.pricing import PricingTable
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.budget_decisions import (
@@ -937,6 +937,10 @@ class RunManager:
             artifacts=artifacts,
             out_dir=out_dir,
         )
+
+    async def import_run_bundle(self, archive: Path, *, public: bool) -> ImportResult:
+        """Restore a run bundle, skipping an existing ``run_id`` without overwriting it."""
+        return await import_run_bundle(config=self._config, archive=archive, public=public)
 
     async def audit_events(self, run_id: str) -> list[AuditEventRow]:
         if self._audit is None:

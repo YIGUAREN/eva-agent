@@ -82,6 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
     export_run.add_argument("--out", required=True)
     export_run.add_argument("--config", default="config/config.yaml")
 
+    import_run = subparsers.add_parser("import-run")
+    import_run.add_argument("bundle")
+    import_run.add_argument("--public", action="store_true")
+    import_run.add_argument("--config", default="config/config.yaml")
+
     replay = subparsers.add_parser("replay")
     replay.add_argument("package")
     replay.add_argument("--out", required=True)
@@ -253,6 +258,19 @@ async def _export_run(args: argparse.Namespace, config: AppConfig) -> int:
     return 0
 
 
+async def _import_run(args: argparse.Namespace, config: AppConfig) -> int:
+    async with _open_manager(config) as manager:
+        result = await manager.import_run_bundle(Path(args.bundle), public=args.public)
+    print(
+        json.dumps(
+            {"run_id": result.run_id, "status": result.status, "artifacts": result.artifacts},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 async def _replay(args: argparse.Namespace, _config: AppConfig | None) -> int:
     package = read_grader_package(Path(args.package))
     result = replay_package(package)
@@ -288,6 +306,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _export_grader_package(args, config)
     if args.command == "export-run":
         return await _export_run(args, config)
+    if args.command == "import-run":
+        return await _import_run(args, config)
     if args.run_command == "start":
         return await _start(args, config)
     if args.run_command == "approve":
