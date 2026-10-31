@@ -15,7 +15,7 @@ from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
 from eva_agent.domain.run import InputKind
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.graph.dependencies import GraphDependencies
-from eva_agent.graph.events import noop_event_sink
+from eva_agent.graph.events import EventSink, noop_event_sink
 from eva_agent.graph.experts.security import SecurityExpert
 from eva_agent.security.scan_policy import ScanDecision, ScanPolicy
 from eva_agent.security.target_policy import SecurityPolicy
@@ -182,6 +182,7 @@ def dependencies(
     policy: ScanPolicy,
     audit: RecordingAudit | None = None,
     aig_configured: bool = True,
+    event_sink: EventSink = noop_event_sink,
 ) -> GraphDependencies:
     return GraphDependencies(
         planner=FakePlanner(),
@@ -194,7 +195,7 @@ def dependencies(
         scan_policy=policy,
         audit=audit if audit is not None else RecordingAudit(),
         aig_configured=aig_configured,
-        event_sink=noop_event_sink,
+        event_sink=event_sink,
     )
 
 
@@ -514,6 +515,51 @@ async def test_too_many_packages_does_not_erase_the_dimension(tmp_path: Path) ->
     assert result.metrics["active"]["kind"] == "skill_scan"
     assert result.metrics["passive"]["errors"] == ["too_many_packages"]
     assert len(skill_tool.calls) == 1
+
+
+async def test_threat_unavailable_caps_the_score_and_names_the_reason(tmp_path: Path) -> None:
+    files = [EvidenceFile(path="SKILL.md", size=1, sha256=_DIGEST)]
+    files.extend(EvidenceFile(path=f"pkg-{index}/SKILL.md", size=1, sha256=_DIGEST) for index in range(50))
+    bundle = EvidenceBundle(
+        kind=InputKind.UPLOAD,
+        root=str(tmp_path / "evidence"),
+        files=files,
+        manifest_sha256=_DIGEST,
+    )
+    tools = ToolRegistry()
+    tools.register(build_read_evidence_tool(1_000_000))
+    register_graders(tools)
+    clean = AigSkillScanOutput(
+        session_id="sess-skill",
+        report=AigSkillReport.model_validate({"score": 90, "language": "Markdown", "readme": "", "results": []}),
+        raw_result_path="/runs/run-1/aig/sess-skill.json",
+    )
+    skill_tool = FakeScanTool(clean)
+    register(tools, "run_aig_skill_scan", AigSkillScanInput, AigSkillScanOutput, skill_tool)
+    events: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def sink(run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> None:
+        events.append((event_type, payload))
+
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy(), event_sink=sink)
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+    )
+
+    # A package the threat grader never saw cannot score better than "high".
+    assert result.score == 0.5
+    assert result.metrics["score_cap"] == 0.5
+    assert result.status == "partial"
+    assert "too_many_packages" in result.summary
+    skipped = [payload for event_type, payload in events if event_type == "security.threat.skipped"]
+    assert skipped == [{"reason": "too_many_packages"}]
 
 
 async def test_not_configured_audit_row_carries_the_run_authorization(tmp_path: Path) -> None:

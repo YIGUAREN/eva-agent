@@ -33,6 +33,10 @@ from eva_agent.tools.graders import RunGradersInput
 
 ActiveStatus = Literal["not_applicable", "refused", "unavailable", "failed", "completed"]
 
+# Threat grading inspects the package's own content, so a package it never saw
+# cannot score better than the "high severity" cap used for active findings.
+THREAT_UNAVAILABLE_SCORE_CAP = 0.5
+
 
 def _audit_url(url: str | None) -> str | None:
     """Return only scheme://host[:port], never path/query/fragment or credentials."""
@@ -119,6 +123,7 @@ class SecurityExpert:
                 # and AIG skill scans can still produce a score. Record the
                 # static reason instead of failing the whole dimension.
                 threat_unavailable = "too_many_packages"
+                await self._event(run_id, "security.threat.skipped", {"reason": threat_unavailable})
 
         rows: list[dict[str, Any]] = []
         source_indexes: list[int | None] = []
@@ -164,7 +169,7 @@ class SecurityExpert:
             requester_is_admin=requester_is_admin,
         )
         spec_count = len(passive_specs(rows)) + (1 if skill_rows else 0)
-        return self._result(passive, active, spec_count)
+        return self._result(passive, active, spec_count, threat_unavailable=threat_unavailable)
 
     async def _passive(
         self,
@@ -437,12 +442,17 @@ class SecurityExpert:
         passive: NormalizedQuality | None,
         active: tuple[ActiveStatus, ActiveSummary | None, dict[str, Any], bool],
         spec_count: int,
+        *,
+        threat_unavailable: str | None = None,
     ) -> DimensionResult:
         active_status, active_summary, active_metrics, audit_error = active
         passive_score = passive.score if passive is not None else None
         active_score = active_summary.score if active_summary is not None else None
         severity_counts = active_metrics.get("severity_counts") or {}
-        cap = 0.2 if severity_counts.get("critical") else (0.5 if severity_counts.get("high") else None)
+        severity_cap = 0.2 if severity_counts.get("critical") else (0.5 if severity_counts.get("high") else None)
+        caps = [severity_cap, THREAT_UNAVAILABLE_SCORE_CAP if threat_unavailable else None]
+        applicable = [value for value in caps if value is not None]
+        cap = min(applicable) if applicable else None
         score = passive_score if passive_score is not None else active_score
         if score is not None and cap is not None:
             # The reported cap must always be the cap actually applied, for
@@ -486,6 +496,10 @@ class SecurityExpert:
             summary = f"security 部分完成：被动 {passive_label}，主动 {active_status}"
             if active_metrics.get("refused_reason"):
                 summary += f"（拒绝原因：{active_metrics['refused_reason']}）"
+            # An unavailable threat pass always adds a passive error, so the
+            # status is partial and this note always reaches the rendered report.
+            if threat_unavailable is not None:
+                summary += f"（威胁分析不可用：{threat_unavailable}）"
             error = None
 
         findings: list[Finding] = list(passive.findings) if passive is not None else []
