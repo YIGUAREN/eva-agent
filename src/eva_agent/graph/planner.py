@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
+from decimal import Decimal
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from eva_agent.budget.context import BudgetContext, budget_context
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
 from eva_agent.domain.grader import GraderSpec
@@ -160,6 +163,7 @@ class LlmPlanner:
         structured_runner: Any | None = None,
         structured_method: str | None = None,
         sample_rows: int = 5,
+        max_output_tokens: int = 2048,
     ) -> None:
         if structured_runner is not None:
             self._structured = structured_runner
@@ -170,6 +174,46 @@ class LlmPlanner:
             raise ValueError("LlmPlanner requires chat_model or structured_runner")
         self._tools = tools
         self._sample_rows = sample_rows
+        self._max_output_tokens = max_output_tokens
+
+    @staticmethod
+    def _actual_cost(context: BudgetContext, output: Any) -> Decimal | None:
+        metadata = getattr(output, "usage_metadata", None)
+        if not isinstance(metadata, Mapping):
+            return None
+        input_tokens = metadata.get("input_tokens")
+        output_tokens = metadata.get("output_tokens")
+        if input_tokens is None and output_tokens is None:
+            return None
+        return context.estimator.cost_for_tokens(
+            context.models.agent,
+            input_tokens=int(input_tokens or 0),
+            output_tokens=int(output_tokens or 0),
+        )
+
+    async def _invoke_structured(self, prompt: str) -> Any:
+        context = budget_context()
+        enforced = context is not None and context.ledger.enforced
+        estimate = Decimal("0")
+        if enforced:
+            assert context is not None
+            estimate = context.estimator.estimate_chat(
+                context.models.agent,
+                input_text=prompt,
+                max_output_tokens=self._max_output_tokens,
+            )
+            await context.ledger.reserve(estimate, kind="planner")
+        try:
+            output = await self._structured.ainvoke(prompt)
+        except Exception:
+            if enforced:
+                assert context is not None
+                await context.ledger.settle(estimate, None, kind="planner")
+            raise
+        if enforced:
+            assert context is not None
+            await context.ledger.settle(estimate, self._actual_cost(context, output), kind="planner")
+        return output
 
     async def plan(
         self,
@@ -187,7 +231,7 @@ class LlmPlanner:
             evidence_kind=evidence.kind,
             agent_target=evidence.target is not None and evidence.target.kind is TargetKind.AGENT_HTTP,
         )
-        output = await self._structured.ainvoke(prompt)
+        output = await self._invoke_structured(prompt)
         if not isinstance(output, PlannerOutput):
             output = PlannerOutput.model_validate(output)
 
