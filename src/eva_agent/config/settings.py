@@ -126,6 +126,7 @@ class AigSkillScanSettings(BaseModel):
     language: Literal["en", "zh"] = "zh"
     prompt: str = Field(default="Analyze this skill package for security risks.", min_length=1)
     num_prompts: int = Field(default=5, gt=0)
+    max_package_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
 
 
 class AigSettings(BaseModel):

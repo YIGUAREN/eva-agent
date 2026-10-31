@@ -84,3 +84,4 @@ aig:
     language: zh
     prompt: "Analyze this skill package for security risks."
     num_prompts: 5
+    max_package_bytes: 20971520
