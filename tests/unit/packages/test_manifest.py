@@ -107,8 +107,11 @@ def test_read_manifest_rejects_a_missing_manifest(tmp_path) -> None:
         read_manifest(tmp_path)
 
 
-def _assert_path_free(message: str) -> None:
+def _assert_path_free(message: str, *, host_path: Path | None = None) -> None:
     assert re.search(r"[A-Za-z]:\\", message) is None, message
+    if host_path is not None:
+        # CI runs on Linux, where a leaked host path has no drive letter.
+        assert str(host_path) not in message, message
     assert "eva-import-" not in message, message
     assert "eva-bundle-" not in message, message
     assert "Traceback" not in message, message
@@ -117,14 +120,14 @@ def _assert_path_free(message: str) -> None:
 def test_missing_manifest_error_does_not_leak_the_host_path(tmp_path) -> None:
     with pytest.raises(PackageError) as caught:
         read_manifest(tmp_path)
-    _assert_path_free(str(caught.value))
+    _assert_path_free(str(caught.value), host_path=tmp_path)
 
 
 def test_missing_archive_error_does_not_leak_the_host_path(tmp_path) -> None:
     source = tmp_path / "nope.zip"
     with pytest.raises(PackageError) as caught:
         extract_zip(source, tmp_path / "out")
-    _assert_path_free(str(caught.value))
+    _assert_path_free(str(caught.value), host_path=tmp_path)
 
 
 def test_write_zip_error_does_not_leak_the_destination_path(tmp_path, monkeypatch) -> None:
@@ -152,6 +155,41 @@ def test_invalid_manifest_error_does_not_echo_hostile_values(tmp_path) -> None:
     with pytest.raises(PackageError) as caught:
         read_manifest(tmp_path)
     _assert_path_free(str(caught.value))
+
+
+def test_invalid_manifest_redacts_a_path_like_member_key(tmp_path) -> None:
+    hostile = "C:\\secret\\evil.json"
+    (tmp_path / MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "kind": "grader_package",
+                "run_id": "run-1",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "files": {hostile: {"sha256": "short", "size": 0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PackageError) as caught:
+        read_manifest(tmp_path)
+    message = str(caught.value)
+    assert "C:\\secret" not in message
+    assert "evil.json" not in message
+    assert "files.<redacted>.sha256" in message
+    _assert_path_free(message, host_path=tmp_path)
+
+
+def test_unsafe_member_name_is_not_echoed(tmp_path) -> None:
+    archive = tmp_path / "absolute.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("/home/user/secret.json", "{}")
+    with pytest.raises(PackageError) as caught:
+        extract_zip(archive, tmp_path / "out")
+    message = str(caught.value)
+    assert "/home/user" not in message
+    assert "secret.json" not in message
+    assert "absolute_path" in message
+    _assert_path_free(message, host_path=tmp_path)
 
 
 def test_zip_round_trip_verifies(tmp_path) -> None:

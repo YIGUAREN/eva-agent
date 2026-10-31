@@ -444,17 +444,19 @@ async def _archive_for_dataset_run(tmp_path):
 
 async def test_failed_import_rolls_back_and_a_retry_imports(tmp_path, monkeypatch) -> None:
     config, archive = await _archive_for_completed_run(tmp_path)
-    original_set_plan = RunRepository.set_plan
+    # Fail after the artifacts and report are written, so the rollback must remove
+    # both database rows and files.
+    original_set_status = RunRepository.set_status
     attempts = 0
 
-    async def flaky_set_plan(self, run_id, plan):
+    async def flaky_set_status(self, run_id, status):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise RuntimeError("injected import failure")
-        await original_set_plan(self, run_id, plan)
+        await original_set_status(self, run_id, status)
 
-    monkeypatch.setattr(RunRepository, "set_plan", flaky_set_plan)
+    monkeypatch.setattr(RunRepository, "set_status", flaky_set_status)
 
     with pytest.raises(RuntimeError, match="injected import failure"):
         await import_run_bundle(config=config, archive=archive, public=True)
@@ -472,15 +474,42 @@ async def test_failed_import_rolls_back_and_a_retry_imports(tmp_path, monkeypatc
 
 async def test_import_treats_a_concurrent_create_race_as_skipped(tmp_path, monkeypatch) -> None:
     config, archive = await _archive_for_completed_run(tmp_path)
+    discards: list[str] = []
 
     async def losing_create(self, run_id, run_input, budget, **kwargs):
         raise IntegrityError("INSERT INTO runs", {}, Exception("UNIQUE constraint failed: runs.id"))
 
+    async def record_discard(factory, config, run_id):
+        discards.append(run_id)
+
     monkeypatch.setattr(RunRepository, "create", losing_create)
+    monkeypatch.setattr(run_bundle_module, "_discard_import", record_discard)
 
     result = await import_run_bundle(config=config, archive=archive, public=True)
 
     assert result.status == "skipped"
+    # The rows the winner created are not ours to delete.
+    assert discards == []
+
+
+async def test_import_validation_error_redacts_a_path_like_key(tmp_path) -> None:
+    config, archive = await _archive_for_dataset_run(tmp_path)
+    await _reset_run(config, "run-ds")
+    doc_changed = _rewrite_run_document(
+        tmp_path,
+        archive,
+        lambda document: document["input"]["dataset"].__setitem__(
+            "column_map", {"C:\\secret\\x.csv": 5}
+        ),
+    )
+
+    with pytest.raises(PackageError) as caught:
+        await import_run_bundle(config=config, archive=doc_changed, public=True)
+    message = str(caught.value)
+    assert "C:\\secret" not in message
+    assert "secret" not in message
+    assert "dataset.column_map.<redacted>" in message
+    await _assert_nothing_written(config, "run-ds")
 
 
 async def test_import_rejects_an_out_of_range_report_version(tmp_path) -> None:

@@ -161,3 +161,67 @@ None within the findings. Two notes for the reviewer:
 - The `suppress(Exception)` compensation is best effort by design; if the database itself is
   unavailable the partial run may survive, and the retry will then report `skipped`. This
   matches the finding's intended best-effort semantics.
+
+---
+
+# Re-review fix round 2 (commit on top of e15d8cd)
+
+The re-review closed F2, F3, M6, M7, M11, M12 and M8–M10 but found one Important residual in F1
+and four Minor items. All are fixed.
+
+## Important residual — attacker-controlled loc parts and member names echoed
+
+`manifest.py`:
+
+- Added `_redacted_loc(loc)`: renders each validation-location part, replacing any part that
+  contains `/`, `\` or `:` with `<redacted>` and keeping the remaining field names. Used by
+  `read_manifest`'s `ValidationError` summary, so a manifest with
+  `files` = `{"C:\\secret\\evil.json": {...}}` now reports
+  `files.<redacted>.sha256: ...` instead of echoing the key.
+- `_member_name` no longer echoes the raw archive member name:
+  `invalid member name: absolute_path` and `invalid member name: not normalized`. The reason
+  is kept; the prefixes existing tests match are unchanged.
+
+`run_bundle.py`:
+
+- `_validation_message` imports and uses the same `_redacted_loc`, so a bundle with
+  `input.dataset.column_map` keyed by `C:\secret\x.csv` reports
+  `dataset.column_map.<redacted>: ...`.
+
+New tests:
+
+- `test_invalid_manifest_redacts_a_path_like_member_key` — asserts the hostile token is gone,
+  `files.<redacted>.sha256` is present, and the message is path-free.
+- `test_unsafe_member_name_is_not_echoed` — a zip member `/home/user/secret.json` produces a
+  message containing `absolute_path` but neither `/home/user` nor `secret.json`.
+- `test_import_validation_error_redacts_a_path_like_key` (run_bundle) — dataset bundle with a
+  hostile `column_map` key; also asserts nothing was written.
+
+## Minor — test strength and portability
+
+- `test_failed_import_rolls_back_and_a_retry_imports` now injects the failure at
+  `RunRepository.set_status`, after the report and artifact have been written. Verified the
+  test is sensitive to the rollback: temporarily removing the `shutil.rmtree` from
+  `_discard_import` made it fail, then the code was restored.
+- `test_import_treats_a_concurrent_create_race_as_skipped` now monkeypatches
+  `run_bundle._discard_import` with a recorder and asserts it is **not** called on the
+  IntegrityError path.
+- `test_manifest._assert_path_free` accepts `host_path` and asserts `str(tmp_path)` is absent
+  for the missing-manifest and missing-archive cases (catches Linux `/tmp/pytest-of-...`
+  leaks where there is no drive letter). The new redaction tests pass `host_path=tmp_path`
+  as well.
+
+## Deviation
+
+- `_redacted_loc` lives once in `manifest.py` and is imported by `run_bundle._validation_message`
+  rather than duplicated, per the "import it ... or duplicate" allowance.
+
+## Commands (round 2)
+
+- `uv run pytest tests/unit/packages/test_run_bundle.py tests/unit/packages/test_manifest.py -q`
+  → 73 passed, 1 warning.
+- Sensitivity check (rmtree temporarily removed) → `test_failed_import_rolls_back_and_a_retry_imports`
+  failed, confirming the test guards the directory cleanup; code restored.
+- `uv run pytest -q` → **1471 passed, 3 skipped, 1 deselected, 1 warning**.
+- `uv run ruff check src tests` → **All checks passed!**
+- `uv run pyright` → **0 errors, 0 warnings, 0 informations**.
