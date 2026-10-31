@@ -13,6 +13,7 @@ from eva_agent.config.settings import AppConfig
 from eva_agent.server.ratelimit import LoginRateLimiter
 from eva_agent.server.sandbox import SandboxClient
 from eva_agent.storage.audit import AuditRepository
+from eva_agent.storage.budget import BudgetDecisionRepository, RunUsageRepository
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.reports import ArtifactRepository, ReportRepository
 from eva_agent.storage.repository import RunRepository
@@ -31,6 +32,8 @@ class AppState:
     session_factory: async_sessionmaker[AsyncSession]
     runs: RunRepository
     commands: RunCommandRepository
+    usage: RunUsageRepository
+    decisions: BudgetDecisionRepository
     sessions: AdminSessionRepository
     reports: ReportRepository
     artifacts: ArtifactRepository

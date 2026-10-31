@@ -16,6 +16,8 @@ cp config/config.example.yaml config/config.yaml
 
 运行前请准备 `config/config.yaml` 与 `.env`；CLI 与演示脚本会通过 `python-dotenv` 加载 `.env`。
 
+> **强制预算与价格表**：通过 `eva-web` / `eva-worker` 运行的 run 会强制预算；每一次模型调用都必须在 `config/pricing.yaml` 中找到对应的 `(provider, model)` 价格。缺失时调用会直接失败（fail closed），不会按 0 计费。`config/config.example.yaml` 的 `models.judge` 使用 `qwen-plus`，示例价格表中没有该行，因此用示例配置启动强制预算的 web/worker 前，必须先为它补充真实价格（本仓库不预置虚构价格）。CLI 运行保持不强制预算。
+
 ## Demo target
 
 ```bash

@@ -34,7 +34,7 @@ async def _run(config_path: Path) -> None:
         require_sandbox_token()
     except ConfigError as exc:
         raise SystemExit(str(exc)) from None
-    async with RunManager.open(config) as manager:
+    async with RunManager.open(config, enforce_budget=True) as manager:
         worker = RunWorker.from_manager(
             manager,
             data_dir=config.storage.data_dir,

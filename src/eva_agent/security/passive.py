@@ -131,5 +131,11 @@ def summarize_passive(
         metrics=metrics,
         findings=findings,
         evidence=[_workspace_ref(evidence)],
-        usage=Usage(grader_calls=len(output.outcomes), samples=len(rows), duration_ms=output.duration_ms),
+        usage=Usage(
+            grader_calls=len(output.outcomes),
+            samples=len(rows),
+            duration_ms=output.duration_ms,
+            cached=output.cached,
+            fresh=output.fresh,
+        ),
     )

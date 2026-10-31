@@ -97,7 +97,8 @@ async def test_invalid_plan_edit_is_rejected_without_consuming_interrupt(tmp_pat
     assert view.plan is not None
     assert view.plan.budget.max_cost_usd == 2.0
     assert _budget_json(tmp_path, "run-1")["max_cost_usd"] == 2.0
-    assert runner.calls == 1
+    # The real grading tool reserves and runs one grader spec at a time.
+    assert runner.calls == 2
 
 
 async def test_unknown_run_raises(tmp_path: Path) -> None:

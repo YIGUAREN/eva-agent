@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
@@ -10,18 +11,18 @@ from typing import Any
 
 from pydantic_core import to_jsonable_python
 
-from eva_agent.domain.plan import EvalPlan
+from eva_agent.domain.plan import Dimension, EvalPlan
 from eva_agent.domain.probe import ProbeSummary
-from eva_agent.domain.result import MergedResult, Report
+from eva_agent.domain.result import DimensionResult, MergedResult, Report
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.probe import ProbeStore
 
-REPORT_VERSION = 3
+REPORT_VERSION = 4
 
 DEFERRED_CAPABILITIES = [
     "证据包上传与 zip/tar 解压、沙箱执行（阶段 4）",
     "L3 Python grader（v1.5）",
-    "预算预扣、结算与 429/5xx 重试（阶段 5）",
+    "429/5xx 重试（阶段 5）",
     "流式响应、首 token 延迟与并发探测（v1.5）",
 ]
 
@@ -44,6 +45,63 @@ def _cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
+def _count(value: Any) -> int | None:
+    """Return a recorded non-negative sample count, or ``None`` when absent."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def _count_text(value: Any) -> str:
+    return "n/a" if value is None else str(value)
+
+
+def _usage_count(value: Any) -> int:
+    """Return a non-negative integer count, or 0 for malformed provenance."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _truncated_sample_counts(result: DimensionResult) -> dict[str, Any]:
+    """Annotate a budget-truncated dimension with its sample completion.
+
+    Only values recorded in ``DimensionResult.metrics`` are reported. A value
+    the expert never recorded stays ``None`` so the report renders ``n/a``
+    rather than fabricating a number.
+    """
+    metrics = result.metrics if isinstance(result.metrics, dict) else {}
+    sample_count: int | None = None
+    completed_samples: int | None = None
+    if result.dimension is Dimension.QUALITY:
+        sample_count = _count(metrics.get("sample_count"))
+        completed_samples = _count(metrics.get("scored_sample_count"))
+    elif result.dimension is Dimension.SECURITY:
+        # Security records its passive sample counts one level down; an
+        # active-only scan reports a placeholder zero, which is not a real
+        # planned total, so it stays unrecorded.
+        passive = metrics.get("passive")
+        if isinstance(passive, dict):
+            recorded = _count(passive.get("sample_count"))
+            if recorded is not None and recorded > 0:
+                sample_count = recorded
+                completed_samples = _count(passive.get("scored_rows"))
+    # Latency and cost only record attempted target requests, not a planned
+    # total, so a budget stop before the first sample must stay ``n/a`` rather
+    # than claim zero missing samples.
+    missing_samples = (
+        max(0, sample_count - completed_samples)
+        if sample_count is not None and completed_samples is not None
+        else None
+    )
+    return {
+        "dimension": result.dimension.value,
+        "sample_count": sample_count,
+        "completed_samples": completed_samples,
+        "missing_samples": missing_samples,
+    }
+
+
 def build_report_payload(
     *,
     run_id: str,
@@ -51,8 +109,30 @@ def build_report_payload(
     merged: MergedResult,
     generated_at: datetime,
     probe: ProbeSummary | None = None,
+    usage: Mapping[str, Any] | None = None,
+    finalize_overrun: bool = False,
 ) -> dict[str, Any]:
     metrics = to_jsonable_python(merged.metrics)
+    truncated_results = [
+        result for result in merged.results if result.truncated_reason == "budget"
+    ]
+    truncated = sorted({result.dimension.value for result in truncated_results})
+    truncated_sample_counts = [
+        _truncated_sample_counts(result)
+        for result in sorted(truncated_results, key=lambda item: item.dimension.value)
+    ]
+    usage_data = usage or {}
+    usage_payload = {
+        # Only a real boolean counts; a truthy string such as "false" must not
+        # turn into True.
+        "estimated": usage_data.get("estimated") is True,
+        # Coerce defensively: malformed provenance (a truthy string, a bool, a
+        # negative int) becomes 0 rather than raising or inventing a count.
+        "cached": _usage_count(usage_data.get("cached")),
+        "fresh": _usage_count(usage_data.get("fresh")),
+        "budget_enforced": usage_data.get("budget_enforced") is True,
+        "spent_usd": float(usage_data.get("spent_usd") or 0),
+    }
     return {
         "version": REPORT_VERSION,
         "run_id": run_id,
@@ -66,6 +146,10 @@ def build_report_payload(
         "dimensions": [item.model_dump(mode="json") for item in merged.results],
         "skipped": [item.model_dump(mode="json") for item in merged.skipped],
         "metrics": metrics,
+        "truncated_dimensions": truncated,
+        "truncated_sample_counts": truncated_sample_counts,
+        "usage": usage_payload,
+        "finalize_overrun": bool(finalize_overrun),
         "findings": [finding.model_dump(mode="json") for result in merged.results for finding in result.findings],
         "deferred": list(DEFERRED_CAPABILITIES),
     }
@@ -151,6 +235,8 @@ def _security_lines(metrics: dict[str, Any]) -> list[str]:
     )
     if active.get("risk_type"):
         lines.extend(["", f"风险类型：`{_cell(active['risk_type'])}`"])
+    if active.get("raw_result_path"):
+        lines.extend(["", f"原始结果：`{_cell(active['raw_result_path'])}`"])
     lines.append("")
     if active.get("refused_reason"):
         lines.extend([f"拒绝原因：`{_cell(active['refused_reason'])}`", ""])
@@ -200,11 +286,38 @@ def render_markdown(
             f"- 预算：cost ≤ {payload['budget']['max_cost_usd']} 美元，"
             f"时长 ≤ {payload['budget']['max_wall_clock_s']} 秒，"
             f"目标请求 ≤ {payload['budget']['max_target_requests']}",
-            "",
-            "## 目标探测",
-            "",
         ]
     )
+    usage = payload.get("usage") or {}
+    truncated = payload.get("truncated_dimensions") or []
+    lines.extend(
+        [
+            f"- 预算执行：{'已强制' if usage.get('budget_enforced') else '未强制'}",
+            f"- 截断维度：{', '.join(truncated) or '无'}",
+            f"- 收尾超支：{'是' if payload.get('finalize_overrun') else '否'}",
+            f"- 评分来源：缓存 {usage.get('cached', 0)}，新评分 {usage.get('fresh', 0)}",
+        ]
+    )
+    if "spent_usd" in usage:
+        lines.append(f"- 已花费：{_money(usage.get('spent_usd'))} USD")
+    if truncated:
+        lines.extend(
+            [
+                "",
+                "## 截断样本",
+                "",
+                "| 维度 | 计划/总样本 | 已完成样本 | 缺失样本 |",
+                "|---|---|---|---|",
+            ]
+        )
+        for item in payload.get("truncated_sample_counts") or []:
+            lines.append(
+                f"| {_cell(item.get('dimension'))} | "
+                f"{_cell(_count_text(item.get('sample_count')))} | "
+                f"{_cell(_count_text(item.get('completed_samples')))} | "
+                f"{_cell(_count_text(item.get('missing_samples')))} |"
+            )
+    lines.extend(["", "## 目标探测", ""])
 
     probe = payload.get("probe")
     if probe is None:
@@ -297,6 +410,8 @@ def write_report(
     merged: MergedResult,
     generated_at: datetime,
     probe: ProbeSummary | None = None,
+    usage: Mapping[str, Any] | None = None,
+    finalize_overrun: bool = False,
 ) -> Report:
     generated_at = _as_utc(generated_at)
     paths = run_paths(data_dir, run_id)
@@ -312,6 +427,8 @@ def write_report(
         merged=merged,
         probe=probe,
         generated_at=generated_at,
+        usage=usage,
+        finalize_overrun=finalize_overrun,
     )
     markdown = render_markdown(payload, probe_mean_latency_ms=probe_mean_latency_ms)
     paths.report_json.write_text(

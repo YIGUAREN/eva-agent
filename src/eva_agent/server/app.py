@@ -102,10 +102,10 @@ def get_state(request: Request) -> AppState:
 
 async def _api_error(_request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ApiError)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": {"code": exc.code, "message": exc.message}},
-    )
+    body: dict[str, object] = {"code": exc.code, "message": exc.message}
+    if exc.details is not None:
+        body["details"] = exc.details
+    return JSONResponse(status_code=exc.status_code, content={"error": body})
 
 
 async def _http_error(_request: Request, exc: Exception) -> JSONResponse:

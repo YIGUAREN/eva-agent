@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 
+from eva_agent.domain.plan import Dimension
 from eva_agent.domain.run import RunStatus
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
@@ -28,6 +29,76 @@ _HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+
+# Budget money keys that must never reach the public event stream. This is the
+# fallback for event types that are not explicitly allowlisted below.
+_PUBLIC_BUDGET_MONEY_KEYS = frozenset(
+    {
+        "spent_usd",
+        "remaining_usd",
+        "spent",
+        "remaining",
+        "finalize_estimate",
+        "finalize_estimate_usd",
+    }
+)
+
+# Public budget events expose an explicit, type-checked shape instead of
+# denylisting names: ``budget.exhausted`` carries spent_usd/remaining_usd and
+# ``budget.gate`` carries spent/remaining/finalize_estimate. Allowlisting keys
+# is immune to casing/suffix variants and nested money objects, and checking
+# the surviving values means a hostile object cannot hide behind an allowed
+# key. Admin streams keep the full payloads unchanged.
+_PUBLIC_BUDGET_EVENT_TYPES = frozenset({"budget.exhausted", "budget.gate"})
+
+# Derived from the enum so a future dimension is accepted automatically.
+_PUBLIC_DIMENSION_NAMES = frozenset(item.value for item in Dimension)
+# A probe budget exhaustion legitimately reports "probe", which is not a
+# Dimension member; allow it for budget.exhausted only.
+_PUBLIC_EVENT_DIMENSION_NAMES = _PUBLIC_DIMENSION_NAMES | {"probe"}
+
+
+def _without_budget_money(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_budget_money(item)
+            for key, item in value.items()
+            if key not in _PUBLIC_BUDGET_MONEY_KEYS
+        }
+    if isinstance(value, list):
+        return [_without_budget_money(item) for item in value]
+    return value
+
+
+def _public_event_payload(event_type: str, payload: object) -> object:
+    """Reduce public budget events to their allowlisted, type-checked shape.
+
+    ``budget.exhausted`` exposes ``dimension`` only when it is a real
+    dimension label (a ``Dimension`` name, or ``"probe"``); ``budget.gate``
+    exposes ``truncated_dimensions`` only when it is a list, filtered down to
+    its real ``Dimension`` names. Any malformed
+    budget payload or value becomes an empty object. Other event types keep the
+    generic money-key denylist.
+    """
+    if event_type not in _PUBLIC_BUDGET_EVENT_TYPES:
+        return _without_budget_money(payload)
+    if not isinstance(payload, dict):
+        return {}
+    if event_type == "budget.exhausted":
+        dimension = payload.get("dimension")
+        if isinstance(dimension, str) and dimension in _PUBLIC_EVENT_DIMENSION_NAMES:
+            return {"dimension": dimension}
+        return {}
+    truncated = payload.get("truncated_dimensions")
+    if not isinstance(truncated, list):
+        return {}
+    return {
+        "truncated_dimensions": [
+            item
+            for item in truncated
+            if isinstance(item, str) and item in _PUBLIC_DIMENSION_NAMES
+        ]
+    }
 
 
 def _cursor(raw: str | None) -> int:
@@ -57,11 +128,13 @@ async def _stream(
         events = await state.runs.list_events(run_id, after_seq=cursor)
         for event in events:
             cursor = event.seq
-            payload = (
-                sanitize_public_payload(event.payload_json, internal_hosts=internal_hosts)
-                if public
-                else event.payload_json
-            )
+            if public:
+                payload = _public_event_payload(
+                    event.type,
+                    sanitize_public_payload(event.payload_json, internal_hosts=internal_hosts),
+                )
+            else:
+                payload = event.payload_json
             yield _format(event.seq, event.type, payload)
         if events:
             elapsed = 0.0

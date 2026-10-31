@@ -7,7 +7,7 @@ import binascii
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -52,6 +52,26 @@ class ApproveRequest(BaseModel):
     plan: dict[str, Any] | None = None
 
 
+class SummarizeBudgetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["summarize"]
+    confirm_overrun: bool = False
+
+
+class ExtendBudgetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["extend"]
+    budget: Budget
+
+
+BudgetDecisionRequest = Annotated[
+    SummarizeBudgetRequest | ExtendBudgetRequest,
+    Field(discriminator="action"),
+]
+
+
 def _safe_input(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload)
     dataset = data.get("dataset")
@@ -70,7 +90,12 @@ def run_summary(row: RunRow) -> dict[str, Any]:
     }
 
 
-def run_detail(row: RunRow) -> dict[str, Any]:
+def run_detail(
+    row: RunRow,
+    *,
+    usage: dict[str, object] | None = None,
+    budget_gate: dict[str, object] | None = None,
+) -> dict[str, Any]:
     return {
         **run_summary(row),
         "input": _safe_input(row.input_json),
@@ -79,6 +104,8 @@ def run_detail(row: RunRow) -> dict[str, Any]:
         "error": row.error,
         "is_public": row.is_public,
         "created_by": row.created_by,
+        "usage": usage,
+        "budget_gate": budget_gate,
     }
 
 

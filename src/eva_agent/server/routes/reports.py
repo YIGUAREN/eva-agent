@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from eva_agent.adapters.openjudge.catalog import CatalogError, load_catalog, summarize
 from eva_agent.config.settings import ConfigError
 from eva_agent.config.targets import load_targets
+from eva_agent.domain.plan import Dimension
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
@@ -31,7 +32,88 @@ router = APIRouter(prefix="/api", tags=["reports"])
 _SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,255}")
 _AIG_NAME = re.compile(r"aig/([A-Za-z0-9_-]{1,128})\.(json|csv)")
 
-_BUDGET_LINE_PREFIX = "- 预算："
+# Public Markdown never carries budget or spend figures.
+_HIDDEN_LINE_PREFIXES = ("- 预算：", "- 已花费：")
+
+_PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
+_PUBLIC_USAGE_BOOL_KEYS = frozenset({"estimated", "budget_enforced"})
+
+_PUBLIC_SAMPLE_COUNT_KEYS = ("sample_count", "completed_samples", "missing_samples")
+
+# Derived from the enum so a future dimension is accepted automatically.
+_PUBLIC_DIMENSION_NAMES = frozenset(item.value for item in Dimension)
+
+
+def _valid_usage_value(key: str, value: object) -> bool:
+    """A whitelisted usage key is only public when its value has the right type."""
+    if key in _PUBLIC_USAGE_BOOL_KEYS:
+        return isinstance(value, bool)
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def public_report_usage(payload: dict[str, object]) -> dict[str, object]:
+    """Copy only whitelisted usage keys whose values are safe primitives.
+
+    A hostile producer can put spend figures into a whitelisted key (for
+    example ``{"cached": {"spent_usd": 12.3}}``), so key presence alone is not
+    enough: each value is type-checked and dropped when it does not match its
+    expected type.
+    """
+    raw = payload.get("usage")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: raw[key]
+        for key in _PUBLIC_USAGE_KEYS
+        if key in raw and _valid_usage_value(key, raw[key])
+    }
+
+
+def public_truncated_dimensions(payload: dict[str, object]) -> list[str]:
+    """Keep only real dimension names, never free text such as a spend figure.
+
+    A non-list value becomes ``[]``; items that are not ``str`` or are not a
+    ``Dimension`` member are dropped.
+    """
+    raw = payload.get("truncated_dimensions")
+    if not isinstance(raw, list):
+        return []
+    return [
+        item
+        for item in raw
+        if isinstance(item, str) and item in _PUBLIC_DIMENSION_NAMES
+    ]
+
+
+def _valid_sample_count(value: object) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def public_truncated_sample_counts(payload: dict[str, object]) -> list[dict[str, object]]:
+    """Whitelist each truncation entry so hostile keys and values never go public.
+
+    An entry survives only when its dimension is a real ``Dimension`` name and
+    every supplied count is ``None`` or a non-negative integer (booleans
+    excluded); otherwise the whole entry is dropped rather than partially
+    copied.
+    """
+    raw = payload.get("truncated_sample_counts")
+    if not isinstance(raw, list):
+        return []
+    public: list[dict[str, object]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        dimension = item.get("dimension")
+        if not isinstance(dimension, str) or dimension not in _PUBLIC_DIMENSION_NAMES:
+            continue
+        counts = {key: item[key] for key in _PUBLIC_SAMPLE_COUNT_KEYS if key in item}
+        if not all(_valid_sample_count(value) for value in counts.values()):
+            continue
+        public.append({"dimension": dimension, **counts})
+    return public
 
 
 def _redact_data_dir(text: str, data_dir: str) -> str:
@@ -51,19 +133,38 @@ def _sanitize_public_markdown(markdown: str, data_dir: str, *, internal_hosts: t
     # addresses and secrets are still scrubbed token by token.
     text = redact_markdown_paths(_redact_data_dir(markdown, data_dir))
     text = redact_internal_addresses_and_secrets(text, internal_hosts=internal_hosts)
-    return "\n".join(line for line in text.split("\n") if not line.startswith(_BUDGET_LINE_PREFIX))
+    return "\n".join(line for line in text.split("\n") if not line.startswith(_HIDDEN_LINE_PREFIXES))
 
 
 async def _report(state, run_id: str, *, public: bool = False) -> dict[str, object]:
     snapshot = await state.reports.get(run_id)
     if snapshot is None:
         raise ApiError(404, "report_not_ready", "report is not ready")
+    # A malformed stored payload (a string or list) must not crash the public
+    # rewrite gates; only mappings can carry the whitelisted keys. The admin
+    # route still returns the stored value unchanged.
+    stored_payload = snapshot.payload if isinstance(snapshot.payload, dict) else {}
     payload = snapshot.payload
     digest = snapshot.sha256
     markdown = snapshot.markdown
     if public:
         internal_hosts = _internal_hosts(state)
         payload = sanitize_public_payload(snapshot.payload, internal_hosts=internal_hosts)
+        # Only rewrite keys the stored payload already has; injecting them would
+        # change the shape and digest of legacy v2/v3 reports. Key presence (not
+        # type) gates the whitelist so malformed non-mapping usage is neutralized.
+        if "usage" in stored_payload:
+            payload = {**payload, "usage": public_report_usage(stored_payload)}
+        if "truncated_dimensions" in stored_payload:
+            payload = {
+                **payload,
+                "truncated_dimensions": public_truncated_dimensions(stored_payload),
+            }
+        if "truncated_sample_counts" in stored_payload:
+            payload = {
+                **payload,
+                "truncated_sample_counts": public_truncated_sample_counts(stored_payload),
+            }
         # The stored digest covers the unsanitized payload, so recompute it with
         # the same canonicalization used by ReportRepository.upsert.
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")

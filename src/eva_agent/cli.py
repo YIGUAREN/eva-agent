@@ -161,7 +161,7 @@ async def _start(args: argparse.Namespace, config: AppConfig) -> int:
         max_wall_clock_s=args.max_wall_clock_s,
         max_target_requests=args.max_target_requests,
     )
-    async with RunManager.open(config) as manager:
+    async with RunManager.open(config, enforce_budget=False) as manager:
         run_id = await manager.start(run_input, budget)
         view = await manager.status(run_id)
     print(json.dumps(_view_payload(view), ensure_ascii=False, indent=2))
@@ -172,21 +172,21 @@ async def _approve(args: argparse.Namespace, config: AppConfig) -> int:
     plan = _load_plan_file(args.plan_file) if args.plan_file else None
     if plan is not None and args.reject:
         raise ValueError("cannot edit a plan while rejecting it")
-    async with RunManager.open(config) as manager:
+    async with RunManager.open(config, enforce_budget=False) as manager:
         view = await manager.approve(args.run_id, approved=args.approve, plan=plan)
     print(json.dumps(_view_payload(view), ensure_ascii=False, indent=2))
     return _exit_code(view)
 
 
 async def _status(args: argparse.Namespace, config: AppConfig) -> int:
-    async with RunManager.open(config) as manager:
+    async with RunManager.open(config, enforce_budget=False) as manager:
         view = await manager.status(args.run_id)
     print(json.dumps(_view_payload(view), ensure_ascii=False, indent=2))
     return 0
 
 
 async def _report(args: argparse.Namespace, config: AppConfig) -> int:
-    async with RunManager.open(config) as manager:
+    async with RunManager.open(config, enforce_budget=False) as manager:
         payload = await manager.report(args.run_id)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

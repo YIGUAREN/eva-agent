@@ -4,6 +4,8 @@ from eva_agent.domain.plan import Dimension
 from eva_agent.domain.run import DatasetRef, InputKind, RunInput, RunStatus
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.runtime.manager import RunManager
+from eva_agent.server.routes.reports import public_report_usage
+from eva_agent.server.schemas import sanitize_public_payload
 from tests.support.runtime import budget, dependencies, fake_config
 
 
@@ -44,3 +46,24 @@ async def test_dataset_run_meets_phase_one_acceptance(tmp_path: Path) -> None:
     assert report["dimensions"][0]["score"] == 0.8
     assert {item["dimension"] for item in report["skipped"]} == {"latency", "cost", "security"}
     assert report["findings"] == []
+    # The CLI (and any unenforced manager) keeps the phase 1-3 contract: no
+    # reservation, no gate, and a report that says the budget was not enforced.
+    usage = report["usage"]
+    assert usage["budget_enforced"] is False
+    assert usage["estimated"] is False
+    # Provenance counts every grading call on an unenforced run: 2 samples x
+    # 2 graders are all fresh, and none is served from the cache.
+    assert usage["cached"] == 0
+    assert usage["fresh"] == 4
+    assert report["truncated_dimensions"] == []
+    assert report["finalize_overrun"] is False
+    # Spend is admin-only: the public projection keeps only the four non-spend
+    # usage keys.
+    public_usage = public_report_usage(report)
+    assert set(public_usage) == {"estimated", "cached", "fresh", "budget_enforced"}
+    assert "spent_usd" not in public_usage
+    # A stored report carries no filesystem path, so inject one to prove the
+    # public projection actually strips absolute paths rather than passing them
+    # through: an assertion against a path that never appears is vacuous.
+    leaky = {**report, "evidence_summary": str(tmp_path / "qa.csv")}
+    assert sanitize_public_payload(leaky)["evidence_summary"] == "<path>"

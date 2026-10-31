@@ -20,6 +20,7 @@ from eva_agent.server.ratelimit import LoginRateLimiter
 from eva_agent.server.sandbox import SandboxClient
 from eva_agent.server.state import AppState
 from eva_agent.storage.audit import AuditRepository
+from eva_agent.storage.budget import BudgetDecisionRepository, RunUsageRepository
 from eva_agent.storage.commands import RunCommandRepository
 from eva_agent.storage.db import create_engine, create_session_factory
 from eva_agent.storage.migrate import run_migrations
@@ -52,6 +53,8 @@ async def serve(config_path: Path, host: str, port: int) -> None:
         session_factory=factory,
         runs=RunRepository(factory),
         commands=RunCommandRepository(factory),
+        usage=RunUsageRepository(factory),
+        decisions=BudgetDecisionRepository(factory),
         sessions=AdminSessionRepository(factory),
         reports=ReportRepository(factory),
         artifacts=ArtifactRepository(factory),

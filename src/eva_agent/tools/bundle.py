@@ -43,6 +43,7 @@ class ToolDependencies:
     aig_client: AigScanClient | None = None
     aig_settings: AigSettings | None = None
     eval_model: ModelConfig | None = None
+    judge_model: ModelConfig | None = None
     audit: AuditSink = field(default=noop_audit_sink)
     data_dir: str = "./data"
 
@@ -53,7 +54,14 @@ def build_tool_registry(dependencies: ToolDependencies) -> ToolRegistry:
     registry.register(build_sample_dataset_tool(max_bytes=dependencies.max_bytes, max_rows=dependencies.max_rows))
     registry.register(build_list_graders_tool(dependencies.catalog))
     registry.register(build_generate_rubric_tool(dependencies.rubric_generator))
-    registry.register(build_run_graders_tool(dependencies.runner, max_rows=dependencies.max_rows))
+    registry.register(
+        build_run_graders_tool(
+            dependencies.runner,
+            max_rows=dependencies.max_rows,
+            judge_model=dependencies.judge_model,
+            data_dir=dependencies.data_dir,
+        )
+    )
     registry.register(build_count_tokens_tool(dependencies.token_encoding))
     registry.register(build_read_target_probe_tool())
     registry.register(build_run_declarative_checks_tool(max_rows=dependencies.max_rows))

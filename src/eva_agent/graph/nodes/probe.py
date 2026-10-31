@@ -5,9 +5,11 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 
+from eva_agent.budget.context import budget_context
+from eva_agent.budget.types import BudgetExhausted
 from eva_agent.domain.plan import Dimension, EvalPlan
 from eva_agent.domain.probe import ProbeRecord
-from eva_agent.domain.run import InputKind
+from eva_agent.domain.run import InputKind, RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.state import EvalState
 from eva_agent.runtime.artifacts import run_paths
@@ -47,6 +49,23 @@ async def probe_node(state: EvalState, deps: GraphDependencies) -> dict:
     limit = state["budget"].max_target_requests
     if count > limit:
         raise ValueError(f"probe requests {count} exceed max_target_requests {limit}")
+
+    context = budget_context()
+    if context is not None and context.ledger.enforced:
+        try:
+            await context.ledger.reserve_requests(count)
+        except BudgetExhausted:
+            snapshot = context.ledger.snapshot()
+            await deps.event_sink(
+                state["run_id"],
+                "budget.exhausted",
+                {
+                    "spent_usd": float(snapshot.spent_usd),
+                    "remaining_usd": float(snapshot.remaining_usd),
+                    "dimension": "probe",
+                },
+            )
+            return {"status": RunStatus.FAILED, "errors": ["目标请求预算不足"]}
 
     paths = run_paths(deps.data_dir, state["run_id"])
     store = ProbeStore(paths.target_probe)

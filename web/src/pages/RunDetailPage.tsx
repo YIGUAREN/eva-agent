@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
+import { BudgetCard } from "../components/BudgetCard";
 import { EventTimeline } from "../components/EventTimeline";
 import { PlanEditor } from "../components/PlanEditor";
 import { StatusBadge } from "../components/StatusBadge";
@@ -77,7 +78,7 @@ export function RunDetailPage() {
           <p className="mt-2 text-sm text-slate-400">创建于 {formatDate(run.created_at)}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {["queued", "waiting_approval"].includes(run.status) && (
+          {["queued", "waiting_approval", "waiting_budget"].includes(run.status) && (
             <button onClick={() => runAction(() => cancel.mutate())} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300">
               取消
             </button>
@@ -111,6 +112,16 @@ export function RunDetailPage() {
           busy={approve.isPending || reject.isPending}
           onApprove={(plan) => runAction(() => approve.mutate(plan))}
           onReject={() => runAction(() => reject.mutate())}
+        />
+      )}
+
+      {run.status === "waiting_budget" && run.budget_gate && run.usage && (
+        <BudgetCard
+          runId={run.run_id}
+          gate={run.budget_gate}
+          budget={run.budget}
+          usage={run.usage}
+          onDone={() => detail.refetch()}
         />
       )}
 

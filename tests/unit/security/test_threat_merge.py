@@ -64,6 +64,37 @@ def test_merge_keeps_the_lower_score_and_adds_graders() -> None:
     assert merged.usage.grader_calls == 3
 
 
+def test_threat_summary_keeps_the_cache_counts() -> None:
+    output = GraderRunOutput(
+        outcomes=[GraderSampleOutcome(grader="threat_analysis", sample_index=0, score=1.0)],
+        cached=2,
+        fresh=1,
+    )
+
+    summary = summarize_threat(output, rows=[{"skill_name": "greeter"}], evidence=evidence())
+
+    assert (summary.usage.cached, summary.usage.fresh) == (2, 1)
+
+
+def test_merge_sums_the_cache_counts() -> None:
+    passive = NormalizedQuality(
+        score=0.9,
+        confidence=1.0,
+        metrics={"by_grader": {}, "scored_outcomes": 0, "expected_outcomes": 0, "errors": []},
+        usage=Usage(cached=2, fresh=1),
+    )
+    threat = NormalizedQuality(
+        score=0.8,
+        confidence=1.0,
+        metrics={"by_grader": {}, "scored_outcomes": 0, "expected_outcomes": 0, "errors": []},
+        usage=Usage(cached=3, fresh=4),
+    )
+
+    merged = merge_passive(passive, threat)
+
+    assert (merged.usage.cached, merged.usage.fresh) == (5, 5)
+
+
 def test_merge_without_threat_returns_the_passive_summary() -> None:
     passive = empty_passive(evidence())
     assert merge_passive(passive, None) is passive

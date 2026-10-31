@@ -76,6 +76,7 @@ def build_runtime_dependencies(
             aig_client=client,
             aig_settings=config.aig,
             eval_model=config.models.attack if config.aig is not None else None,
+            judge_model=config.models.judge,
             audit=audit,
             data_dir=config.storage.data_dir,
         )

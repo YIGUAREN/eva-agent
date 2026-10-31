@@ -12,6 +12,7 @@ from eva_agent.domain.target import TargetKind
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.nodes.analyze import analyze_node
 from eva_agent.graph.nodes.approve import approve_node
+from eva_agent.graph.nodes.budget_gate import budget_gate_node, budget_gate_prepare
 from eva_agent.graph.nodes.cost import cost_node
 from eva_agent.graph.nodes.dispatch import dispatch_node
 from eva_agent.graph.nodes.intake import intake_node
@@ -53,6 +54,12 @@ def _route_after_approve(state: EvalState) -> str:
     return "probe"
 
 
+def _route_after_budget_gate_prepare(state: EvalState) -> str:
+    # The prepare node clears the payload on a pass-through, so its presence is
+    # the single signal that a pause is required.
+    return "budget_gate" if state.get("budget_gate") is not None else "merge"
+
+
 def route_experts(state: EvalState) -> list[Send] | str:
     if state["status"] is not RunStatus.RUNNING or state["plan"] is None:
         return END
@@ -75,6 +82,32 @@ def route_experts(state: EvalState) -> list[Send] | str:
     return sends or "merge"
 
 
+def route_after_budget_gate(state: EvalState) -> list[Send] | str:
+    if state["status"] is not RunStatus.RUNNING:
+        return END
+    retry = set(state.get("retry_dimensions") or ())
+    plan = state["plan"]
+    if not retry or plan is None:
+        return "merge"
+    sends = [
+        Send(
+            item.dimension.value,
+            {
+                "run_id": state["run_id"],
+                "dimension_plan": item,
+                "evidence": state["evidence"],
+                "probe": state.get("probe"),
+                "budget": state["budget"],
+                "authorization_ref": state.get("authorization_ref"),
+                "requester_is_admin": state.get("requester_is_admin"),
+            },
+        )
+        for item in plan.dimensions
+        if item.enabled and item.dimension in SUPPORTED_DIMENSIONS and item.dimension.value in retry
+    ]
+    return sends or "merge"
+
+
 def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None) -> Any:
     graph = StateGraph(EvalState)
     graph.add_node("intake", partial(intake_node, deps=dependencies))
@@ -86,6 +119,8 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
     graph.add_node("latency", partial(latency_node, deps=dependencies))
     graph.add_node("cost", partial(cost_node, deps=dependencies))
     graph.add_node("security", partial(security_node, deps=dependencies))
+    graph.add_node("budget_gate_prepare", partial(budget_gate_prepare, deps=dependencies))
+    graph.add_node("budget_gate", budget_gate_node)
     graph.add_node("merge", partial(merge_node, deps=dependencies))
     graph.add_node("analyze", partial(analyze_node, deps=dependencies))
     graph.add_node("report", partial(report_node, deps=dependencies))
@@ -111,10 +146,27 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
             END: END,
         },
     )
-    graph.add_edge("quality", "merge")
-    graph.add_edge("latency", "merge")
-    graph.add_edge("cost", "merge")
-    graph.add_edge("security", "merge")
+    graph.add_edge("quality", "budget_gate_prepare")
+    graph.add_edge("latency", "budget_gate_prepare")
+    graph.add_edge("cost", "budget_gate_prepare")
+    graph.add_edge("security", "budget_gate_prepare")
+    graph.add_conditional_edges(
+        "budget_gate_prepare",
+        _route_after_budget_gate_prepare,
+        {"budget_gate": "budget_gate", "merge": "merge"},
+    )
+    graph.add_conditional_edges(
+        "budget_gate",
+        route_after_budget_gate,
+        {
+            "quality": "quality",
+            "latency": "latency",
+            "cost": "cost",
+            "security": "security",
+            "merge": "merge",
+            END: END,
+        },
+    )
     graph.add_edge("merge", "analyze")
     graph.add_edge("analyze", "report")
     graph.add_edge("report", END)

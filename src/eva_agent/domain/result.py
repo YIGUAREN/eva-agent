@@ -37,6 +37,8 @@ class Usage(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     duration_ms: int = Field(default=0, ge=0)
+    cached: int = Field(default=0, ge=0)
+    fresh: int = Field(default=0, ge=0)
 
 
 class GraderSampleOutcome(BaseModel):
@@ -58,6 +60,11 @@ class GraderRunOutput(BaseModel):
     outcomes: list[GraderSampleOutcome] = Field(default_factory=list)
     duration_ms: int = Field(default=0, ge=0)
     error: str | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    truncated_reason: str | None = None
+    cached: int = Field(default=0, ge=0)
+    fresh: int = Field(default=0, ge=0)
 
 
 class NormalizedQuality(BaseModel):
@@ -71,6 +78,7 @@ class NormalizedQuality(BaseModel):
     findings: list[Finding] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
     usage: Usage
+    truncated_reason: str | None = None
 
 
 class DimensionResult(BaseModel):

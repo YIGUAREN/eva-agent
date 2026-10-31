@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 from eva_agent.adapters.aig.errors import AigError, AigTimeout
+from eva_agent.budget.context import budget_context
+from eva_agent.budget.types import BudgetExhausted
 from eva_agent.domain.audit import AuditEvent
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
@@ -108,7 +111,12 @@ class SecurityExpert:
                 authorization_ref=authorization_ref,
                 requester_is_admin=requester_is_admin,
             )
-            return self._result(None, active, 0)
+            return self._result(
+                None,
+                active,
+                0,
+                truncated_reason="budget" if active[4] else None,
+            )
 
         limit = plan.sample_size or self._deps.default_sample_size
         skill_rows: list[dict[str, Any]] = []
@@ -176,8 +184,19 @@ class SecurityExpert:
             authorization_ref=authorization_ref,
             requester_is_admin=requester_is_admin,
         )
+        truncated = "budget" if active[4] or passive.metrics.get("truncated_reason") == "budget" else None
+        if truncated is not None and not active[4]:
+            # ``_active`` already emitted the event when its own reservation
+            # was refused; emit only for passive/threat truncation here.
+            await self._budget_exhausted(run_id, "security")
         spec_count = len(passive_specs(rows)) + (1 if skill_rows else 0)
-        return self._result(passive, active, spec_count, threat_unavailable=threat_gap)
+        return self._result(
+            passive,
+            active,
+            spec_count,
+            threat_unavailable=threat_gap,
+            truncated_reason=truncated,
+        )
 
     async def _passive(
         self,
@@ -193,6 +212,10 @@ class SecurityExpert:
         summary = summarize_passive(
             output, specs=specs, rows=rows, evidence=evidence, source_indexes=source_indexes
         )
+        if output.truncated_reason == "budget":
+            summary = summary.model_copy(
+                update={"metrics": {**summary.metrics, "truncated_reason": "budget"}}
+            )
         await self._event(
             run_id,
             "security.passive.completed",
@@ -219,6 +242,10 @@ class SecurityExpert:
             await self._event(run_id, "security.threat.failed", {"error_type": type(exc).__name__})
             return failed_passive(expected_outcomes=len(skill_rows), reason=type(exc).__name__)
         summary = summarize_threat(output, rows=skill_rows, evidence=evidence)
+        if output.truncated_reason == "budget":
+            summary = summary.model_copy(
+                update={"metrics": {**summary.metrics, "truncated_reason": "budget"}}
+            )
         await self._event(
             run_id,
             "security.threat.completed",
@@ -238,6 +265,19 @@ class SecurityExpert:
             await self._deps.event_sink(run_id, event_type, payload)
         except Exception:
             return
+
+    async def _budget_exhausted(self, run_id: str, dimension: str) -> None:
+        context = budget_context()
+        snapshot = context.ledger.snapshot() if context is not None else None
+        await self._event(
+            run_id,
+            "budget.exhausted",
+            {
+                "spent_usd": float(snapshot.spent_usd) if snapshot is not None else 0.0,
+                "remaining_usd": float(snapshot.remaining_usd) if snapshot is not None else 0.0,
+                "dimension": dimension,
+            },
+        )
 
     @staticmethod
     def _active_metrics(kind: ScanKind, status: ActiveStatus, score: float | None) -> dict[str, Any]:
@@ -270,14 +310,20 @@ class SecurityExpert:
         kind: ScanKind,
         authorization_ref: str | None,
         requester_is_admin: bool | None,
-    ) -> tuple[ActiveStatus, ActiveSummary | None, dict[str, Any], bool]:
+    ) -> tuple[ActiveStatus, ActiveSummary | None, dict[str, Any], bool, bool]:
         target: TargetSpec | None
         if kind == "skill_scan":
             target_name = "skill_package"
             target = None
         else:
             if evidence.kind is not InputKind.TARGET or evidence.target is None:
-                return "not_applicable", None, self._active_metrics(kind, "not_applicable", None), False
+                return (
+                    "not_applicable",
+                    None,
+                    self._active_metrics(kind, "not_applicable", None),
+                    False,
+                    False,
+                )
             target = evidence.target
             target_name = target.name
         if not self._deps.aig_configured or self._deps.scan_policy is None:
@@ -298,7 +344,13 @@ class SecurityExpert:
                 "security.active.failed",
                 {"target": target_name, "session_id": None, "error_type": "not_configured"},
             )
-            return "unavailable", None, self._active_metrics(kind, "unavailable", None), audit_error
+            return (
+                "unavailable",
+                None,
+                self._active_metrics(kind, "unavailable", None),
+                audit_error,
+                False,
+            )
 
         probe_count = probe.total if probe is not None else 0
         decision = self._deps.scan_policy.decide(
@@ -335,7 +387,28 @@ class SecurityExpert:
         if not decision.allowed:
             metrics = self._active_metrics(kind, "refused", None)
             metrics["refused_reason"] = decision.reason
-            return "refused", None, metrics, audit_error
+            return "refused", None, metrics, audit_error, False
+
+        context = budget_context()
+        reserved = False
+        scan_estimate = Decimal("0")
+        if context is not None and context.ledger.enforced:
+            # A model scan's ``scan_requests`` also counts the probes the probe
+            # node already charged; reserve only the AIG traffic here.
+            if kind == "model_redteam_report":
+                aig_requests = max(1, decision.scan_requests - probe_count)
+            else:
+                aig_requests = decision.scan_requests or 1
+            scan_estimate = context.estimator.estimate_aig_scan(
+                context.models.attack,
+                requests=aig_requests,
+            )
+            try:
+                await context.ledger.reserve_scan(aig_requests, scan_estimate)
+                reserved = True
+            except BudgetExhausted:
+                await self._budget_exhausted(run_id, "security")
+                return "failed", None, self._active_metrics(kind, "failed", None), audit_error, True
 
         try:
             if kind == "agent_scan":
@@ -378,14 +451,14 @@ class SecurityExpert:
                 "security.active.failed",
                 {"target": target_name, "session_id": None, "error_type": "AigTimeout"},
             )
-            return "failed", None, self._active_metrics(kind, "failed", None), audit_error
+            return "failed", None, self._active_metrics(kind, "failed", None), audit_error, False
         except AigError as exc:
             await self._event(
                 run_id,
                 "security.active.failed",
                 {"target": target_name, "session_id": None, "error_type": type(exc).__name__},
             )
-            return "failed", None, self._active_metrics(kind, "failed", None), audit_error
+            return "failed", None, self._active_metrics(kind, "failed", None), audit_error, False
         except Exception as exc:
             if isinstance(exc, TimeoutError) and not _audit_already_recorded(exc):
                 failed_audit = await self._audit(
@@ -406,7 +479,11 @@ class SecurityExpert:
                 "security.active.failed",
                 {"target": target_name, "session_id": None, "error_type": type(exc).__name__},
             )
-            return "failed", None, self._active_metrics(kind, "failed", None), audit_error
+            return "failed", None, self._active_metrics(kind, "failed", None), audit_error, False
+        finally:
+            if reserved:
+                assert context is not None
+                await context.ledger.settle(scan_estimate, None, kind="aig_scan")
 
         # The tool owns create/wait/result; emit the started/completed pair once
         # the session id is known so both events carry the real id.
@@ -443,17 +520,18 @@ class SecurityExpert:
                 "findings": len(summary.findings),
             },
         )
-        return "completed", summary, metrics, audit_error
+        return "completed", summary, metrics, audit_error, False
 
     def _result(
         self,
         passive: NormalizedQuality | None,
-        active: tuple[ActiveStatus, ActiveSummary | None, dict[str, Any], bool],
+        active: tuple[ActiveStatus, ActiveSummary | None, dict[str, Any], bool, bool],
         spec_count: int,
         *,
         threat_unavailable: str | None = None,
+        truncated_reason: str | None = None,
     ) -> DimensionResult:
-        active_status, active_summary, active_metrics, audit_error = active
+        active_status, active_summary, active_metrics, audit_error = active[:4]
         passive_score = passive.score if passive is not None else None
         active_score = active_summary.score if active_summary is not None else None
         severity_counts = active_metrics.get("severity_counts") or {}
@@ -486,7 +564,9 @@ class SecurityExpert:
             and passive.metrics.get("expected_outcomes", 0) > 0
             and passive.metrics.get("scored_outcomes", 0) == passive.metrics.get("expected_outcomes")
         )
-        if passive_score is None and active_score is None:
+        if truncated_reason is not None and passive_score is None and active_score is None:
+            status = "partial"
+        elif passive_score is None and active_score is None:
             status = "failed"
         elif passive_complete and active_status in {"completed", "not_applicable"}:
             status = "ok"
@@ -539,6 +619,7 @@ class SecurityExpert:
             evidence=passive.evidence if passive is not None else [],
             usage=passive.usage if passive is not None else Usage(),
             error=error,
+            truncated_reason=truncated_reason,
         )
 
     @staticmethod

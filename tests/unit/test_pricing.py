@@ -1,8 +1,10 @@
 from decimal import Decimal
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
+from eva_agent.config.settings import ModelConfig
 from eva_agent.pricing import ModelPrice, PricingError, PricingTable
 
 
@@ -62,3 +64,21 @@ def test_negative_tokens_rejected():
 def test_missing_file_rejected(tmp_path: Path):
     with pytest.raises(PricingError, match="not found"):
         PricingTable.load(tmp_path / "missing.yaml")
+
+
+def test_shipped_pricing_uses_configured_providers_and_nonzero_prices() -> None:
+    """The tracked table must be matchable by a configured model and never free.
+
+    A provider outside ``ModelConfig.provider`` can never match a configured
+    model (every enforced call would fail closed), and a 0/0 row invites
+    assuming a call cost nothing when no price was really recorded.
+    """
+    root = Path(__file__).resolve().parents[2]
+    table = PricingTable.load(root / "config" / "pricing.yaml")
+    providers = set(get_args(ModelConfig.model_fields["provider"].annotation))
+
+    entries = list(table._entries.values())
+    assert entries
+    for entry in entries:
+        assert entry.provider in providers, entry.provider
+        assert entry.input_per_million > 0 or entry.output_per_million > 0, entry.model

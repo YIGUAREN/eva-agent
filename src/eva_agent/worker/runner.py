@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from eva_agent.domain.budget import Budget
 from eva_agent.domain.run import InputKind, RunInput, RunStatus
 from eva_agent.runtime.artifacts import RunPaths, run_paths
 from eva_agent.runtime.manager import RunManager, RunStateError
@@ -24,7 +25,7 @@ from eva_agent.storage.uploads import UPLOAD_EXTRACTED, UploadRepository
 
 logger = logging.getLogger(__name__)
 
-HANDLED_KINDS = frozenset({"start", "approve", "cancel", "resume"})
+HANDLED_KINDS = frozenset({"start", "approve", "cancel", "resume", "budget_decision"})
 
 TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
 
@@ -188,6 +189,18 @@ class RunWorker:
                     approved=bool(command.payload_json.get("approved")),
                     plan=command.payload_json.get("plan"),
                 )
+        elif command.kind == "budget_decision":
+            if status in (RunStatus.WAITING_BUDGET, RunStatus.RUNNING):
+                # RUNNING covers a retried delivery whose earlier decision was
+                # persisted but whose resume crashed; the manager recovers it.
+                payload = command.payload_json
+                raw_budget = payload.get("budget")
+                await self.manager.decide_budget(
+                    command.run_id,
+                    action=str(payload.get("action")),
+                    confirm_overrun=bool(payload.get("confirm_overrun")),
+                    budget=Budget.model_validate(raw_budget) if raw_budget is not None else None,
+                )
         elif command.kind == "cancel":
             await self.manager.cancel(command.run_id)
 
@@ -244,6 +257,17 @@ class RunWorker:
     async def _resume(self, run_id: str) -> None:
         """Resume a RUNNING run, failing it when it has no checkpoint to resume from."""
         try:
+            if await self.manager.paused_at_budget_gate(run_id):
+                # The process died between the gate checkpoint and _sync.  The
+                # helper parks the row only while the gate is still pending; a
+                # recorded decision keeps the row RUNNING so it stays replayable.
+                await self.manager.converge_from_checkpoint(run_id)
+                return
+            # The checkpoint may already be at END while the row still says
+            # RUNNING (the process died before _sync).  Converge instead of
+            # re-invoking a graph that already finished.
+            if await self.manager.converge_from_checkpoint(run_id):
+                return
             await self.manager.resume(run_id)
         except RunStateError as exc:
             row = await self.runs.get(run_id)

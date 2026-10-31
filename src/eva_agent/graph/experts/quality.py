@@ -135,8 +135,13 @@ def aggregate_outcomes(
         usage=Usage(
             grader_calls=len(output.outcomes),
             samples=len(rows),
+            input_tokens=output.input_tokens,
+            output_tokens=output.output_tokens,
             duration_ms=output.duration_ms,
+            cached=output.cached,
+            fresh=output.fresh,
         ),
+        truncated_reason=output.truncated_reason,
     )
 
 
@@ -145,9 +150,14 @@ def summarize_quality(
     *,
     sample_count: int,
     spec_count: int,
+    truncated_reason: str | None = None,
 ) -> DimensionResult:
     scored = int(normalized.metrics.get("scored_sample_count", 0))
-    if normalized.score is None:
+    if truncated_reason is not None and normalized.score is None:
+        status = "partial"
+        summary = f"quality 因预算触顶提前结束：{scored}/{sample_count} 个样本有可用分数"
+        error = None
+    elif normalized.score is None:
         status = "failed"
         summary = f"quality 评分全部失败（{scored}/{sample_count} 个样本有可用分数）"
         error = "all grader calls failed"
@@ -171,6 +181,7 @@ def summarize_quality(
         evidence=normalized.evidence,
         usage=normalized.usage,
         error=error,
+        truncated_reason=truncated_reason,
     )
 
 
@@ -212,6 +223,13 @@ def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) ->
             outcomes=[outcome for item in outputs for outcome in item.outcomes],
             duration_ms=sum(item.duration_ms for item in outputs),
             error=next((item.error for item in outputs if item.error), None),
+            input_tokens=sum(item.input_tokens or 0 for item in outputs) or None,
+            output_tokens=sum(item.output_tokens or 0 for item in outputs) or None,
+            truncated_reason=next(
+                (item.truncated_reason for item in outputs if item.truncated_reason), None
+            ),
+            cached=sum(item.cached for item in outputs),
+            fresh=sum(item.fresh for item in outputs),
         )
         return {
             "normalized": aggregate_outcomes(
@@ -232,6 +250,7 @@ def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) ->
                 normalized,
                 sample_count=len(state["rows"]),
                 spec_count=len(state["specs"]),
+                truncated_reason=normalized.truncated_reason,
             )
         }
 
