@@ -4,8 +4,9 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from eva_agent.domain.run import InputKind, RunStatus
+from eva_agent.domain.run import InputKind, RunInput, RunStatus
 from eva_agent.graph.build import build_graph
+from eva_agent.graph.nodes.intake import intake_node
 from eva_agent.graph.plan_validation import PlanValidationError
 from eva_agent.runtime.artifacts import run_paths
 from tests.support.runtime import (
@@ -95,17 +96,17 @@ async def test_invalid_plan_edit_fails_run(tmp_path: Path) -> None:
     assert snapshot.values["plan"] is not None
 
 
-async def test_upload_is_rejected_without_calling_planner(tmp_path: Path) -> None:
-    planner = FakePlanner()
-    app = build_graph(dependencies(tmp_path, planner=planner))
-    state = initial_state(paste_input())
-    state["input"] = state["input"].model_copy(update={"kind": InputKind.UPLOAD, "paste": None, "upload_id": "u1"})
+async def test_upload_input_builds_evidence(tmp_path: Path) -> None:
+    evidence = tmp_path / "data" / "runs" / "run_upload" / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "a.txt").write_bytes(b"hello")
+    deps = dependencies(tmp_path)
+    state = initial_state(RunInput(kind=InputKind.UPLOAD, upload_id="upload_a"), run_id="run_upload")
 
-    result = await app.ainvoke(state)
+    result = await intake_node(state, deps)
 
-    assert result["status"] is RunStatus.FAILED
-    assert "not supported in phase 1" in result["errors"][0]
-    assert planner.calls == 0
+    assert result["status"] is RunStatus.RUNNING
+    assert result["evidence"].kind is InputKind.UPLOAD
 
 
 async def test_valid_plan_edit_updates_budget_and_completes(tmp_path: Path) -> None:

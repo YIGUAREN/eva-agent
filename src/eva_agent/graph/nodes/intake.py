@@ -3,6 +3,7 @@
 from eva_agent.adapters.inputs.dataset import write_dataset_workspace
 from eva_agent.adapters.inputs.paste import write_paste_workspace
 from eva_agent.adapters.inputs.target import write_target_workspace
+from eva_agent.adapters.inputs.upload import write_upload_workspace
 from eva_agent.adapters.target.secrets import validate_target_env
 from eva_agent.domain.run import InputKind, RunStatus
 from eva_agent.graph.dependencies import GraphDependencies
@@ -49,6 +50,10 @@ async def intake_node(state: EvalState, deps: GraphDependencies) -> dict:
                 run_input.target_prompts,
                 deps.data_dir,
             )
+        elif run_input.kind is InputKind.UPLOAD:
+            if not run_input.upload_id:
+                raise ValueError("upload input is missing an upload id")
+            evidence = write_upload_workspace(run_id, deps.data_dir)
         else:
             raise ValueError(f"input kind '{run_input.kind.value}' is not supported in phase 1")
     except Exception as exc:
