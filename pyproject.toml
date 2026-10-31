@@ -30,6 +30,7 @@ dependencies = [
 eva = "eva_agent.cli:main"
 eva-web = "eva_agent.server.main:main"
 eva-worker = "eva_agent.worker.main:main"
+eva-sandbox = "eva_agent.sandbox.main:main"
 
 [dependency-groups]
 dev = [
