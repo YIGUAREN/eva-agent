@@ -23,6 +23,9 @@ class ReadEvidenceInput(BaseModel):
     path: str = Field(min_length=1)
     max_bytes: int | None = Field(default=None, gt=0)
     truncate: bool = False
+    # Opt-in: with ``truncate``, reject invalid UTF-8 that is not an incomplete
+    # trailing character, so a binary prefix is not silently decoded as text.
+    strict_truncate: bool = False
     run_id: str | None = None
 
 
@@ -47,13 +50,22 @@ def build_read_evidence_tool(default_max_bytes: int) -> ToolSpec:
             data = handle.read(limit)
         try:
             text = data.decode("utf-8")
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as exc:
             if not payload.truncate:
                 raise EvidenceAccessError(
                     f"file '{payload.path}' is not valid UTF-8", reason="undecodable"
                 ) from None
-            # A truncated multi-byte character is expected; drop only that tail.
-            text = data.decode("utf-8", errors="ignore")
+            if payload.strict_truncate:
+                # Tolerate only an incomplete multi-byte character at the very end
+                # of the prefix; any invalid byte before it means binary data.
+                if exc.reason != "unexpected end of data" or exc.start < len(data) - 3:
+                    raise EvidenceAccessError(
+                        f"file '{payload.path}' is not valid UTF-8", reason="undecodable"
+                    ) from None
+                text = data[: exc.start].decode("utf-8")
+            else:
+                # A truncated multi-byte character is expected; drop only that tail.
+                text = data.decode("utf-8", errors="ignore")
         # Match text-mode universal newlines so reads are platform-independent.
         return text.replace("\r\n", "\n").replace("\r", "\n")
 

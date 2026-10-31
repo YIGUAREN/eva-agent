@@ -167,3 +167,17 @@ def test_binary_members_are_skipped(tmp_path: Path) -> None:
     prepared = rows(tmp_path, ["SKILL.md", "assets/logo.png", "references/notes.md"])
 
     assert prepared[0]["reference_contents"] == ["benign\n"]
+
+
+def test_oversized_binary_members_are_skipped(tmp_path: Path) -> None:
+    (tmp_path / "SKILL.md").write_text("# Package\n", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    # 200 KB and invalid UTF-8 well before the 128 KiB read limit: the truncating
+    # retry must not turn binary data into ~131 KB of lossy reference text.
+    (tmp_path / "assets" / "blob.bin").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\xff\xfe" * 100_000)
+    (tmp_path / "references").mkdir()
+    (tmp_path / "references" / "notes.md").write_text("benign\n", encoding="utf-8")
+
+    prepared = rows(tmp_path, ["SKILL.md", "assets/blob.bin", "references/notes.md"])
+
+    assert prepared[0]["reference_contents"] == ["benign\n"]

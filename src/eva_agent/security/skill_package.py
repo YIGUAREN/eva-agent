@@ -101,7 +101,8 @@ async def _read(
             return None
     try:
         # The member was cut at the read limit, so a split multi-byte tail is
-        # expected; only this truncated case decodes leniently.
+        # expected; strict_truncate tolerates only that tail, so an oversized
+        # binary member still fails as undecodable and is skipped.
         return await tools.call(
             "read_evidence",
             ReadEvidenceInput(
@@ -109,6 +110,7 @@ async def _read(
                 path=path,
                 max_bytes=SKILL_FILE_READ_LIMIT,
                 truncate=True,
+                strict_truncate=True,
                 run_id=run_id,
             ),
         )
