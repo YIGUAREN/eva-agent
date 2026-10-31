@@ -35,27 +35,64 @@ _AIG_NAME = re.compile(r"aig/([A-Za-z0-9_-]{1,128})\.(json|csv)")
 _HIDDEN_LINE_PREFIXES = ("- 预算：", "- 已花费：")
 
 _PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
+_PUBLIC_USAGE_BOOL_KEYS = frozenset({"estimated", "budget_enforced"})
 
-_PUBLIC_SAMPLE_COUNT_KEYS = ("dimension", "sample_count", "completed_samples", "missing_samples")
+_PUBLIC_SAMPLE_COUNT_KEYS = ("sample_count", "completed_samples", "missing_samples")
+
+
+def _valid_usage_value(key: str, value: object) -> bool:
+    """A whitelisted usage key is only public when its value has the right type."""
+    if key in _PUBLIC_USAGE_BOOL_KEYS:
+        return isinstance(value, bool)
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def public_report_usage(payload: dict[str, object]) -> dict[str, object]:
+    """Copy only whitelisted usage keys whose values are safe primitives.
+
+    A hostile producer can put spend figures into a whitelisted key (for
+    example ``{"cached": {"spent_usd": 12.3}}``), so key presence alone is not
+    enough: each value is type-checked and dropped when it does not match its
+    expected type.
+    """
     raw = payload.get("usage")
     if not isinstance(raw, dict):
         return {}
-    return {key: raw[key] for key in _PUBLIC_USAGE_KEYS if key in raw}
+    return {
+        key: raw[key]
+        for key in _PUBLIC_USAGE_KEYS
+        if key in raw and _valid_usage_value(key, raw[key])
+    }
+
+
+def _valid_sample_count(value: object) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def public_truncated_sample_counts(payload: dict[str, object]) -> list[dict[str, object]]:
-    """Whitelist each truncation entry so hostile extra keys never go public."""
+    """Whitelist each truncation entry so hostile keys and values never go public.
+
+    An entry survives only when its dimension is a string and every supplied
+    count is ``None`` or a non-negative integer (booleans excluded); otherwise
+    the whole entry is dropped rather than partially copied.
+    """
     raw = payload.get("truncated_sample_counts")
     if not isinstance(raw, list):
         return []
-    return [
-        {key: item[key] for key in _PUBLIC_SAMPLE_COUNT_KEYS if key in item}
-        for item in raw
-        if isinstance(item, dict)
-    ]
+    public: list[dict[str, object]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        dimension = item.get("dimension")
+        if not isinstance(dimension, str):
+            continue
+        counts = {key: item[key] for key in _PUBLIC_SAMPLE_COUNT_KEYS if key in item}
+        if not all(_valid_sample_count(value) for value in counts.values()):
+            continue
+        public.append({"dimension": dimension, **counts})
+    return public
 
 
 def _redact_data_dir(text: str, data_dir: str) -> str:

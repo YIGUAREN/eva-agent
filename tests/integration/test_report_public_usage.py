@@ -178,3 +178,114 @@ async def test_public_report_does_not_inject_usage_into_legacy_payloads(
 
     assert response.status_code == 200
     assert "usage" not in response.json()["report"]
+
+
+async def test_public_report_drops_hostile_usage_values_but_admin_keeps_them(
+    client: AsyncClient, state: AppState
+) -> None:
+    run_id = await _create(client)
+    hostile_usage = {
+        "estimated": ["spent_usd", 12.345678],
+        "cached": {"spent_usd": 12.345678},
+        "fresh": "spent_usd=12.345678",
+        "budget_enforced": "spent_usd=12.345678",
+    }
+    await state.reports.upsert(
+        run_id, 4, {"run_id": run_id, "version": 4, "usage": hostile_usage}, "# report"
+    )
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert response.json()["report"]["usage"] == {}
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/report", headers=csrf_headers(csrf))
+
+    assert admin.status_code == 200
+    assert admin.json()["report"]["usage"] == hostile_usage
+
+
+async def test_public_report_keeps_valid_usage_values_and_drops_invalid_ones(
+    client: AsyncClient, state: AppState
+) -> None:
+    run_id = await _create(client)
+    stored_usage = {
+        "estimated": True,
+        "cached": "12.345678",
+        "fresh": 3,
+        "budget_enforced": {"spent_usd": 12.345678},
+    }
+    await state.reports.upsert(
+        run_id, 4, {"run_id": run_id, "version": 4, "usage": stored_usage}, "# report"
+    )
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert response.json()["report"]["usage"] == {"estimated": True, "fresh": 3}
+    assert "12.345678" not in response.text
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        # Hostile dimension value.
+        {
+            "dimension": {"spent_usd": 12.345678},
+            "sample_count": 5,
+            "completed_samples": 2,
+            "missing_samples": 3,
+        },
+        # Hostile count value.
+        {
+            "dimension": "quality",
+            "sample_count": ["spent_usd", 12.345678],
+            "completed_samples": 2,
+            "missing_samples": 3,
+        },
+        # Booleans are not counts.
+        {
+            "dimension": "quality",
+            "sample_count": True,
+            "completed_samples": 2,
+            "missing_samples": 3,
+        },
+        # Negative counts are not counts.
+        {
+            "dimension": "quality",
+            "sample_count": 5,
+            "completed_samples": -2,
+            "missing_samples": 3,
+        },
+    ],
+)
+async def test_public_report_drops_hostile_truncation_entries_but_admin_keeps_them(
+    client: AsyncClient, state: AppState, entry: dict[str, object]
+) -> None:
+    run_id = await _create(client)
+    payload = {
+        "run_id": run_id,
+        "version": 4,
+        "truncated_dimensions": ["quality"],
+        "truncated_sample_counts": [entry],
+    }
+    await state.reports.upsert(run_id, 4, payload, "# report")
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert response.json()["report"]["truncated_sample_counts"] == []
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/report", headers=csrf_headers(csrf))
+
+    assert admin.status_code == 200
+    assert admin.json()["report"]["truncated_sample_counts"] == [entry]

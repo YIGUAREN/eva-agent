@@ -29,9 +29,8 @@ _HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
-# Budget money keys that must never reach the public event stream:
-# ``budget.exhausted`` carries spent_usd/remaining_usd and ``budget.gate``
-# carries spent/remaining/finalize_estimate. Admin streams keep them unchanged.
+# Budget money keys that must never reach the public event stream. This is the
+# fallback for event types that are not explicitly allowlisted below.
 _PUBLIC_BUDGET_MONEY_KEYS = frozenset(
     {
         "spent_usd",
@@ -42,6 +41,16 @@ _PUBLIC_BUDGET_MONEY_KEYS = frozenset(
         "finalize_estimate_usd",
     }
 )
+
+# Public budget events expose an explicit shape instead of denylisting names:
+# ``budget.exhausted`` carries spent_usd/remaining_usd and ``budget.gate``
+# carries spent/remaining/finalize_estimate. A key allowlist is immune to
+# casing/suffix variants, nested money objects, and malformed non-dict
+# payloads. Admin streams keep the full payloads unchanged.
+_PUBLIC_BUDGET_EVENT_KEYS: dict[str, frozenset[str]] = {
+    "budget.exhausted": frozenset({"dimension"}),
+    "budget.gate": frozenset({"truncated_dimensions"}),
+}
 
 
 def _without_budget_money(value: object) -> object:
@@ -54,6 +63,22 @@ def _without_budget_money(value: object) -> object:
     if isinstance(value, list):
         return [_without_budget_money(item) for item in value]
     return value
+
+
+def _public_event_payload(event_type: str, payload: object) -> object:
+    """Reduce public budget events to their allowlisted keys.
+
+    ``budget.exhausted`` may expose only ``dimension`` and ``budget.gate`` only
+    ``truncated_dimensions``. Other event types keep the generic money-key
+    denylist. A non-dict budget payload cannot be allowlisted, so it becomes
+    an empty object for public readers.
+    """
+    allowed = _PUBLIC_BUDGET_EVENT_KEYS.get(event_type)
+    if allowed is None:
+        return _without_budget_money(payload)
+    if not isinstance(payload, dict):
+        return {}
+    return {key: value for key, value in payload.items() if key in allowed}
 
 
 def _cursor(raw: str | None) -> int:
@@ -84,8 +109,9 @@ async def _stream(
         for event in events:
             cursor = event.seq
             if public:
-                payload = _without_budget_money(
-                    sanitize_public_payload(event.payload_json, internal_hosts=internal_hosts)
+                payload = _public_event_payload(
+                    event.type,
+                    sanitize_public_payload(event.payload_json, internal_hosts=internal_hosts),
                 )
             else:
                 payload = event.payload_json

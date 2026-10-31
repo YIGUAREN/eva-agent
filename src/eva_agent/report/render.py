@@ -56,6 +56,13 @@ def _count_text(value: Any) -> str:
     return "n/a" if value is None else str(value)
 
 
+def _usage_count(value: Any) -> int:
+    """Return a non-negative integer count, or 0 for malformed provenance."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
 def _truncated_sample_counts(result: DimensionResult) -> dict[str, Any]:
     """Annotate a budget-truncated dimension with its sample completion.
 
@@ -119,9 +126,10 @@ def build_report_payload(
         # Only a real boolean counts; a truthy string such as "false" must not
         # turn into True.
         "estimated": usage_data.get("estimated") is True,
-        # Coerce defensively: malformed provenance must not break the report.
-        "cached": int(usage_data.get("cached") or 0),
-        "fresh": int(usage_data.get("fresh") or 0),
+        # Coerce defensively: malformed provenance (a truthy string, a bool, a
+        # negative int) becomes 0 rather than raising or inventing a count.
+        "cached": _usage_count(usage_data.get("cached")),
+        "fresh": _usage_count(usage_data.get("fresh")),
         "budget_enforced": usage_data.get("budget_enforced") is True,
         "spent_usd": float(usage_data.get("spent_usd") or 0),
     }

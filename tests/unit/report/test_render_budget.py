@@ -2,6 +2,8 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan, SkippedDimension
 from eva_agent.domain.result import DimensionResult, MergedResult, Usage
@@ -125,6 +127,21 @@ def test_malformed_usage_fields_are_coerced() -> None:
         "budget_enforced": False,
         "spent_usd": 0.0,
     }
+
+
+@pytest.mark.parametrize("value", ["abc", -1, True])
+def test_malformed_cached_and_fresh_counts_coerce_to_zero(value: object) -> None:
+    payload = _payload(
+        {
+            "estimated": False,
+            "cached": value,
+            "fresh": value,
+            "budget_enforced": False,
+            "spent_usd": 0,
+        }
+    )
+    assert payload["usage"]["cached"] == 0
+    assert payload["usage"]["fresh"] == 0
 
 
 def test_non_boolean_usage_flags_coerce_to_false() -> None:

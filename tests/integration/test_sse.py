@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from eva_agent.config.settings import AigSettings
@@ -106,6 +107,70 @@ async def test_public_sse_redacts_budget_money_but_admin_keeps_it(
     admin_by_type = {event["type"]: event for event in _events(admin.text)}
     assert admin_by_type["budget.exhausted"]["payload"]["spent_usd"] == 12.345678
     assert admin_by_type["budget.gate"]["payload"]["spent"] == 12.345678
+
+
+async def test_public_sse_allowlists_budget_event_payloads_but_admin_keeps_them(
+    client: AsyncClient, state: AppState
+) -> None:
+    run_id = await _completed_run(client, state)
+    exhausted = {
+        "dimension": "quality",
+        "Spent_USD": 7.7,
+        "spent_usd_2": 8.8,
+        "cost_usd": 4.4,
+        "nested": {"Spent_USD": 7.7, "spent_usd_2": 8.8, "cost_usd": 4.4},
+    }
+    gate = {
+        "truncated_dimensions": ["quality"],
+        "Spent_USD": 7.7,
+        "spent_usd_2": 8.8,
+        "cost_usd": 4.4,
+        "nested": {"Spent_USD": 7.7, "spent_usd_2": 8.8, "cost_usd": 4.4},
+    }
+    await state.runs.append_event(run_id, "budget.exhausted", exhausted)
+    await state.runs.append_event(run_id, "budget.gate", gate)
+
+    response = await client.get(f"/api/public/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    for token in ("7.7", "8.8", "4.4", "Spent_USD", "spent_usd_2", "cost_usd"):
+        assert token not in response.text
+    by_type = {event["type"]: event for event in _events(response.text)}
+    assert by_type["budget.exhausted"]["payload"] == {"dimension": "quality"}
+    assert by_type["budget.gate"]["payload"] == {"truncated_dimensions": ["quality"]}
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/events", headers=csrf_headers(csrf))
+    admin_by_type = {event["type"]: event for event in _events(admin.text)}
+    assert admin_by_type["budget.exhausted"]["payload"] == exhausted
+    assert admin_by_type["budget.gate"]["payload"] == gate
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["spent_usd", 12.345678],
+        "spent_usd=12.345678",
+    ],
+)
+async def test_public_sse_neutralizes_non_dict_budget_payloads(
+    client: AsyncClient, state: AppState, payload: object
+) -> None:
+    run_id = await _completed_run(client, state)
+    await state.runs.append_event(run_id, "budget.exhausted", payload)  # type: ignore[arg-type]
+
+    response = await client.get(f"/api/public/runs/{run_id}/events")
+
+    assert response.status_code == 200
+    by_type = {event["type"]: event for event in _events(response.text)}
+    assert by_type["budget.exhausted"]["payload"] == {}
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/events", headers=csrf_headers(csrf))
+    admin_by_type = {event["type"]: event for event in _events(admin.text)}
+    assert admin_by_type["budget.exhausted"]["payload"] == payload
 
 
 async def test_public_sse_redacts_the_configured_internal_host(tmp_path: Path) -> None:
