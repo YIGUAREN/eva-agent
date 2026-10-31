@@ -257,6 +257,16 @@ class RunWorker:
     async def _resume(self, run_id: str) -> None:
         """Resume a RUNNING run, failing it when it has no checkpoint to resume from."""
         try:
+            if await self.manager.paused_at_budget_gate(run_id):
+                # The process died between the gate checkpoint and _sync.  The
+                # checkpoint is the authority, so reconcile instead of letting
+                # resume fail (which would wrongly fail the run).
+                await self.runs.claim(
+                    run_id,
+                    from_statuses=(RunStatus.RUNNING,),
+                    to_status=RunStatus.WAITING_BUDGET,
+                )
+                return
             await self.manager.resume(run_id)
         except RunStateError as exc:
             row = await self.runs.get(run_id)

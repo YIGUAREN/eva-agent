@@ -112,7 +112,13 @@ class BudgetDecisionRepository:
             return True
 
     async def decide(self, run_id: str, seq: int, action: str, payload: dict[str, Any]) -> bool:
-        """Claim the gate row for one decision; a duplicate returns False."""
+        """Claim the pending gate row for one decision.
+
+        Returns True only for the single delivery that transitions the row away
+        from ``gate``.  Every later delivery returns False, whether it repeats
+        the same action/payload or tries a different one, and never overwrites
+        the recorded decision: the first decision for a seq is final.
+        """
         async with self._session_factory() as session:
             result = cast(
                 CursorResult[Any],

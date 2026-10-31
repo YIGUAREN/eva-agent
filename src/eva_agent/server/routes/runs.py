@@ -267,14 +267,24 @@ async def decide_run_budget(
     state = get_state(request)
     row = await _load_run(state, run_id)
     action = f"run.budget.{payload.action}"
-    if row.status != RunStatus.WAITING_BUDGET.value:
-        # A repeated submission after the first decision is idempotent: report
-        # the state that already exists instead of applying the decision twice.
+    # A terminal run or an already-recorded decision means this submission is a
+    # replay: report the current state instead of deciding twice.  Anything else
+    # out of WAITING_BUDGET/RUNNING is a real state error, not silent success.
+    if row.status in {
+        RunStatus.COMPLETED.value,
+        RunStatus.FAILED.value,
+        RunStatus.CANCELLED.value,
+    } or await state.decisions.latest_decision(run_id) is not None:
         return {"run_id": run_id, "status": row.status, "queued": ""}
     gate = await state.decisions.latest_gate(run_id)
-    if gate is None:
+    if gate is None or row.status not in {
+        RunStatus.WAITING_BUDGET.value,
+        # A RUNNING row with a pending gate is the crash window between the gate
+        # checkpoint and _sync; the worker reconciles it when deciding.
+        RunStatus.RUNNING.value,
+    }:
         await _audit_rejection(state, row, action)
-        raise ApiError(409, "invalid_state", "run has no recorded budget gate")
+        raise ApiError(409, "invalid_state", "run is not waiting for a budget decision")
     gate_payload = dict(gate.payload_json)
     finalize_estimate = Decimal(str(gate_payload["finalize_estimate"]))
     remaining = Decimal(str(gate_payload["remaining"]))
@@ -341,7 +351,12 @@ async def cancel_run(
 ) -> dict[str, str]:
     state = get_state(request)
     row = await _load_run(state, run_id)
-    if row.status not in {RunStatus.QUEUED.value, RunStatus.WAITING_APPROVAL.value}:
+    if row.status not in {
+        RunStatus.QUEUED.value,
+        RunStatus.RUNNING.value,
+        RunStatus.WAITING_APPROVAL.value,
+        RunStatus.WAITING_BUDGET.value,
+    }:
         await _audit_rejection(state, row, "run.cancel")
         raise ApiError(409, "invalid_state", "run cannot be cancelled in its current state")
     try:

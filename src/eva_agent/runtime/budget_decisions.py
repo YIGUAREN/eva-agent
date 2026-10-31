@@ -32,19 +32,21 @@ def ensure_summarize_allowed(
 
 
 def validate_extension(budget: Budget, usage: RunUsage) -> None:
+    # Messages stay free of spend amounts: they cross the public error envelope,
+    # while exact figures are exposed separately through the details field.
     if Decimal(str(budget.max_cost_usd)) <= usage.spent_usd:
         raise InvalidBudgetExtension(
             "max_cost_usd",
-            f"新预算 max_cost_usd 必须严格大于已消费 {usage.spent_usd}",
+            "新预算 max_cost_usd 必须严格大于已消费金额",
         )
     if float(budget.max_wall_clock_s) <= usage.spent_wall_clock_s:
         raise InvalidBudgetExtension(
             "max_wall_clock_s",
-            f"新预算 max_wall_clock_s 必须严格大于已消费 {usage.spent_wall_clock_s}",
+            "新预算 max_wall_clock_s 必须严格大于已消耗时间",
         )
     consumed_requests = max(usage.target_requests, usage.aig_requests)
     if budget.max_target_requests <= consumed_requests:
         raise InvalidBudgetExtension(
             "max_target_requests",
-            f"新预算 max_target_requests 必须严格大于已消费 {consumed_requests}",
+            "新预算 max_target_requests 必须严格大于已消耗请求数",
         )

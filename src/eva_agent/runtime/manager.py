@@ -127,6 +127,7 @@ class RunManager:
         self._decisions: BudgetDecisionRepository | None = None
         self._ledgers: dict[str, BudgetLedger] = {}
         self._ledger_lock = asyncio.Lock()
+        self._decision_locks: dict[str, asyncio.Lock] = {}
 
     @classmethod
     @asynccontextmanager
@@ -162,9 +163,13 @@ class RunManager:
         self._usage_repo = RunUsageRepository(session_factory)
         self._ledger_store = SqlLedgerStore(self._usage_repo)
         self._decisions = BudgetDecisionRepository(session_factory)
-        # The local pricing table is always loadable; an unenforced ledger skips
-        # estimation entirely, so an unpriced model cannot fail a CLI run.
-        pricing = PricingTable.load(Path(self._config.pricing.path))
+        # Pricing is only needed to enforce a budget; loading it unconditionally
+        # would duplicate build_runtime_dependencies and fail an unenforced CLI
+        # run on a missing pricing file.  An estimator without a table stays
+        # fail-closed, but an unlimited ledger never asks it to price anything.
+        pricing = (
+            PricingTable.load(Path(self._config.pricing.path)) if self._enforce_budget else None
+        )
         self._estimator = CostEstimator(pricing, token_encoding=self._config.target.token_encoding)
         self._models = BudgetModels(
             agent=self._config.models.agent,
@@ -314,7 +319,38 @@ class RunManager:
             input_kind=input_kind,
         )
 
+    async def _paused_nodes(self, run_id: str) -> set[str]:
+        snapshot = await self._require_graph().aget_state(self._thread(run_id))
+        return set(snapshot.next or ())
+
+    async def paused_at_budget_gate(self, run_id: str) -> bool:
+        """Return whether the checkpoint is paused at the budget gate.
+
+        The row may still say RUNNING when the process died between the gate
+        checkpoint and ``_sync``; callers use this to reconcile that state.
+        """
+        return "budget_gate" in await self._paused_nodes(run_id)
+
     async def _sync(self, run_id: str, values: dict[str, Any]) -> bool:
+        try:
+            return await self._sync_values(run_id, values)
+        except Exception:
+            # The graph may already be paused at the gate even though persisting
+            # the rest of the state failed.  Reconcile the row to the checkpoint
+            # so a later decision retry can recover the run instead of wedging it.
+            try:
+                paused = await self._paused_nodes(run_id)
+            except Exception:
+                paused = set()
+            if "budget_gate" in paused:
+                await self._require_repo().claim(
+                    run_id,
+                    from_statuses=(RunStatus.RUNNING,),
+                    to_status=RunStatus.WAITING_BUDGET,
+                )
+            raise
+
+    async def _sync_values(self, run_id: str, values: dict[str, Any]) -> bool:
         repo = self._require_repo()
         plan = values.get("plan")
         if plan is not None:
@@ -326,8 +362,7 @@ class RunManager:
         new_status = status if isinstance(status, RunStatus) else RunStatus(status)
         # The paused node is the authority: a gate prepare forces RUNNING, so the
         # waiting state must come from the checkpoint rather than the values.
-        snapshot = await self._require_graph().aget_state(self._thread(run_id))
-        next_nodes = set(snapshot.next or ())
+        next_nodes = await self._paused_nodes(run_id)
         if "budget_gate" in next_nodes:
             new_status = RunStatus.WAITING_BUDGET
         elif "approve" in next_nodes:
@@ -579,6 +614,13 @@ class RunManager:
             )
         return await self.status(run_id)
 
+    def _decision_lock_for(self, run_id: str) -> asyncio.Lock:
+        lock = self._decision_locks.get(run_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._decision_locks[run_id] = lock
+        return lock
+
     async def decide_budget(
         self,
         run_id: str,
@@ -587,26 +629,56 @@ class RunManager:
         confirm_overrun: bool = False,
         budget: Budget | None = None,
     ) -> RunStatusView:
+        # Two deliveries for the same run must never both replay the recorded
+        # decision: the first resumes the graph, the second observes the result.
+        async with self._decision_lock_for(run_id):
+            return await self._decide_budget_locked(
+                run_id,
+                action=action,
+                confirm_overrun=confirm_overrun,
+                budget=budget,
+            )
+
+    async def _decide_budget_locked(
+        self,
+        run_id: str,
+        *,
+        action: str,
+        confirm_overrun: bool,
+        budget: Budget | None,
+    ) -> RunStatusView:
         repo = self._require_repo()
-        graph = self._require_graph()
         row = await repo.get(run_id)
         if row is None:
             raise KeyError(run_id)
         if self._decisions is None:
             raise RunStateError("budget decisions are unavailable without enforcement")
 
-        snapshot = await graph.aget_state(self._thread(run_id))
-        paused_at_gate = "budget_gate" in set(snapshot.next or ())
+        paused_at_gate = await self.paused_at_budget_gate(run_id)
         gate_row = await self._decisions.latest_gate(run_id)
         if gate_row is None:
             if paused_at_gate:
                 # The decision row was rewritten but the process died before the
                 # graph resumed; replay the recorded decision instead of treating
                 # the missing gate as "already resumed".
-                return await self._resume_recorded_decision(run_id)
+                return await self._replay_recorded_decision(run_id)
             # A duplicate delivery after a successful resume is idempotent.
             return await self.status(run_id)
         if not paused_at_gate:
+            raise RunStateError(f"run '{run_id}' is not waiting for a budget decision")
+
+        status = RunStatus(row.status)
+        if status is RunStatus.RUNNING:
+            # The gate checkpoint landed but the row was never synced.  Treat the
+            # checkpoint as the authority and make the waiting state durable so
+            # the ordinary claim below succeeds.
+            if not await repo.claim(
+                run_id,
+                from_statuses=(RunStatus.RUNNING,),
+                to_status=RunStatus.WAITING_BUDGET,
+            ):
+                return await self.status(run_id)
+        elif status is not RunStatus.WAITING_BUDGET:
             raise RunStateError(f"run '{run_id}' is not waiting for a budget decision")
 
         seq = int(gate_row.seq)
@@ -661,11 +733,25 @@ class RunManager:
         return await self.status(run_id)
 
     async def _resume_recorded_decision(self, run_id: str) -> RunStatusView:
+        async with self._decision_lock_for(run_id):
+            return await self._replay_recorded_decision(run_id)
+
+    async def _replay_recorded_decision(self, run_id: str) -> RunStatusView:
         if self._decisions is None:
             raise RunStateError("budget decisions are unavailable without enforcement")
+        repo = self._require_repo()
+        row = await repo.get(run_id)
+        if row is None:
+            raise KeyError(run_id)
         decided = await self._decisions.latest_decision(run_id)
         if decided is None:
             raise RunStateError(f"run '{run_id}' is waiting for a budget decision")
+        # The row is the durable authority: only a RUNNING run can be waiting on
+        # a crashed replay.  Anything else already resumed and is idempotent.
+        if RunStatus(row.status) is not RunStatus.RUNNING:
+            return await self.status(run_id)
+        if not await self.paused_at_budget_gate(run_id):
+            return await self.status(run_id)
         stored = decided.payload_json or {}
         decision = dict(stored.get("decision") or {})
         if not decision:
