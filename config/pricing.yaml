@@ -1,10 +1,6 @@
 currency: USD
 models:
-  - provider: demo
-    model: demo-echo
-    input_per_million: 0.0
-    output_per_million: 0.0
-  - provider: deepseek
+  - provider: openai-compatible
     model: deepseek-chat
     input_per_million: 0.27
     output_per_million: 1.10
