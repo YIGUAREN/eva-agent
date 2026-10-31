@@ -19,7 +19,7 @@ RESULT_PATH = "/api/v1/app/taskapi/result/{session_id}"
 UPLOAD_PATH = "/api/v1/app/taskapi/upload"
 
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_FILE_URL = re.compile(r"[A-Za-z0-9._-]{1,255}")
+_FILE_URL = re.compile(r"(?=[A-Za-z0-9._-]*[A-Za-z0-9])[A-Za-z0-9._-]{1,255}")
 
 _SUCCESS_STATUSES = frozenset({"completed", "done"})
 _FAILURE_STATUSES = frozenset({"failed", "error", "terminated"})

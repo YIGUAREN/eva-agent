@@ -45,6 +45,18 @@ async def test_upload_rejects_a_file_url_that_looks_like_a_path() -> None:
             await client.upload("pkg.zip", b"PK\x03\x04")
 
 
+@pytest.mark.parametrize("file_url", [".", ".."])
+@pytest.mark.asyncio
+async def test_upload_rejects_a_dot_only_file_url(file_url: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "message": "ok", "data": {"fileUrl": file_url}})
+
+    client, http = _client(handler)
+    async with http:
+        with pytest.raises(AigUnavailable, match="invalid fileUrl"):
+            await client.upload("pkg.zip", b"PK\x03\x04")
+
+
 @pytest.mark.asyncio
 async def test_upload_maps_transport_failures_without_echoing_the_body() -> None:
     def handler(request: httpx.Request) -> httpx.Response:

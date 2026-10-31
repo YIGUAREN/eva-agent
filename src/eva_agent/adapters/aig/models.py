@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from eva_agent.adapters.aig.errors import AigResultError
+
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
 
 class AigVulnerability(BaseModel):
@@ -98,6 +101,8 @@ class AigSkillFinding(BaseModel):
     def _relative_file(cls, value: str | None) -> str | None:
         if value is None:
             return value
+        if "\\" in value or _WINDOWS_DRIVE.match(value):
+            raise ValueError("finding file must stay inside the package")
         path = PurePosixPath(value)
         if path.is_absolute() or ".." in path.parts:
             raise ValueError("finding file must stay inside the package")
@@ -111,7 +116,7 @@ class AigSkillReport(BaseModel):
     language: str = Field(default="", max_length=64)
     llm: str = Field(default="", max_length=128)
     readme: str = Field(default="", max_length=32_768)
-    results: list[AigSkillFinding] = Field(default_factory=list)
+    results: list[AigSkillFinding]
 
 
 class AigAgentFinding(BaseModel):
@@ -122,7 +127,7 @@ class AigAgentFinding(BaseModel):
     title: str = Field(min_length=1, max_length=2_048)
     description: str = Field(min_length=1, max_length=8_192)
     level: Literal["HIGH", "MEDIUM", "LOW"]
-    owasp: list[str] = Field(default_factory=list)
+    owasp: list[str] = Field(max_length=32)
     suggestion: str = Field(default="", max_length=8_192)
 
 
@@ -135,8 +140,8 @@ class AigAgentReport(BaseModel):
     risk_type: str = Field(default="safe", max_length=32)
     total_tests: int = Field(default=0, ge=0)
     vulnerable_tests: int = Field(default=0, ge=0)
-    results: list[AigAgentFinding] = Field(default_factory=list)
-    owasp_agentic_2026_top10: list[dict[str, Any]] = Field(default_factory=list)
+    results: list[AigAgentFinding]
+    owasp_agentic_2026_top10: list[dict[str, Any]] = Field(max_length=64)
     report_description: str = Field(default="", max_length=32_768)
     language: str = Field(default="", max_length=64)
 

@@ -84,6 +84,54 @@ def test_skill_finding_file_must_stay_inside_the_package() -> None:
             parse_skill_result(payload)
 
 
+@pytest.mark.parametrize("bad", ["C:/etc/passwd", "a\\..\\b.md"])
+def test_skill_finding_file_rejects_windows_paths(bad: str) -> None:
+    payload = skill_payload(results=[{"title": "t", "description": "d", "risk_type": "T04", "file": bad}])
+    with pytest.raises(AigResultError):
+        parse_skill_result(payload)
+
+
+def test_skill_result_requires_a_finding_list() -> None:
+    payload = skill_payload()
+    del payload["result"]["results"]
+    with pytest.raises(AigResultError):
+        parse_skill_result(payload)
+
+
+def test_agent_result_requires_a_finding_list() -> None:
+    payload = agent_payload()
+    del payload["result"]["results"]
+    with pytest.raises(AigResultError):
+        parse_agent_result(payload)
+
+
+def test_agent_result_requires_owasp_summaries() -> None:
+    payload = agent_payload()
+    del payload["result"]["owasp_agentic_2026_top10"]
+    with pytest.raises(AigResultError):
+        parse_agent_result(payload)
+
+
+def test_agent_finding_requires_owasp_categories() -> None:
+    payload = agent_payload(results=[{"title": "t", "description": "d", "level": "HIGH"}])
+    with pytest.raises(AigResultError):
+        parse_agent_result(payload)
+
+
+def test_agent_finding_owasp_list_is_capped() -> None:
+    payload = agent_payload(
+        results=[{"title": "t", "description": "d", "level": "HIGH", "owasp": ["ASI01"] * 33}]
+    )
+    with pytest.raises(AigResultError):
+        parse_agent_result(payload)
+
+
+def test_agent_owasp_summary_list_is_capped() -> None:
+    payload = agent_payload(owasp_agentic_2026_top10=[{}] * 65)
+    with pytest.raises(AigResultError):
+        parse_agent_result(payload)
+
+
 def test_result_must_be_an_object() -> None:
     with pytest.raises(AigResultError, match="no structured result object"):
         parse_skill_result({"id": "m", "result": []})
@@ -119,7 +167,7 @@ def test_agent_result_parses_the_report_fields() -> None:
 @pytest.mark.parametrize("level", ["high", "critical", "", "MEDIUM "])
 def test_agent_finding_level_must_be_canonical(level: str) -> None:
     payload = agent_payload(
-        results=[{"title": "t", "description": "d", "level": level, "risk_type": "x"}]
+        results=[{"title": "t", "description": "d", "level": level, "risk_type": "x", "owasp": ["ASI01"]}]
     )
     with pytest.raises(AigResultError):
         parse_agent_result(payload)
