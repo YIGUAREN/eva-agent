@@ -12,10 +12,11 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.exc import IntegrityError
 
+from eva_agent.adapters.openjudge.catalog import CatalogError, load_catalog
 from eva_agent.config.settings import ConfigError
 from eva_agent.config.targets import load_targets
 from eva_agent.domain.audit import AuditEvent
-from eva_agent.domain.run import InputKind, RunStatus
+from eva_agent.domain.run import GraderSelection, InputKind, RunStatus
 from eva_agent.runtime.budget_decisions import (
     BudgetOverrunRequired,
     InvalidBudgetExtension,
@@ -95,6 +96,26 @@ def _internal_hosts(state: AppState) -> tuple[str, ...]:
     return (hostname,) if hostname else ()
 
 
+def _validate_grader_selection(state: AppState, selection: GraderSelection | None) -> None:
+    """Reject selections that name no grader, an unknown id, or a wrong-dimension id."""
+    if selection is None:
+        return
+    if selection.is_empty():
+        raise ApiError(422, "no_graders", "至少勾选一个评分器")
+    try:
+        catalog = load_catalog(Path(state.config.openjudge.catalog_path))
+    except CatalogError:
+        raise ApiError(503, "unavailable", "grader catalog unavailable") from None
+    groups = (("quality", selection.quality), ("security", selection.security))
+    for dimension, grader_ids in groups:
+        for grader_id in grader_ids:
+            entry = catalog.get(grader_id)
+            if entry is None:
+                raise ApiError(422, "unknown_grader", f"未知评分器：{grader_id}")
+            if dimension not in entry.tags:
+                raise ApiError(422, "invalid_grader", f"评分器 {grader_id} 不属于 {dimension} 维度")
+
+
 def _target_names(state: AppState) -> Mapping[str, object]:
     try:
         return load_targets(Path(state.config.target.targets_path))
@@ -112,6 +133,7 @@ async def create_run(
     state = get_state(request)
     if payload.input.kind is InputKind.TARGET and payload.input.target_ref not in _target_names(state):
         raise ApiError(422, "unknown_target", "unknown target")
+    _validate_grader_selection(state, payload.input.graders)
     if payload.idempotency_key:
         existing = await state.runs.get_by_idempotency_key(payload.idempotency_key)
         if existing is not None:

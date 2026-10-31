@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from eva_agent.domain.plan import Dimension
-from eva_agent.domain.run import InputKind, RunStatus
+from eva_agent.domain.run import GraderSelection, InputKind, RunStatus
 from eva_agent.domain.target import TargetKind
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.nodes.analyze import analyze_node
@@ -60,6 +60,16 @@ def _route_after_budget_gate_prepare(state: EvalState) -> str:
     return "budget_gate" if state.get("budget_gate") is not None else "merge"
 
 
+def _selected_graders(state: EvalState) -> GraderSelection | None:
+    """The run's grader selection, or None to keep the planner default.
+
+    ``input`` is always present in a real graph run; a partial state (a unit
+    test or an old checkpoint) simply keeps the default choice.
+    """
+    run_input = state.get("input")
+    return run_input.graders if run_input is not None else None
+
+
 def route_experts(state: EvalState) -> list[Send] | str:
     if state["status"] is not RunStatus.RUNNING or state["plan"] is None:
         return END
@@ -72,6 +82,7 @@ def route_experts(state: EvalState) -> list[Send] | str:
                 "evidence": state["evidence"],
                 "probe": state.get("probe"),
                 "budget": state["budget"],
+                "graders": _selected_graders(state),
                 "authorization_ref": state.get("authorization_ref"),
                 "requester_is_admin": state.get("requester_is_admin"),
             },
@@ -98,6 +109,7 @@ def route_after_budget_gate(state: EvalState) -> list[Send] | str:
                 "evidence": state["evidence"],
                 "probe": state.get("probe"),
                 "budget": state["budget"],
+                "graders": _selected_graders(state),
                 "authorization_ref": state.get("authorization_ref"),
                 "requester_is_admin": state.get("requester_is_admin"),
             },

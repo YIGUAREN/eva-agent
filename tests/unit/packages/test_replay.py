@@ -12,7 +12,7 @@ from eva_agent.domain.grader import CheckSpec, GraderSpec, ScoreSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, EvalPlan
 from eva_agent.domain.probe import ProbeRecord
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
-from eva_agent.domain.run import InputKind, RunInput
+from eva_agent.domain.run import GraderSelection, InputKind, RunInput
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.graders_dsl.compiler import compile_grader
 from eva_agent.graph.experts.cost import build_cost_record, summarize_cost
@@ -191,11 +191,17 @@ def _package(
     probe_records: list[ProbeRecord] | None = None,
     prices: list[ModelPrice] | None = None,
     dimensions: list[dict[str, Any]] | None = None,
+    graders: GraderSelection | None = None,
 ) -> GraderPackage:
     """A replayable package built from models only: no database, cache, or config file."""
     package_rows = ROWS if rows is None else rows
     inputs = PackageInput(
-        run_input=RunInput(kind=InputKind.TARGET, target_ref=TARGET.name, target_prompts=["prompt"]),
+        run_input=RunInput(
+            kind=InputKind.TARGET,
+            target_ref=TARGET.name,
+            target_prompts=["prompt"],
+            graders=graders,
+        ),
         evidence=_evidence(),
         rows=package_rows,
         source_indexes=[None] * len(package_rows),
@@ -246,9 +252,14 @@ def _declarative_output(spec: GraderSpec, records: list[dict[str, Any]]) -> Grad
     return GraderRunOutput(outcomes=outcomes)
 
 
-def _passive_entry(rows: list[dict[str, str]], outcomes: list[RecordedOutcome]) -> dict[str, Any]:
+def _passive_entry(
+    rows: list[dict[str, str]],
+    outcomes: list[RecordedOutcome],
+    *,
+    graders: GraderSelection | None = None,
+) -> dict[str, Any]:
     """The report entry the security expert writes for *outcomes*."""
-    specs = passive_specs(rows)
+    specs = passive_specs(rows, selected=graders.security if graders is not None else None)
     expected = summarize_passive(
         GraderRunOutput(
             outcomes=[
@@ -309,6 +320,32 @@ def test_replay_reports_a_tampered_security_snapshot() -> None:
     assert result.matched is False
     assert any(item.path == "dimensions.security.metrics.passive" for item in result.differences)
     assert all(item.path.startswith("dimensions.security.") for item in result.differences)
+
+
+CODE_ROWS = [{"query": "q0", "response": "def f():\n    return 1", "context": "", "reference": ""}]
+
+
+def test_replay_honours_the_packaged_security_selection() -> None:
+    selection = GraderSelection(security=["code_security"])
+    outcomes = [
+        RecordedOutcome(
+            dimension=Dimension.SECURITY,
+            spec_name="code_security",
+            sample_index=0,
+            score=0.9,
+            raw_score=0.9,
+            reason="",
+        )
+    ]
+    entry = _passive_entry(CODE_ROWS, outcomes, graders=selection)
+    plan = _plan(DimensionPlan(dimension=Dimension.SECURITY, enabled=True))
+
+    result = replay_package(
+        _package(plan, rows=CODE_ROWS, outcomes=outcomes, dimensions=[entry], graders=selection)
+    )
+
+    assert result.matched is True
+    assert result.differences == []
 
 
 def test_replay_matches_a_cost_package_using_packaged_prices(monkeypatch) -> None:

@@ -12,10 +12,17 @@ from eva_agent.budget.types import BudgetExhausted
 from eva_agent.domain.audit import AuditEvent
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle
+from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan
 from eva_agent.domain.probe import ProbeSummary
-from eva_agent.domain.result import DimensionResult, Finding, NormalizedQuality, Usage
-from eva_agent.domain.run import InputKind
+from eva_agent.domain.result import (
+    DimensionResult,
+    Finding,
+    GraderRunOutput,
+    NormalizedQuality,
+    Usage,
+)
+from eva_agent.domain.run import GraderSelection, InputKind
 from eva_agent.domain.target import ScanKind, TargetSpec, scan_kind_for
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.experts.rows import prepare_rows_with_indexes
@@ -97,9 +104,12 @@ class SecurityExpert:
         budget: Budget,
         authorization_ref: str | None = None,
         requester_is_admin: bool | None = None,
+        selected: GraderSelection | None = None,
     ) -> DimensionResult:
         if plan.dimension is not Dimension.SECURITY:
             raise ValueError("security expert received a non-security plan")
+        security_ids = selected.security if selected is not None else None
+        threat_selected = security_ids is None or "threat_analysis" in security_ids
         kind = self._scan_kind(evidence)
         if kind == "agent_scan":
             active = await self._active(
@@ -121,7 +131,7 @@ class SecurityExpert:
         limit = plan.sample_size or self._deps.default_sample_size
         skill_rows: list[dict[str, Any]] = []
         threat_unavailable: str | None = None
-        if kind == "skill_scan":
+        if kind == "skill_scan" and threat_selected:
             try:
                 skill_rows = await build_skill_rows(self._deps.tools, evidence, run_id=run_id)
             except EvidenceAccessError as exc:
@@ -150,14 +160,18 @@ class SecurityExpert:
                     raise
                 row_failure = type(exc).__name__
 
-        if not rows and not skill_rows and threat_unavailable is None:
+        # A skill package is graded by the active skill scan even when threat
+        # analysis was not selected, so an empty row set only fails non-skill
+        # inputs that have nothing left to check.
+        if not rows and not skill_rows and kind != "skill_scan" and threat_unavailable is None:
             return self._failed("security 没有可评估的成功响应")
 
+        specs = passive_specs(rows, selected=security_ids)
         if row_failure is not None:
             passive = failed_passive(expected_outcomes=0, reason=row_failure)
         else:
             try:
-                passive = await self._passive(run_id, evidence, rows, source_indexes)
+                passive = await self._passive(run_id, evidence, rows, source_indexes, specs)
             except Exception as exc:
                 if kind != "skill_scan":
                     return self._failed(f"security 被动检查失败：{type(exc).__name__}")
@@ -189,7 +203,17 @@ class SecurityExpert:
             # ``_active`` already emitted the event when its own reservation
             # was refused; emit only for passive/threat truncation here.
             await self._budget_exhausted(run_id, "security")
-        spec_count = len(passive_specs(rows)) + (1 if skill_rows else 0)
+        spec_count = len(specs) + (1 if skill_rows else 0)
+        if (
+            selected is not None
+            and not specs
+            and not skill_rows
+            and row_failure is None
+            and active[0] == "not_applicable"
+        ):
+            # None of the selected graders applies to this input, and no active
+            # scan can run: report the dimension as skipped instead of failed.
+            return self._skipped(passive, active, spec_count)
         return self._result(
             passive,
             active,
@@ -204,10 +228,20 @@ class SecurityExpert:
         evidence: EvidenceBundle,
         rows: list[dict[str, Any]],
         source_indexes: list[int | None],
+        specs: list[GraderSpec],
     ) -> NormalizedQuality:
         if not rows:
             return empty_passive(evidence)
-        specs = passive_specs(rows)
+        if not specs:
+            # Nothing selected applies; grading no specs would still be a
+            # no-op call, so build the empty summary replay expects directly.
+            return summarize_passive(
+                GraderRunOutput(),
+                specs=specs,
+                rows=rows,
+                evidence=evidence,
+                source_indexes=source_indexes,
+            )
         output = await self._deps.tools.call("run_graders", RunGradersInput(specs=specs, rows=rows, run_id=run_id))
         summary = summarize_passive(
             output, specs=specs, rows=rows, evidence=evidence, source_indexes=source_indexes
@@ -620,6 +654,36 @@ class SecurityExpert:
             usage=passive.usage if passive is not None else Usage(),
             error=error,
             truncated_reason=truncated_reason,
+        )
+
+    def _skipped(
+        self,
+        passive: NormalizedQuality,
+        active: tuple[ActiveStatus, ActiveSummary | None, dict[str, Any], bool, bool],
+        spec_count: int,
+    ) -> DimensionResult:
+        """No selected grader applies and no active scan can run.
+
+        The passive metrics come from the selected (empty) spec list, so replay
+        derives the same values from the packaged selection.
+        """
+        _, _, active_metrics, audit_error = active[:4]
+        return DimensionResult(
+            dimension=Dimension.SECURITY,
+            status="skipped",
+            score=None,
+            confidence=passive.confidence,
+            summary="security 跳过：所选安全评分器不适用于本次输入",
+            metrics={
+                "passive": passive.metrics,
+                "active": active_metrics,
+                "score_cap": None,
+                "audit_error": audit_error,
+                "grader_count": spec_count,
+            },
+            findings=list(passive.findings),
+            evidence=passive.evidence,
+            usage=passive.usage,
         )
 
     @staticmethod

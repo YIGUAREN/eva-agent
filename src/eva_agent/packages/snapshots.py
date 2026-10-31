@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from eva_agent.adapters.openjudge.cache import GradingCache, cache_key
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan
+from eva_agent.domain.run import GraderSelection
 from eva_agent.packages.manifest import PackageError
 from eva_agent.security.passive import passive_specs
 
@@ -39,15 +40,23 @@ class SnapshotSet(BaseModel):
         ]
 
 
-def _snapshot_specs(plan_dimension: DimensionPlan, rows: list[dict[str, Any]]) -> list[GraderSpec]:
+def _snapshot_specs(
+    plan_dimension: DimensionPlan,
+    rows: list[dict[str, Any]],
+    graders: GraderSelection | None,
+) -> list[GraderSpec]:
     """The model-backed specs whose outcomes the expert would have asked the cache for.
 
     Quality grades its pointwise plan graders; security ignores the plan and
-    derives its passive graders from the rows, so the snapshot must do the same.
+    derives its passive graders from the rows and the run's selection, so the
+    snapshot must do the same.
     Declarative graders run locally at replay time and never need a snapshot.
     """
     if plan_dimension.dimension is Dimension.SECURITY:
-        return passive_specs(rows)
+        return passive_specs(
+            rows,
+            selected=graders.security if graders is not None else None,
+        )
     if plan_dimension.dimension is Dimension.QUALITY:
         return [
             spec
@@ -64,6 +73,7 @@ def collect_snapshots(
     dimensions: Iterable[DimensionPlan],
     rows: list[dict[str, Any]],
     dimension_limits: Mapping[str, int],
+    graders: GraderSelection | None = None,
 ) -> tuple[SnapshotSet, list[str]]:
     """Read every cached outcome for every model-backed spec; list what is missing.
 
@@ -79,7 +89,7 @@ def collect_snapshots(
         if limit is None:
             raise PackageError(f"no sample limit was recorded for dimension '{dimension.value}'")
         dimension_rows = rows[:limit]
-        for spec in _snapshot_specs(dimension_plan, dimension_rows):
+        for spec in _snapshot_specs(dimension_plan, dimension_rows, graders):
             recorded = 0
             errored = 0
             for index, row in enumerate(dimension_rows):

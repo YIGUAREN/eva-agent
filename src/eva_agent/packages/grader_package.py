@@ -269,6 +269,7 @@ async def build_grader_package(
             dimensions=[item for item in plan.dimensions if item.enabled],
             rows=inputs.rows,
             dimension_limits=inputs.dimension_limits,
+            graders=inputs.run_input.graders,
         )
         if not paths.report_json.is_file():
             raise PackageError("run has no report.json; only completed runs can be packaged")

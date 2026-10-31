@@ -6,7 +6,7 @@ from eva_agent.domain.budget import Budget
 from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
 from eva_agent.domain.grader import GraderSpec
 from eva_agent.domain.plan import Dimension, DimensionPlan, SkippedDimension
-from eva_agent.domain.run import InputKind, PastedInput
+from eva_agent.domain.run import GraderSelection, InputKind, PastedInput
 from eva_agent.graph.plan_validation import PlanValidationError
 from eva_agent.graph.planner import LlmPlanner, PlannerOutput
 from eva_agent.tools.evidence import build_read_evidence_tool
@@ -44,6 +44,30 @@ def build_registry() -> ToolRegistry:
                     "mode": "pointwise",
                     "inputs": ["query", "response"],
                     "tags": ["quality"],
+                    "needs_model": True,
+                    "cost": "low",
+                },
+                {
+                    "id": "similarity",
+                    "mode": "pointwise",
+                    "inputs": ["reference_response", "response"],
+                    "tags": ["quality", "reference"],
+                    "needs_model": False,
+                    "cost": "free",
+                },
+                {
+                    "id": "harmfulness",
+                    "mode": "pointwise",
+                    "inputs": ["query", "response"],
+                    "tags": ["security", "safety"],
+                    "needs_model": True,
+                    "cost": "low",
+                },
+                {
+                    "id": "code_security",
+                    "mode": "pointwise",
+                    "inputs": ["query", "response"],
+                    "tags": ["security", "code"],
                     "needs_model": True,
                     "cost": "low",
                 },
@@ -326,6 +350,140 @@ async def test_upload_quality_is_allowed_when_a_later_row_has_a_response(tmp_pat
 
     assert plan.dimensions[0].dimension is Dimension.QUALITY
     assert plan.dimensions[0].enabled is True
+
+
+async def test_selection_plan_runs_only_the_checked_graders_without_the_llm() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+    selection = GraderSelection(quality=["relevance"], security=["harmfulness"])
+
+    plan = await planner.plan(evidence(), budget, selected_graders=selection)
+
+    assert structured.prompts == []
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    assert quality.enabled is True
+    assert [spec.builtin_id for spec in quality.graders] == ["relevance"]
+    assert all(spec.level == "builtin" for spec in quality.graders)
+    security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert security.enabled is True
+    assert security.graders == []
+    assert {item.dimension for item in plan.skipped} == {Dimension.LATENCY, Dimension.COST}
+
+
+async def test_selection_plan_skips_unchecked_dimensions() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+
+    plan = await planner.plan(
+        evidence(),
+        budget,
+        selected_graders=GraderSelection(quality=[], security=["harmfulness"]),
+    )
+
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    assert quality.enabled is False
+    skipped = {item.dimension: item.reason for item in plan.skipped}
+    assert "未选择质量评分器" in skipped[Dimension.QUALITY]
+
+
+async def test_selection_plan_drops_reference_graders_when_the_input_has_no_reference() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+
+    plan = await planner.plan(
+        evidence(),
+        budget,
+        selected_graders=GraderSelection(quality=["correctness", "relevance"]),
+    )
+
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    assert [spec.builtin_id for spec in quality.graders] == ["relevance"]
+
+
+async def test_selection_plan_skips_quality_without_a_response() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+    paste_only = EvidenceBundle(
+        kind=InputKind.PASTE,
+        pasted={"query": "q"},
+        manifest_sha256="a" * 64,
+    )
+
+    plan = await planner.plan(
+        paste_only,
+        budget,
+        selected_graders=GraderSelection(quality=["relevance"], security=["harmfulness"]),
+    )
+
+    quality = next(item for item in plan.dimensions if item.dimension is Dimension.QUALITY)
+    security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert quality.enabled is False
+    assert security.enabled is False
+    skipped = {item.dimension: item.reason for item in plan.skipped}
+    assert "没有可评估的回答" in skipped[Dimension.QUALITY]
+    assert "没有可评估的回答" in skipped[Dimension.SECURITY]
+
+
+async def test_selection_plan_skips_security_when_no_checked_grader_applies() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+    plain_paste = EvidenceBundle(
+        kind=InputKind.PASTE,
+        pasted={"query": "q", "response": "plain prose"},
+        manifest_sha256="a" * 64,
+    )
+
+    plan = await planner.plan(
+        plain_paste,
+        budget,
+        selected_graders=GraderSelection(quality=[], security=["code_security", "threat_analysis"]),
+    )
+
+    security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert security.enabled is False
+    skipped = {item.dimension: item.reason for item in plan.skipped}
+    assert "不适用于本次输入" in skipped[Dimension.SECURITY]
+
+
+async def test_selection_plan_keeps_code_security_when_the_response_has_code() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+    code_paste = EvidenceBundle(
+        kind=InputKind.PASTE,
+        pasted={"query": "q", "response": "def f():\n    return 1"},
+        manifest_sha256="a" * 64,
+    )
+
+    plan = await planner.plan(
+        code_paste,
+        budget,
+        selected_graders=GraderSelection(quality=[], security=["code_security"]),
+    )
+
+    security = next(item for item in plan.dimensions if item.dimension is Dimension.SECURITY)
+    assert security.enabled is True
+
+
+async def test_selection_plan_keeps_the_user_objective() -> None:
+    structured = FakeStructured(output_with(GraderSpec(level="llm_rubric", name="helpfulness")))
+    planner = LlmPlanner(None, build_registry(), structured_runner=structured)
+    budget = Budget(max_cost_usd=1.0, max_wall_clock_s=60.0, max_target_requests=1)
+
+    plan = await planner.plan(
+        evidence(),
+        budget,
+        objective="检查客服回答",
+        selected_graders=GraderSelection(quality=["relevance"]),
+    )
+
+    assert plan.objective == "检查客服回答"
+    assert plan.budget == budget
 
 
 async def test_prompt_documents_the_full_planner_schema() -> None:

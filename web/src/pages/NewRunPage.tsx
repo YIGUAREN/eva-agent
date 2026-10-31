@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
+import type { GraderInfo } from "../api/types";
+import { allGraderIds, partitionGraders, toGraderSelection, toggleGrader } from "../lib/graders";
 
 export function NewRunPage() {
   const navigate = useNavigate();
@@ -17,6 +19,13 @@ export function NewRunPage() {
   const catalog = useQuery({ queryKey: ["graders"], queryFn: api.graders });
   const targets = useQuery({ queryKey: ["targets"], queryFn: api.demoTargets });
 
+  const graders = catalog.data?.graders ?? [];
+  const groups = partitionGraders(graders);
+  // ``null`` means the user has not touched the list yet: everything is checked.
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+  const checked = selected ?? allGraderIds(graders);
+  const noneChecked = catalog.isSuccess && checked.size === 0;
+
   const create = useMutation({
     mutationFn: () =>
       api.createRun({
@@ -27,6 +36,9 @@ export function NewRunPage() {
             ...(response ? { response } : {}),
             ...(context ? { context } : {}),
           },
+          // An explicit selection only goes out once the catalog is known;
+          // otherwise the planner keeps its default choice.
+          ...(catalog.isSuccess ? { graders: toGraderSelection(graders, checked) } : {}),
         },
         budget: {
           max_cost_usd: Number(cost),
@@ -91,7 +103,7 @@ export function NewRunPage() {
 
         {create.error && <p className="mt-4 text-sm text-rose-400">{create.error.message}</p>}
         <button
-          disabled={create.isPending || !query.trim()}
+          disabled={create.isPending || !query.trim() || noneChecked}
           className="mt-6 rounded-lg bg-emerald-500 px-5 py-2.5 font-medium text-slate-950 disabled:opacity-50"
         >
           {create.isPending ? "提交中…" : "排队运行"}
@@ -100,14 +112,23 @@ export function NewRunPage() {
 
       <aside className="space-y-6">
         <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
-          <h2 className="text-sm font-semibold text-slate-300">可用 grader</h2>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {(catalog.data?.graders ?? []).map((grader) => (
-              <span key={grader.id} className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-300">
-                {grader.id}
-              </span>
-            ))}
-          </div>
+          <h2 className="text-sm font-semibold text-slate-300">评分器</h2>
+          <p className="mt-1 text-xs text-slate-500">只运行勾选的评分器，未勾选的不参与评分。</p>
+          {catalog.isLoading && <p className="mt-3 text-xs text-slate-500">加载中…</p>}
+          {catalog.error && <p className="mt-3 text-xs text-rose-400">{catalog.error.message}</p>}
+          <GraderGroup
+            title="质量"
+            graders={groups.quality}
+            checked={checked}
+            onToggle={(id) => setSelected(toggleGrader(checked, id))}
+          />
+          <GraderGroup
+            title="安全"
+            graders={groups.security}
+            checked={checked}
+            onToggle={(id) => setSelected(toggleGrader(checked, id))}
+          />
+          {noneChecked && <p className="mt-3 text-xs text-amber-400">至少勾选一个评分器。</p>}
         </section>
         <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-5">
           <h2 className="text-sm font-semibold text-slate-300">演示目标</h2>
@@ -122,5 +143,42 @@ export function NewRunPage() {
         </section>
       </aside>
     </section>
+  );
+}
+
+function GraderGroup({
+  title,
+  graders,
+  checked,
+  onToggle,
+}: {
+  title: string;
+  graders: GraderInfo[];
+  checked: ReadonlySet<string>;
+  onToggle: (id: string) => void;
+}) {
+  if (graders.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-4">
+      <h3 className="text-xs font-medium text-slate-400">{title}</h3>
+      <ul className="mt-2 space-y-1.5">
+        {graders.map((grader) => (
+          <li key={grader.id}>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-200">
+              <input
+                type="checkbox"
+                checked={checked.has(grader.id)}
+                onChange={() => onToggle(grader.id)}
+                className="size-4 accent-emerald-500"
+              />
+              <span className="font-mono text-xs">{grader.id}</span>
+              <span className="text-xs text-slate-500">{grader.cost}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

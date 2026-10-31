@@ -23,6 +23,7 @@ async def plan_node(state: EvalState, deps: GraphDependencies) -> dict:
             evidence,
             state["budget"],
             objective=state["input"].objective,
+            selected_graders=state["input"].graders,
         )
     except PlanValidationError as exc:
         return await _fail(deps, run_id, f"评估计划无效: {exc}", error=str(exc))

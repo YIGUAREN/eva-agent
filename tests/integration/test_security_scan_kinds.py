@@ -12,7 +12,7 @@ from eva_agent.domain.evidence import EvidenceBundle, EvidenceFile
 from eva_agent.domain.plan import Dimension, DimensionPlan
 from eva_agent.domain.probe import ProbeRecord
 from eva_agent.domain.result import GraderRunOutput, GraderSampleOutcome
-from eva_agent.domain.run import InputKind
+from eva_agent.domain.run import GraderSelection, InputKind
 from eva_agent.domain.target import TargetKind, TargetSpec
 from eva_agent.graph.dependencies import GraphDependencies
 from eva_agent.graph.events import EventSink, noop_event_sink
@@ -478,6 +478,46 @@ async def test_skill_upload_runs_threat_analysis_and_a_skill_scan(tmp_path: Path
     requested = next(event for event in audit.events if event.action == "active_scan.requested")
     assert requested.scan_kind == "skill_scan"
     assert requested.authorization_ref == "ticket-42"
+
+
+async def test_skill_upload_runs_only_the_selected_graders(tmp_path: Path) -> None:
+    _, bundle = skill_upload(tmp_path, qa='{"query": "q", "response": "safe answer"}\n')
+    tools, _ = skill_tools()
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+        selected=GraderSelection(security=["harmfulness"]),
+    )
+
+    assert result.metrics["passive"]["by_grader"] == {"harmfulness": 0.8}
+    assert result.metrics["grader_count"] == 1
+
+
+async def test_skill_upload_runs_threat_analysis_when_selected(tmp_path: Path) -> None:
+    _, bundle = skill_upload(tmp_path)
+    tools, _ = skill_tools()
+    deps = dependencies(tmp_path, tools=tools, policy=scan_policy())
+
+    result = await SecurityExpert(deps).run(
+        run_id="run-1",
+        plan=security_plan(),
+        evidence=bundle,
+        probe=None,
+        budget=security_budget(),
+        authorization_ref="ticket-42",
+        requester_is_admin=True,
+        selected=GraderSelection(security=["threat_analysis"]),
+    )
+
+    assert result.metrics["passive"]["by_grader"] == {"threat_analysis": 0.0}
+    assert result.metrics["grader_count"] == 1
 
 
 async def test_wrapped_skill_upload_takes_the_skill_scan_path(tmp_path: Path) -> None:

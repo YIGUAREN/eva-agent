@@ -155,7 +155,8 @@ def _security_values(package: GraderPackage) -> dict[str, Any]:
     if not rows:
         # The expert fails the dimension instead of summarizing zero rows.
         raise PackageError("security: the dimension has no inputs to replay")
-    specs = passive_specs(rows)
+    selection = package.inputs.run_input.graders
+    specs = passive_specs(rows, selected=selection.security if selection is not None else None)
     normalized = summarize_passive(
         _recorded_output(Dimension.SECURITY, specs, package),
         specs=specs,

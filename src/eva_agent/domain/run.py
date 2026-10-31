@@ -6,9 +6,10 @@ import re
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_GRADER_ID_PATTERN = re.compile(r"[a-z0-9_]{1,64}")
 
 
 class InputKind(StrEnum):
@@ -54,6 +55,32 @@ class DatasetRef(BaseModel):
     column_map: dict[str, str] = Field(default_factory=dict)
 
 
+class GraderSelection(BaseModel):
+    """The catalog graders a run is allowed to use, split by dimension.
+
+    ``None`` on :class:`RunInput` keeps the planner's default choice; an
+    explicit selection means only the listed graders may run.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    quality: list[str] = Field(default_factory=list)
+    security: list[str] = Field(default_factory=list)
+
+    @field_validator("quality", "security")
+    @classmethod
+    def _safe_unique_ids(cls, value: list[str]) -> list[str]:
+        for grader_id in value:
+            if _GRADER_ID_PATTERN.fullmatch(grader_id) is None:
+                raise ValueError(f"invalid grader id: {grader_id[:32]!r}")
+        if len(set(value)) != len(value):
+            raise ValueError("duplicate grader id")
+        return value
+
+    def is_empty(self) -> bool:
+        return not self.quality and not self.security
+
+
 class RunInput(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -65,6 +92,7 @@ class RunInput(BaseModel):
     dataset_id: str | None = None
     target_ref: str | None = None
     target_prompts: list[str] = Field(default_factory=list)
+    graders: GraderSelection | None = None
 
     @model_validator(mode="after")
     def _payload_matches_kind(self) -> RunInput:
