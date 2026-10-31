@@ -132,6 +132,51 @@ def test_agent_owasp_summary_list_is_capped() -> None:
         parse_agent_result(payload)
 
 
+def test_skill_finding_list_is_capped() -> None:
+    finding = {"title": "t", "description": "d", "risk_type": "T04"}
+    payload = skill_payload(results=[finding] * 257)
+    with pytest.raises(AigResultError):
+        parse_skill_result(payload)
+
+
+def test_skill_finding_list_accepts_the_cap() -> None:
+    finding = {"title": "t", "description": "d", "risk_type": "T04"}
+    payload = skill_payload(results=[finding] * 256)
+    report = parse_skill_result(payload)
+    assert len(report.results) == 256
+
+
+def test_agent_finding_list_is_capped() -> None:
+    finding = {"title": "t", "description": "d", "level": "HIGH", "owasp": ["ASI01"]}
+    payload = agent_payload(results=[finding] * 257)
+    with pytest.raises(AigResultError):
+        parse_agent_result(payload)
+
+
+def test_agent_finding_list_accepts_the_cap() -> None:
+    finding = {"title": "t", "description": "d", "level": "HIGH", "owasp": ["ASI01"]}
+    payload = agent_payload(results=[finding] * 256)
+    report = parse_agent_result(payload)
+    assert len(report.results) == 256
+
+
+def test_raw_envelope_with_non_zero_status_is_rejected() -> None:
+    envelope = {"status": 1, "message": "rejected", "data": skill_payload()}
+    with pytest.raises(AigResultError):
+        parse_skill_result(envelope)
+
+
+def test_raw_envelope_with_zero_status_parses() -> None:
+    envelope = {"status": 0, "message": "ok", "data": skill_payload()}
+    report = parse_skill_result(envelope)
+    assert report.score == 100
+
+
+def test_raw_envelope_requires_a_data_object() -> None:
+    with pytest.raises(AigResultError):
+        parse_skill_result({"status": 0, "message": "ok", "data": []})
+
+
 def test_result_must_be_an_object() -> None:
     with pytest.raises(AigResultError, match="no structured result object"):
         parse_skill_result({"id": "m", "result": []})

@@ -12,6 +12,10 @@ from eva_agent.adapters.aig.errors import AigResultError
 
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
+_MAX_FINDING_OWASP_CATEGORIES = 32
+_MAX_AGENT_OWASP_SUMMARIES = 64
+_MAX_REPORT_FINDINGS = 256
+
 
 class AigVulnerability(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True, allow_inf_nan=False)
@@ -116,7 +120,7 @@ class AigSkillReport(BaseModel):
     language: str = Field(default="", max_length=64)
     llm: str = Field(default="", max_length=128)
     readme: str = Field(default="", max_length=32_768)
-    results: list[AigSkillFinding]
+    results: list[AigSkillFinding] = Field(max_length=_MAX_REPORT_FINDINGS)
 
 
 class AigAgentFinding(BaseModel):
@@ -127,7 +131,7 @@ class AigAgentFinding(BaseModel):
     title: str = Field(min_length=1, max_length=2_048)
     description: str = Field(min_length=1, max_length=8_192)
     level: Literal["HIGH", "MEDIUM", "LOW"]
-    owasp: list[str] = Field(max_length=32)
+    owasp: list[str] = Field(max_length=_MAX_FINDING_OWASP_CATEGORIES)
     suggestion: str = Field(default="", max_length=8_192)
 
 
@@ -140,17 +144,19 @@ class AigAgentReport(BaseModel):
     risk_type: str = Field(default="safe", max_length=32)
     total_tests: int = Field(default=0, ge=0)
     vulnerable_tests: int = Field(default=0, ge=0)
-    results: list[AigAgentFinding]
-    owasp_agentic_2026_top10: list[dict[str, Any]] = Field(max_length=64)
+    results: list[AigAgentFinding] = Field(max_length=_MAX_REPORT_FINDINGS)
+    owasp_agentic_2026_top10: list[dict[str, Any]] = Field(max_length=_MAX_AGENT_OWASP_SUMMARIES)
     report_description: str = Field(default="", max_length=32_768)
     language: str = Field(default="", max_length=64)
 
 
 def _direct_result(data: dict[str, Any]) -> dict[str, Any]:
+    if "status" in data:
+        # Raw HTTP envelope: reject non-zero status before unwrapping (spec §7.2).
+        if data.get("status") != 0 or not isinstance(data.get("data"), dict):
+            raise AigResultError("AIG result has no structured result object")
+        data = data["data"]
     payload = data.get("result")
-    if payload is None and isinstance(data.get("data"), dict):
-        # Accept a raw HTTP envelope as well as the client's unwrapped ``data``.
-        payload = data["data"].get("result")
     if not isinstance(payload, dict):
         raise AigResultError("AIG result has no structured result object")
     return payload
