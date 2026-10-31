@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from eva_agent.adapters.openjudge.catalog import CatalogError, load_catalog, summarize
 from eva_agent.config.settings import ConfigError
 from eva_agent.config.targets import load_targets
+from eva_agent.domain.plan import Dimension
 from eva_agent.runtime.artifacts import run_paths
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
@@ -38,6 +39,9 @@ _PUBLIC_USAGE_KEYS = ("estimated", "cached", "fresh", "budget_enforced")
 _PUBLIC_USAGE_BOOL_KEYS = frozenset({"estimated", "budget_enforced"})
 
 _PUBLIC_SAMPLE_COUNT_KEYS = ("sample_count", "completed_samples", "missing_samples")
+
+# Derived from the enum so a future dimension is accepted automatically.
+_PUBLIC_DIMENSION_NAMES = frozenset(item.value for item in Dimension)
 
 
 def _valid_usage_value(key: str, value: object) -> bool:
@@ -65,6 +69,22 @@ def public_report_usage(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+def public_truncated_dimensions(payload: dict[str, object]) -> list[str]:
+    """Keep only real dimension names, never free text such as a spend figure.
+
+    A non-list value becomes ``[]``; items that are not ``str`` or are not a
+    ``Dimension`` member are dropped.
+    """
+    raw = payload.get("truncated_dimensions")
+    if not isinstance(raw, list):
+        return []
+    return [
+        item
+        for item in raw
+        if isinstance(item, str) and item in _PUBLIC_DIMENSION_NAMES
+    ]
+
+
 def _valid_sample_count(value: object) -> bool:
     if value is None:
         return True
@@ -74,9 +94,10 @@ def _valid_sample_count(value: object) -> bool:
 def public_truncated_sample_counts(payload: dict[str, object]) -> list[dict[str, object]]:
     """Whitelist each truncation entry so hostile keys and values never go public.
 
-    An entry survives only when its dimension is a string and every supplied
-    count is ``None`` or a non-negative integer (booleans excluded); otherwise
-    the whole entry is dropped rather than partially copied.
+    An entry survives only when its dimension is a real ``Dimension`` name and
+    every supplied count is ``None`` or a non-negative integer (booleans
+    excluded); otherwise the whole entry is dropped rather than partially
+    copied.
     """
     raw = payload.get("truncated_sample_counts")
     if not isinstance(raw, list):
@@ -86,7 +107,7 @@ def public_truncated_sample_counts(payload: dict[str, object]) -> list[dict[str,
         if not isinstance(item, dict):
             continue
         dimension = item.get("dimension")
-        if not isinstance(dimension, str):
+        if not isinstance(dimension, str) or dimension not in _PUBLIC_DIMENSION_NAMES:
             continue
         counts = {key: item[key] for key in _PUBLIC_SAMPLE_COUNT_KEYS if key in item}
         if not all(_valid_sample_count(value) for value in counts.values()):
@@ -130,6 +151,11 @@ async def _report(state, run_id: str, *, public: bool = False) -> dict[str, obje
         # type) gates the whitelist so malformed non-mapping usage is neutralized.
         if "usage" in snapshot.payload:
             payload = {**payload, "usage": public_report_usage(payload)}
+        if "truncated_dimensions" in snapshot.payload:
+            payload = {
+                **payload,
+                "truncated_dimensions": public_truncated_dimensions(payload),
+            }
         if "truncated_sample_counts" in snapshot.payload:
             payload = {
                 **payload,

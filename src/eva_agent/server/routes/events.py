@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 
+from eva_agent.domain.plan import Dimension
 from eva_agent.domain.run import RunStatus
 from eva_agent.server.app import get_state
 from eva_agent.server.auth import current_session
@@ -50,6 +51,9 @@ _PUBLIC_BUDGET_MONEY_KEYS = frozenset(
 # key. Admin streams keep the full payloads unchanged.
 _PUBLIC_BUDGET_EVENT_TYPES = frozenset({"budget.exhausted", "budget.gate"})
 
+# Derived from the enum so a future dimension is accepted automatically.
+_PUBLIC_DIMENSION_NAMES = frozenset(item.value for item in Dimension)
+
 
 def _without_budget_money(value: object) -> object:
     if isinstance(value, dict):
@@ -66,11 +70,11 @@ def _without_budget_money(value: object) -> object:
 def _public_event_payload(event_type: str, payload: object) -> object:
     """Reduce public budget events to their allowlisted, type-checked shape.
 
-    ``budget.exhausted`` exposes ``dimension`` only when it is a string;
-    ``budget.gate`` exposes ``truncated_dimensions`` only when it is a list,
-    filtered down to its string items. Any malformed budget payload or value
-    becomes an empty object. Other event types keep the generic money-key
-    denylist.
+    ``budget.exhausted`` exposes ``dimension`` only when it is a real
+    ``Dimension`` name; ``budget.gate`` exposes ``truncated_dimensions`` only
+    when it is a list, filtered down to its real dimension names. Any malformed
+    budget payload or value becomes an empty object. Other event types keep the
+    generic money-key denylist.
     """
     if event_type not in _PUBLIC_BUDGET_EVENT_TYPES:
         return _without_budget_money(payload)
@@ -78,12 +82,18 @@ def _public_event_payload(event_type: str, payload: object) -> object:
         return {}
     if event_type == "budget.exhausted":
         dimension = payload.get("dimension")
-        return {"dimension": dimension} if isinstance(dimension, str) else {}
+        if isinstance(dimension, str) and dimension in _PUBLIC_DIMENSION_NAMES:
+            return {"dimension": dimension}
+        return {}
     truncated = payload.get("truncated_dimensions")
     if not isinstance(truncated, list):
         return {}
     return {
-        "truncated_dimensions": [item for item in truncated if isinstance(item, str)]
+        "truncated_dimensions": [
+            item
+            for item in truncated
+            if isinstance(item, str) and item in _PUBLIC_DIMENSION_NAMES
+        ]
     }
 
 

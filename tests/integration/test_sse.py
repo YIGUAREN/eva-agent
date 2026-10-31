@@ -183,6 +183,18 @@ async def test_public_sse_neutralizes_non_dict_budget_payloads(
             {"truncated_dimensions": ["quality"]},
         ),
         ("budget.gate", {"truncated_dimensions": {"spent_usd": 12.345678}}, {}),
+        # Allowlisted strings still have to be real dimension names.
+        ("budget.exhausted", {"dimension": "spent_usd=12.345678"}, {}),
+        (
+            "budget.gate",
+            {"truncated_dimensions": ["quality", "spent_usd=12.345678", 3]},
+            {"truncated_dimensions": ["quality"]},
+        ),
+        (
+            "budget.gate",
+            {"truncated_dimensions": ["quality", "security"]},
+            {"truncated_dimensions": ["quality", "security"]},
+        ),
     ],
 )
 async def test_public_sse_type_checks_allowlisted_budget_event_values(

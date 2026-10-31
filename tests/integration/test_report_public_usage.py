@@ -241,6 +241,13 @@ async def test_public_report_keeps_valid_usage_values_and_drops_invalid_ones(
             "completed_samples": 2,
             "missing_samples": 3,
         },
+        # A string that carries spend instead of a dimension name.
+        {
+            "dimension": "spent_usd=12.345678",
+            "sample_count": 5,
+            "completed_samples": 2,
+            "missing_samples": 3,
+        },
         # Hostile count value.
         {
             "dimension": "quality",
@@ -289,3 +296,64 @@ async def test_public_report_drops_hostile_truncation_entries_but_admin_keeps_th
 
     assert admin.status_code == 200
     assert admin.json()["report"]["truncated_sample_counts"] == [entry]
+
+
+@pytest.mark.parametrize(
+    "truncated",
+    [
+        [{"quality": {"spent_usd": 12.345678}}],
+        [["spent_usd", 12.345678]],
+        {"spent_usd": 12.345678},
+    ],
+)
+async def test_public_report_drops_hostile_truncated_dimensions_but_admin_keeps_them(
+    client: AsyncClient, state: AppState, truncated: object
+) -> None:
+    run_id = await _create(client)
+    payload = {
+        "run_id": run_id,
+        "version": 4,
+        "truncated_dimensions": truncated,
+    }
+    await state.reports.upsert(run_id, 4, payload, "# report")
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert response.json()["report"]["truncated_dimensions"] == []
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/report", headers=csrf_headers(csrf))
+
+    assert admin.status_code == 200
+    assert admin.json()["report"]["truncated_dimensions"] == truncated
+
+
+async def test_public_report_keeps_only_real_dimension_names(
+    client: AsyncClient, state: AppState
+) -> None:
+    run_id = await _create(client)
+    stored_dimensions = ["quality", "spent_usd=12.345678", "security", 3, {"cost": 1.5}]
+    await state.reports.upsert(
+        run_id,
+        4,
+        {"run_id": run_id, "version": 4, "truncated_dimensions": stored_dimensions},
+        "# report",
+    )
+    await _publish(state, run_id)
+
+    response = await client.get(f"/api/public/runs/{run_id}/report")
+
+    assert response.status_code == 200
+    assert response.json()["report"]["truncated_dimensions"] == ["quality", "security"]
+    assert "spent_usd" not in response.text
+    assert "12.345678" not in response.text
+
+    csrf = await login(client)
+    admin = await client.get(f"/api/runs/{run_id}/report", headers=csrf_headers(csrf))
+
+    assert admin.status_code == 200
+    assert admin.json()["report"]["truncated_dimensions"] == stored_dimensions
