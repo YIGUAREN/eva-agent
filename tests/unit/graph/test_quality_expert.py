@@ -61,12 +61,17 @@ def quality_plan() -> DimensionPlan:
     )
 
 
-def build_tools(outcomes: list[GraderSampleOutcome]) -> ToolRegistry:
+def build_tools(
+    outcomes: list[GraderSampleOutcome],
+    *,
+    cached: int = 0,
+    fresh: int = 0,
+) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(build_read_evidence_tool(1_000_000))
 
     async def run_handler(payload: RunGradersInput) -> GraderRunOutput:
-        return GraderRunOutput(outcomes=outcomes, duration_ms=5)
+        return GraderRunOutput(outcomes=outcomes, duration_ms=5, cached=cached, fresh=fresh)
 
     registry.register(
         ToolSpec(
@@ -191,6 +196,20 @@ async def test_expert_runs_paste_end_to_end(tmp_path: Path) -> None:
     assert result.score == 0.9
     assert result.dimension is Dimension.QUALITY
     assert result.evidence[0].locator == "paste.json"
+
+
+async def test_expert_reports_cached_and_fresh_sample_counts(tmp_path: Path) -> None:
+    evidence = write_paste_workspace("run-1", PastedInput(query="q", response="a"), tmp_path)
+    tools = build_tools(
+        [GraderSampleOutcome(grader="relevance", sample_index=0, score=0.9)],
+        cached=2,
+        fresh=1,
+    )
+    expert = QualityExpert(tools, default_sample_size=5)
+
+    result = await expert.run(run_id="run-1", plan=quality_plan(), evidence=evidence)
+
+    assert (result.usage.cached, result.usage.fresh) == (2, 1)
 
 
 async def test_expert_rejects_missing_response(tmp_path: Path) -> None:

@@ -30,6 +30,7 @@ def _pass_through(estimate: Decimal) -> dict:
         "finalize_overrun": False,
         "budget_gate": None,
         "budget_gate_seq": None,
+        "retry_dimensions": [],
     }
 
 
@@ -92,6 +93,7 @@ async def budget_gate_prepare(state: EvalState, deps: GraphDependencies) -> dict
         "finalize_overrun": False,
         "budget_gate": payload,
         "budget_gate_seq": seq,
+        "retry_dimensions": [],
     }
 
 
@@ -109,6 +111,7 @@ async def budget_gate_node(state: EvalState) -> dict:
     if action == "extend":
         budget = Budget.model_validate(decision.get("budget"))
         _require_context().ledger.update_budget(budget)
+        truncated = payload.get("truncated_dimensions")
         return {
             "budget": budget,
             "status": RunStatus.RUNNING,
@@ -116,6 +119,7 @@ async def budget_gate_node(state: EvalState) -> dict:
             "finalize_overrun": False,
             "budget_gate": payload,
             "budget_gate_seq": seq,
+            "retry_dimensions": truncated if isinstance(truncated, list) else [],
         }
     if action == "summarize":
         remaining = Decimal(str(payload["remaining"]))
@@ -125,5 +129,6 @@ async def budget_gate_node(state: EvalState) -> dict:
             "finalize_overrun": remaining < estimate,
             "budget_gate": payload,
             "budget_gate_seq": seq,
+            "retry_dimensions": [],
         }
     raise ValueError(f"unknown budget decision: {action!r}")

@@ -63,6 +63,8 @@ class GraderRunOutput(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     truncated_reason: str | None = None
+    cached: int = Field(default=0, ge=0)
+    fresh: int = Field(default=0, ge=0)
 
 
 class NormalizedQuality(BaseModel):

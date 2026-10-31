@@ -143,6 +143,7 @@ async def test_prepare_bypasses_before_the_estimator_when_no_context_is_bound(tm
         "finalize_overrun": False,
         "budget_gate": None,
         "budget_gate_seq": None,
+        "retry_dimensions": [],
     }
     assert events == []
     assert store.record_calls == []

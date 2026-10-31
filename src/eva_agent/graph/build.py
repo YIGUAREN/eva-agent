@@ -82,6 +82,31 @@ def route_experts(state: EvalState) -> list[Send] | str:
     return sends or "merge"
 
 
+def route_after_budget_gate(state: EvalState) -> list[Send] | str:
+    if state["status"] is not RunStatus.RUNNING:
+        return END
+    retry = set(state.get("retry_dimensions") or ())
+    plan = state["plan"]
+    if not retry or plan is None:
+        return "merge"
+    return [
+        Send(
+            item.dimension.value,
+            {
+                "run_id": state["run_id"],
+                "dimension_plan": item,
+                "evidence": state["evidence"],
+                "probe": state.get("probe"),
+                "budget": state["budget"],
+                "authorization_ref": state.get("authorization_ref"),
+                "requester_is_admin": state.get("requester_is_admin"),
+            },
+        )
+        for item in plan.dimensions
+        if item.enabled and item.dimension.value in retry
+    ]
+
+
 def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None) -> Any:
     graph = StateGraph(EvalState)
     graph.add_node("intake", partial(intake_node, deps=dependencies))
@@ -129,7 +154,18 @@ def build_graph(dependencies: GraphDependencies, checkpointer: Any | None = None
         _route_after_budget_gate_prepare,
         {"budget_gate": "budget_gate", "merge": "merge"},
     )
-    graph.add_edge("budget_gate", "merge")
+    graph.add_conditional_edges(
+        "budget_gate",
+        route_after_budget_gate,
+        {
+            "quality": "quality",
+            "latency": "latency",
+            "cost": "cost",
+            "security": "security",
+            "merge": "merge",
+            END: END,
+        },
+    )
     graph.add_edge("merge", "analyze")
     graph.add_edge("analyze", "report")
     graph.add_edge("report", END)

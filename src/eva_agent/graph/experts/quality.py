@@ -138,8 +138,8 @@ def aggregate_outcomes(
             input_tokens=output.input_tokens,
             output_tokens=output.output_tokens,
             duration_ms=output.duration_ms,
-            cached=int(getattr(output, "cached", 0)),
-            fresh=int(getattr(output, "fresh", 0)),
+            cached=output.cached,
+            fresh=output.fresh,
         ),
         truncated_reason=output.truncated_reason,
     )
@@ -228,6 +228,8 @@ def build_quality_expert_graph(tools: ToolRegistry, default_sample_size: int) ->
             truncated_reason=next(
                 (item.truncated_reason for item in outputs if item.truncated_reason), None
             ),
+            cached=sum(item.cached for item in outputs),
+            fresh=sum(item.fresh for item in outputs),
         )
         return {
             "normalized": aggregate_outcomes(

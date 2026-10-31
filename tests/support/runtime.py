@@ -22,8 +22,8 @@ from eva_agent.graph.events import noop_event_sink
 from eva_agent.graph.state import EvalState
 from eva_agent.tools.dataset import build_sample_dataset_tool
 from eva_agent.tools.evidence import build_read_evidence_tool
-from eva_agent.tools.graders import RunGradersInput
-from eva_agent.tools.registry import ToolRegistry, ToolSpec
+from eva_agent.tools.graders import build_run_graders_tool
+from eva_agent.tools.registry import ToolRegistry
 
 
 def budget() -> Budget:
@@ -134,25 +134,20 @@ class FakeRunner:
         )
 
 
-def build_tools(runner: FakeRunner) -> ToolRegistry:
+def build_tools(
+    runner: FakeRunner,
+    data_dir: str | None = None,
+    judge_model: ModelConfig | None = None,
+) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(build_read_evidence_tool(1_000_000))
     registry.register(build_sample_dataset_tool(max_bytes=1_000_000, max_rows=100))
-
-    async def run_handler(payload: RunGradersInput) -> GraderRunOutput:
-        return await runner.run(payload.specs, payload.rows)
-
     registry.register(
-        ToolSpec(
-            name="run_graders",
-            description="fake OpenJudge runner",
-            input_model=RunGradersInput,
-            output_model=GraderRunOutput,
-            permission="internal",
-            timeout_s=10.0,
-            side_effects=False,
-            idempotent=False,
-            handler=run_handler,
+        build_run_graders_tool(
+            runner,
+            max_rows=100,
+            judge_model=judge_model,
+            data_dir=data_dir,
         )
     )
     return registry
@@ -169,7 +164,7 @@ def dependencies(
     planner = planner or FakePlanner()
     return GraphDependencies(
         planner=planner,
-        tools=build_tools(runner),
+        tools=build_tools(runner, str(tmp_path / "data"), fake_config(tmp_path).models.judge),
         catalog_ids=frozenset({"relevance"}),
         data_dir=str(tmp_path / "data"),
         max_input_bytes=1_000_000,

@@ -25,8 +25,11 @@ from eva_agent.worker.runner import RunWorker
 from tests.support.api import PASTE_PAYLOAD, csrf_headers, login
 from tests.support.runtime import budget, dependencies, fake_config, paste_input
 
-GATE_BUDGET = Budget(max_cost_usd=0.0001, max_wall_clock_s=60.0, max_target_requests=90)
-EXTENDED_BUDGET = Budget(max_cost_usd=2.0, max_wall_clock_s=60.0, max_target_requests=90)
+# Grading now reserves from the ledger, so the gate budget must cover the fake
+# run's two grader specs (~1.19 USD at the priced-config rates) while staying
+# below the finalize estimate (~1.33 USD) that triggers the pause.
+GATE_BUDGET = Budget(max_cost_usd=1.25, max_wall_clock_s=60.0, max_target_requests=90)
+EXTENDED_BUDGET = Budget(max_cost_usd=3.5, max_wall_clock_s=60.0, max_target_requests=90)
 
 
 async def _finish_pending(state: AppState, run_id: str) -> None:
@@ -343,7 +346,7 @@ async def test_extend_raises_the_live_ledger_limit(tmp_path: Path) -> None:
         assert ledger.snapshot().remaining_usd >= Decimal("0.9")
         row = await manager._require_repo().get(run_id)
         assert row is not None
-        assert row.budget_json["max_cost_usd"] == 2.0
+        assert row.budget_json["max_cost_usd"] == 3.5
 
 
 class _ProcessDeath(BaseException):
