@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 from eva_agent.config.settings import AppConfig, ConfigError, MissingSecretError, load_config
 from eva_agent.domain.budget import Budget
 from eva_agent.domain.run import DatasetRef, InputKind, PastedInput, RunInput, RunStatus
+from eva_agent.packages.grader_package import build_grader_package
+from eva_agent.packages.manifest import sha256_file
 from eva_agent.runtime.manager import RunManager, RunStateError, RunStatusView
 
 
@@ -67,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     report = run_subparsers.add_parser("report")
     report.add_argument("run_id")
     report.add_argument("--config", default="config/config.yaml")
+
+    export_package = subparsers.add_parser("export-grader-package")
+    export_package.add_argument("run_id")
+    export_package.add_argument("--out", required=True)
+    export_package.add_argument("--config", default="config/config.yaml")
     return parser
 
 
@@ -192,8 +199,32 @@ async def _report(args: argparse.Namespace, config: AppConfig) -> int:
     return 0
 
 
+async def _export_grader_package(args: argparse.Namespace, config: AppConfig) -> int:
+    async with RunManager.open(config, enforce_budget=False) as manager:
+        run_row = await manager.run_row(args.run_id)
+        archive, manifest = await build_grader_package(
+            config=config, run_row=run_row, out_dir=Path(args.out)
+        )
+    print(
+        json.dumps(
+            {
+                "package": str(archive),
+                "sha256": sha256_file(archive),
+                "size_bytes": archive.stat().st_size,
+                "replayable": manifest.replayable,
+                "replay_blockers": manifest.replay_blockers,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 async def _dispatch(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
+    if args.command == "export-grader-package":
+        return await _export_grader_package(args, config)
     if args.run_command == "start":
         return await _start(args, config)
     if args.run_command == "approve":

@@ -46,7 +46,7 @@ from eva_agent.storage.budget import (
     SqlLedgerStore,
 )
 from eva_agent.storage.db import create_engine, create_session_factory, init_db
-from eva_agent.storage.models import AuditEventRow
+from eva_agent.storage.models import AuditEventRow, RunRow
 from eva_agent.storage.repository import RunRepository
 
 logger = logging.getLogger(__name__)
@@ -894,6 +894,13 @@ class RunManager:
             report_json_path=str(report_path) if report_path.is_file() else None,
             errors=list(values.get("errors") or []),
         )
+
+    async def run_row(self, run_id: str) -> RunRow:
+        """The persisted row for *run_id*, raising ``KeyError`` when it is missing."""
+        row = await self._require_repo().get(run_id)
+        if row is None:
+            raise KeyError(run_id)
+        return row
 
     async def report(self, run_id: str) -> dict[str, Any]:
         repo = self._require_repo()
