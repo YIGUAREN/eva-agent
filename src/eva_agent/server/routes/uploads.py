@@ -67,6 +67,11 @@ async def _extract(state, upload_id: str, archive_format: str) -> None:
     except SandboxUnavailable:
         await state.uploads.mark_failed(upload_id, "sandbox_unavailable")
         raise ApiError(503, "unavailable", "解压服务不可用") from None
+    except Exception:
+        # A malformed sandbox response can raise unexpected errors. Never leave
+        # the row stuck in "extracting" or echo the exception text to the client.
+        await state.uploads.mark_failed(upload_id, "sandbox_unavailable")
+        raise ApiError(503, "unavailable", "解压服务不可用") from None
     await state.uploads.mark_extracted(upload_id, manifest)
 
 
@@ -86,27 +91,27 @@ async def create_upload(
     paths = upload_paths(state.config.storage.data_dir, upload_id)
     try:
         size, digest = await _store(file, paths.package, max_bytes)
+        try:
+            archive_format = detect_format(paths.package)
+        except ExtractionError:
+            raise ApiError(400, "upload_rejected", "仅支持 zip 或 tar 包") from None
+        await state.uploads.create(
+            upload_id,
+            filename=_filename(file.filename),
+            size_bytes=size,
+            sha256=digest,
+            format=archive_format,
+            expires_at=state.now() + timedelta(days=state.config.retention_days),
+        )
     except _UploadTooLarge:
         shutil.rmtree(paths.root, ignore_errors=True)
         raise ApiError(413, "upload_rejected", "上传包超过大小限制") from None
     except ApiError:
         shutil.rmtree(paths.root, ignore_errors=True)
         raise
-
-    try:
-        archive_format = detect_format(paths.package)
-    except ExtractionError:
+    except BaseException:
         shutil.rmtree(paths.root, ignore_errors=True)
-        raise ApiError(400, "upload_rejected", "仅支持 zip 或 tar 包") from None
-
-    await state.uploads.create(
-        upload_id,
-        filename=_filename(file.filename),
-        size_bytes=size,
-        sha256=digest,
-        format=archive_format,
-        expires_at=state.now() + timedelta(days=state.config.retention_days),
-    )
+        raise
     await _extract(state, upload_id, archive_format)
     return {"upload_id": upload_id, "status": UPLOAD_EXTRACTED}
 

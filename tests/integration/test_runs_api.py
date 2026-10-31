@@ -159,6 +159,7 @@ async def test_create_run_rejects_unknown_upload(client: AsyncClient, state: App
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "unknown_upload"
+    assert await state.runs.list_recent(10) == []
 
 
 async def test_create_run_rejects_unready_upload(client: AsyncClient, state: AppState) -> None:
@@ -170,10 +171,32 @@ async def test_create_run_rejects_unready_upload(client: AsyncClient, state: App
         format="zip",
         expires_at=datetime.now(UTC) + timedelta(days=1),
     )
-    assert (await state.uploads.get("upload_pending")).status == UPLOAD_EXTRACTING
+    pending = await state.uploads.get("upload_pending")
+    assert pending is not None and pending.status == UPLOAD_EXTRACTING
     csrf = await login(client)
     response = await client.post(
         "/api/runs", json=_upload_payload("upload_pending"), headers=csrf_headers(csrf)
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "upload_not_ready"
+    assert await state.runs.list_recent(10) == []
+
+
+async def test_idempotency_replay_wins_over_upload_validation(client: AsyncClient, state: AppState) -> None:
+    csrf = await login(client)
+    first = await client.post(
+        "/api/runs",
+        json={**PASTE_PAYLOAD, "idempotency_key": "replay-before-upload"},
+        headers=csrf_headers(csrf),
+    )
+    assert first.status_code == 201
+
+    replay = await client.post(
+        "/api/runs",
+        json={**_upload_payload("upload_missing"), "idempotency_key": "replay-before-upload"},
+        headers=csrf_headers(csrf),
+    )
+
+    assert replay.status_code == 200
+    assert replay.json()["run_id"] == first.json()["run_id"]
+    assert len(await state.runs.list_recent(10)) == 1
