@@ -175,4 +175,45 @@ describe("api client", () => {
       budget: { max_cost_usd: 2, max_wall_clock_s: 90, max_target_requests: 20 },
     });
   });
+
+  it("uploads a file as multipart without a JSON content type", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ upload_id: "upload_1", status: "extracted" }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("token");
+
+    const file = new File(["PK"], "evidence.zip", { type: "application/zip" });
+    const result = await api.upload(file);
+
+    const [path, init] = fetchMock.mock.calls[0];
+    const headers = new Headers(init.headers);
+    expect(path).toBe("/api/uploads");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(headers.get("Content-Type")).toBeNull();
+    expect(headers.get("X-CSRF-Token")).toBe("token");
+    expect(result).toEqual({ upload_id: "upload_1", status: "extracted" });
+  });
+
+  it("surfaces an upload rejection as an ApiError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ error: { code: "upload_rejected", message: "上传包未通过安全校验" } }),
+          { status: 400 },
+        ),
+      ),
+    );
+
+    await expect(api.upload(new File(["PK"], "x.zip"))).rejects.toMatchObject({
+      status: 400,
+      code: "upload_rejected",
+      message: "上传包未通过安全校验",
+    });
+  });
 });
