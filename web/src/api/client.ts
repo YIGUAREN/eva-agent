@@ -7,6 +7,7 @@ import type {
   ReportResponse,
   RunDetail,
   RunSummary,
+  UploadInfo,
 } from "./types";
 
 let csrfToken: string | null = null;
@@ -43,7 +44,7 @@ function apiError(status: number, body: ErrorEnvelope | null): ApiError {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const method = (init.method ?? "GET").toUpperCase();
-  if (init.body !== undefined && !headers.has("Content-Type")) {
+  if (init.body !== undefined && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   if (csrfToken && method !== "GET" && method !== "HEAD") {
@@ -93,6 +94,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  upload: (file: File) => {
+    const body = new FormData();
+    body.append("file", file, file.name);
+    return request<UploadInfo>("/api/uploads", { method: "POST", body });
+  },
   approve: (runId: string, approved: boolean, plan?: unknown) =>
     request<{ run_id: string }>(`/api/runs/${runId}/approve`, {
       method: "POST",

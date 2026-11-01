@@ -110,12 +110,31 @@ export interface GraderSelection {
   security: string[];
 }
 
-export interface CreateRunBody {
-  input: {
-    kind: "paste";
-    paste: { query: string; response?: string; context?: string };
-    graders?: GraderSelection;
-  };
-  budget: Budget;
-  idempotency_key?: string;
+export interface PastedInput {
+  query: string;
+  response?: string;
+  context?: string;
 }
+
+export interface DatasetRef {
+  path: string;
+  format: "csv" | "jsonl";
+  column_map?: Record<string, string>;
+}
+
+export type RunInputBody =
+  | { kind: "paste"; paste: PastedInput }
+  | { kind: "dataset"; dataset: DatasetRef }
+  | { kind: "upload"; upload_id: string }
+  | { kind: "target"; target_ref: string; target_prompts: string[] };
+
+export interface UploadInfo {
+  upload_id: string;
+  status: string;
+}
+
+export type CreateRunBody = {
+  input: RunInputBody & { graders?: GraderSelection };
+  budget: Budget;
+  authorization_ref?: string;
+};
