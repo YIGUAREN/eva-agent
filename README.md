@@ -94,7 +94,7 @@ tests/
 demo_target/     # 本地 OpenAI 兼容演示目标
 ```
 
-## Web UI（阶段 4）
+## Web UI
 
 ```bash
 # 1. 生成管理员密码哈希，并导出为环境变量（不要提交）
@@ -117,7 +117,7 @@ uv run eva-worker --config config/config.yaml
 
 > 本地用 `http://127.0.0.1:8000` 做明文 HTTP 验收时，请先在 `config/config.yaml` 中把 `web.cookie_secure` 设为 `false`，否则浏览器不会保存登录 Cookie。生产环境必须保持 `true`（需要 TLS）。
 
-### 上传证据包（阶段 4b）
+### 上传证据包
 
 1. 启动 sandbox-runner（需与 web/worker 共享 `data/` 卷）：
 
