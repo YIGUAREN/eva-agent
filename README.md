@@ -94,10 +94,6 @@ tests/
 demo_target/     # 本地 OpenAI 兼容演示目标
 ```
 
-## 规格与计划
-
-设计规格见本地文件 `docs/superpowers/specs/2026-10-27-eva-agent-design.md`，阶段 1 设计见 `docs/superpowers/specs/2026-10-27-phase-1-design.md`，阶段 2 设计见 `docs/superpowers/specs/2026-10-28-phase-2-target-eval-design.md`，阶段 1 计划见 `docs/superpowers/plans/2026-10-27-phase-1-dataset-e2e.md`，阶段 2 计划见 `docs/superpowers/plans/2026-10-28-phase-2-target-eval.md`。
-
 ## Web UI（阶段 4）
 
 ```bash
