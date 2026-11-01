@@ -2,7 +2,16 @@
 
 自主评测 agent：给定证据包、文本、数据集或在线 API，自动调查证据、制定评测计划、执行质量 / 耗时 / 成本 / 安全四维评测，产出带证据引用的报告与可复用 grader。
 
-当前进度：**阶段 3（security 专家 + 授权策略 + 审计）**。图包含 `intake → plan → approve → probe → dispatch → {quality | latency | cost | security} → merge → analyze → report`；target 输入在批准后共享一次 probe，四维并行执行。security 先跑 OpenJudge 被动检查（`harmfulness`，检测到代码特征时加 `code_security`），仅在 demo/allowlist、管理员授权、预算与超时都满足时才调用 AIG 主动扫描。upload 与 zip/tar 解压留待沙箱阶段。
+当前状态：内核与 Web 站点均已实现，包含以下能力：
+
+- **评测内核**：`intake → plan → approve → probe → dispatch → {quality | latency | cost | security} → merge → analyze → report`；target 输入在批准后共享一次 probe，四维并行执行。
+- **输入**：粘贴文本、数据集、上传证据包、在线 API 四种输入。
+- **安全**：OpenJudge 被动检查（`harmfulness`，检测到代码特征时加 `code_security`）；在 demo/allowlist、管理员授权、预算与超时都满足时调用 AIG 主动扫描（`agent_scan` / `skill_scan`），授权与调用写入审计。
+- **Web 站点**：管理员登录、CSRF 与服务端会话、SSE 实时时间线、计划确认、发布/撤回、公开报告与受控产物下载。
+- **上传沙箱**：证据包与 skill 包由独立 sandbox-runner 解压；zip/tar 按魔数识别，路径穿越、链接、设备文件与超限包整包拒绝，且不保留解压文件。
+- **预算**：强制预算、触顶后 `summarize` / `extend` 决策、只补跑未完成维度与样本。
+- **导出与重放**：grader 包导出与离线 `eva replay`、run 导出/导入、预置 demo run。
+- **报告**：中文报告，grader 可按 quality / security 选择。
 
 ## 开发环境
 
