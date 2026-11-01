@@ -194,6 +194,9 @@ describe("api client", () => {
     expect(path).toBe("/api/uploads");
     expect(init.method).toBe("POST");
     expect(init.body).toBeInstanceOf(FormData);
+    const entry = (init.body as FormData).get("file");
+    expect(entry).toBeInstanceOf(File);
+    expect((entry as File).name).toBe("evidence.zip");
     expect(headers.get("Content-Type")).toBeNull();
     expect(headers.get("X-CSRF-Token")).toBe("token");
     expect(result).toEqual({ upload_id: "upload_1", status: "extracted" });

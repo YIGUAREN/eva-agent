@@ -15,14 +15,16 @@ describe("TargetFields", () => {
         loading={false}
         targetRef="demo"
         prompts={"第一行\n\n第二行"}
-        targetRefError="请选择目标"
+        loadError="目标加载失败"
+        targetRefError="必须选择目标"
         promptsError="最多 100 条提示词"
         onTargetChange={() => {}}
         onPromptsChange={() => {}}
       />,
     );
 
-    expect(html).toContain("请选择目标");
+    expect(html).toContain("目标加载失败");
+    expect(html).toContain("必须选择目标");
     expect(html).toContain("demo · openai_compatible · demo-echo");
     expect(html).toContain("已填写 2 条");
     expect(html).toContain("最多 100 条提示词");
